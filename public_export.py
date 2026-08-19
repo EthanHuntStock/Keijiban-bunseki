@@ -1,0 +1,840 @@
+# -*- coding: utf-8 -*-
+"""
+public_export.py - 一般公開用(Googleサイト「掲示板の分析による投資情報」)集計値
+エクスポート層。既存の export_signal.py(トレPJ向け内部シグナル・別スキーマ・別目的)
+には一切触れない、完全に独立した新規モジュール。
+
+【最重要・絶対厳守】個別投稿のテキスト・ユーザー名・投稿者ハッシュ(author)・投稿ID等は
+一切出力しない。集計済みの数値(強気率・弱気率・投稿量等)だけを出力する。
+  - build_public_record() は生コメントのリストを引数として受け取らない設計にすることで、
+    混入を「構造的に」防ぐ(呼び手が signals.compute_signals() 等の集計済み結果だけを渡す)。
+  - validate_no_leak() が出力レコードを再帰的に走査し、個別投稿由来と疑われるキー名
+    (text/user/author/id等)が万一まぎれ込んでいないかを機械検証する。
+  - write_public_export() は validate_no_leak() を通らないレコードは書き込まずに
+    例外を送出して中止する(fail-closed)。
+
+I/Oパターンは export_signal.py を参考にしつつ独立実装:
+  - history.jsonl に1行 append(退避主義=書換/削除しない)
+  - latest.json を atomic 置換(temp -> os.replace = Dropbox/OneDrive WinError5 安全)
+
+raw_comments.jsonl / analyzed.jsonl / snapshots.jsonl 等の追記専用ログは、このモジュールでは
+読み取り専用として扱う(書込み・削除・切り詰め一切なし)。
+
+Phase 1: ローカルのエクスポート層構築のみ。run_once.py への自動結線(毎時実行への組込み)は
+次フェーズで対応(今回は行わない)。
+"""
+import os
+import sys
+import json
+import datetime as dt
+
+import config
+
+
+SCHEMA_VERSION = config.PUBLIC_EXPORT_SCHEMA_VERSION
+COMPANY_NAME = "キオクシアホールディングス"
+DISCLAIMER = ("本情報は掲示板投稿を統計的に集計したものであり、投資助言ではありません。"
+              "個別の投稿内容は含まれていません。研究・エンタメ用途です。")
+
+# snapshots.jsonl 等を読む際の窓(営業日ではなく暦日。14日トレンドに十分な安全マージン)。
+TREND_READ_WINDOW_DAYS = 60
+
+# 個別投稿由来の疑いがあるキー名(小文字化して完全一致で判定=構造的なキー汚染を検出)。
+# 「含む(部分一致)」ではなく「完全一致」なので、post_count_today 等の集計キー名を
+# 誤検知しない。
+_LEAK_KEY_HINTS = {
+    "text", "body", "comment", "comments", "content", "message", "raw_text",
+    "user", "username", "user_id", "userid", "author", "author_id", "authorid",
+    "handle", "poster", "nickname", "screen_name", "screenname",
+    "id", "post_id", "postid", "comment_id", "commentid", "raw_id",
+    "reply_to", "in_reply_to", "url", "link", "permalink",
+    "votes_yes", "votes_no", "feel",
+}
+
+# 唯一の意図的な例外(パス完全一致・かつ値が文字列の時のみ): ai_commentary.text は
+# public_insight.generate_public_insight() が「①で validate_no_leak() を通過済みの
+# 公開レコード(集計値のみ)」だけを入力に生成する公開用AI考察文であり、個別投稿由来
+# ではない。ここだけキー名"text"での自動検出対象から除外する(値がdict/listなら
+# 除外せず通常どおり再帰検査=中に個別投稿ぽいキーが紛れ込んでいれば引き続き検出する)。
+# これ以外の場所(board/trend_14d/price_sentiment_series 等)に出現する"text"キーは
+# これまでどおり漏洩として検出する。
+_LEAK_KEY_EXEMPT_EXACT_PATHS = {"$.ai_commentary.text"}
+
+
+# ============================================================================
+# 純関数: 日次トレンド組み立て(snapshots.jsonl の日次集計値だけを使う・個別投稿は不参照)
+# ============================================================================
+def _last_snapshot_per_day(snapshot_rows):
+    """snapshots.jsonl の行(1日に複数回書かれる)から、日付ごとに「その日最後の1件」
+    (=その日の累計を最も反映したもの)を抽出する。純関数。個別投稿は一切参照しない
+    (snapshot_rows は snapshot.write_snapshot() が既に集計したロールアップの並び)。"""
+    by_date = {}
+    for r in snapshot_rows or []:
+        d = r.get("date")
+        if not d:
+            continue
+        by_date[d] = r  # append-only前提=後に出てくるほど新しい -> 後勝ちでOK
+    return by_date
+
+
+def trend_14d_from_snapshots(snapshot_rows, days=14):
+    """直近 days 日分の [{date, post_count, bear_ratio, bull_ratio}, ...] を
+    snapshots.jsonl の日次最終スナップショットから組み立てる。純関数。
+
+    signals.compute_signals() の日次ロールアップ(snapshot.write_snapshot() が
+    'signals' キーに埋めている sig_rollup)を再利用するだけで、生コメントを
+    再走査しない。sig_rollup が無い(rollup失敗)行は day_cumulative へフォールバック。
+    """
+    by_date = _last_snapshot_per_day(snapshot_rows)
+    out = []
+    for d in sorted(by_date)[-days:]:
+        snap = by_date[d] or {}
+        sig = snap.get("signals") or {}
+        post_count = sig.get("true_volume")
+        if post_count is None:
+            post_count = snap.get("day_cumulative")
+        out.append({
+            "date": d,
+            "post_count": int(post_count) if post_count is not None else 0,
+            "bear_ratio": sig.get("bear_ratio"),
+            "bull_ratio": sig.get("bull_ratio"),
+        })
+    return out
+
+
+# ============================================================================
+# 純関数: 価格つきセンチメント系列(price_sentiment_series)組み立て
+# ============================================================================
+def _price_ohlc_by_date(price_daily, gmtoffset=None):
+    """price_fetch.load_price(config.PRICE_DAILY_PATH) の戻り値(日足パース済みdict)
+    から {date(JST, 'YYYY-MM-DD'): {open, high, low, close}} を組み立てる。純関数
+    (ネット非依存)。price_daily / bars / close 欠損時は {} を返す(=その日は
+    「実際に取引があった営業日」の集合に含まれないという意味を持つ。呼び手の
+    price_sentiment_series_from_snapshots() はこの辞書のキー集合そのものを
+    「直近N営業日」の判定に使うため、ここで値を捏造しないことが重要)。
+
+    ★2026-08-19: 従来は close だけを抜き出していたが(_price_close_by_date)、
+    ユーザー依頼「価格推移をローソク足にしてほしい」を受けopen/high/lowも合わせて
+    抜き出すよう拡張。日足バー自体が既にYahoo Finance側で1日分のOHLCとして確定
+    済みの値なので、ここでの追加集計(リサンプル等)は不要でそのまま使う。
+
+    ★2026-08-19(追加): ユーザー依頼「価格推移に出来高を足せますか」を受けvolumeも
+    抜き出す。日足バーは1日=1本のため合算不要でそのまま使う(欠損はNone)。
+
+    既存の日足取得関数(price_fetch.parse_chart_json)が返す bars[].ts は UNIX epoch
+    (UTC秒)なので、dashboard.py の _bars_to_dt と同じ式(+gmtoffset→JST日付)で変換する。
+    新規にCSV等を再パースせず、既存の price_daily 構造をそのまま使う。
+    """
+    price_daily = price_daily or {}
+    bars = price_daily.get("bars") or []
+    meta = price_daily.get("meta") or {}
+    off = gmtoffset if gmtoffset is not None else (meta.get("gmtoffset") or 32400)
+    out = {}
+    for b in bars:
+        ts = b.get("ts")
+        c = b.get("close")
+        if ts is None or c is None:
+            continue
+        d = dt.datetime.utcfromtimestamp(ts + off).strftime("%Y-%m-%d")
+        out[d] = {  # 1日1本前提。複数本あれば後(=時系列で後方)のものを採用。
+            "open": b.get("open"), "high": b.get("high"),
+            "low": b.get("low"), "close": c, "volume": b.get("volume"),
+        }
+    return out
+
+
+def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14):
+    """直近 days **営業日**分の [{date, price_open, price_high, price_low, price_close,
+    bull_ratio, bear_ratio}, ...] を組み立てる。純関数。
+
+    ★2026-08-19: 日付の基準を「snapshots.jsonl の日次最終スナップショットの日付」
+    (=土日祝も含む暦日。collect-onlyが24時間365日走るため)から「実際に価格barが
+    存在する日(=取引所が開いていた営業日)」へ変更(ユーザー依頼「過去14日間は、
+    非営業日はなしにしましょう」「営業日のみとして」)。これにより週末・祝日の
+    "動きの無い横ばい足"がローソク足チャートに混ざらなくなる。price_daily に
+    実在するbarの日付だけを対象にするため、_forward_fill_ohlc(前日終値の
+    キャリーフォワード)はもう不要(=対象は常に実データがある日のみ)。
+
+    price_daily は price_fetch.load_price(config.PRICE_DAILY_PATH) の戻り値をそのまま
+    渡す想定(新規にCSV等を再パースしない・既存の日足取得関数を再利用)。センチメントは
+    その営業日に一致するsnapshotがあればその値、無ければNone(捏造しない・値が
+    無いことをそのまま示す)。個別投稿は一切参照しない。
+
+    ★2026-08-19(別依頼): price_close 単独から OHLC 4フィールドへ拡張(ユーザー依頼
+    「価格推移をローソク足にしてほしい」)。price_close は後方互換のため引き続き含める。
+
+    ★2026-08-19(追加): ユーザー依頼「価格推移に出来高を足せますか」を受け
+    price_volume(その日の出来高)も追加。
+    """
+    by_date = _last_snapshot_per_day(snapshot_rows)
+    ohlc_by_date = _price_ohlc_by_date(price_daily)
+    out = []
+    for d in sorted(ohlc_by_date)[-days:]:
+        snap = by_date.get(d) or {}
+        sig = snap.get("signals") or {}
+        ohlc = ohlc_by_date[d]
+        out.append({
+            "date": d,
+            "price_open": ohlc["open"],
+            "price_high": ohlc["high"],
+            "price_low": ohlc["low"],
+            "price_close": ohlc["close"],
+            "price_volume": ohlc.get("volume"),
+            "bull_ratio": sig.get("bull_ratio"),
+            "bear_ratio": sig.get("bear_ratio"),
+        })
+    return out
+
+
+def intraday_today_series(snapshot_rows, price_intraday, today=None):
+    """★2026-08-19追加(ユーザー依頼「当日の価格推移とセンチメント推移も入れる」)。
+    本日分のイントラデイ推移を集計値のみで組み立てる純関数。個別投稿は一切参照しない。
+
+    価格: price_intraday(price_fetch.load_price(config.PRICE_INTRADAY_PATH)の戻り値。
+    5分足バー)から本日分のbarを抽出し、**10分足のOHLCへリサンプル**(ユーザー依頼
+    「本日のは10分足、14日分は日足に」「価格推移をローソク足にしてほしい」)して
+    {time(HH:MM), price_open, price_high, price_low, price_close}へ変換する。10分
+    バケット(分を10で切り捨てた時刻)ごとに、open=バケット内で最初に観測されたbarの
+    始値・high=バケット内の最高値・low=バケット内の最安値・close=バケット内で最後に
+    観測されたbarの終値、という標準的なローソク足リサンプルの定義に従う。barのts は
+    UNIX epoch秒のためmeta.gmtoffset(既定32400=JST+9h)を足してJSTローカル時刻へ変換する
+    (dashboard.py._bars_to_dtと同じ変換方式)。
+
+    センチメント: snapshot_rows(snapshots.jsonl)の本日分の行を{time, bull_ratio,
+    bear_ratio}へ変換する。snapshots.jsonlは1run毎(catchup=10分毎/フル実行=毎時)に
+    追記される時系列ロールアップで、各行の"signals"サブフィールド(=そのrunまでの
+    累積センチメント比率)を使う(price_sentiment_series_from_snapshotsの日次版と
+    同じ"signals"参照パターン)。
+
+    戻り値: {"price": [{time, price_open, price_high, price_low, price_close,
+    price_volume}, ...], "sentiment": [{time, bull_ratio, bear_ratio}, ...]}。
+    データが無ければ両方とも空リスト(fail-soft・呼び手はキー自体の欠落は起きない)。
+
+    ★2026-08-19(追加): ユーザー依頼「価格推移に出来高を足せますか」を受け
+    price_volume(バケット内の5分足volumeの合計)も追加。1本のみのvolume=Noneな
+    barはその分だけ加算をスキップする(欠損を0扱いで捏造しない)。
+    """
+    today = today or dt.date.today().isoformat()
+
+    buckets = {}   # "HH:M0"(10分刻み) -> {open, high, low, close, volume, n}(バケット内で集計中)
+    if price_intraday:
+        bars = price_intraday.get("bars") or []
+        meta = price_intraday.get("meta") or {}
+        off = meta.get("gmtoffset") or 32400
+        for b in bars:
+            o, h, low, close = b.get("open"), b.get("high"), b.get("low"), b.get("close")
+            vol = b.get("volume")
+            ts = b.get("ts")
+            if close is None or ts is None:
+                continue
+            d = dt.datetime.utcfromtimestamp(ts + off)
+            if d.date().isoformat() != today:
+                continue
+            bucket_minute = (d.minute // 10) * 10
+            key = d.replace(minute=bucket_minute, second=0, microsecond=0).strftime("%H:%M")
+            # barは時系列順に並んでいる前提(price_fetch.py)。同じバケット内では
+            # open=最初のbarのopenを保持・high/lowは全barの最大/最小へ更新・
+            # close=最後に処理したbarの値で上書き・volume=バケット内の全bar合計、
+            # という標準的なOHLCVリサンプルの定義に従う。
+            if key not in buckets:
+                buckets[key] = {"open": o if o is not None else close,
+                                "high": h if h is not None else close,
+                                "low": low if low is not None else close,
+                                "close": close, "volume": vol or 0, "n": 1}
+            else:
+                cur = buckets[key]
+                if h is not None:
+                    cur["high"] = max(cur["high"], h)
+                if low is not None:
+                    cur["low"] = min(cur["low"], low)
+                cur["close"] = close
+                cur["volume"] += vol or 0
+                cur["n"] += 1
+
+    # ★2026-08-19(ユーザー指摘「引けの時の出来高は出ませんか」): price_fetch.pyが
+    # 明記する通り、末尾バーはvolume=0の「現在値合成バー」(実取引のバーではなく
+    # その時点の気配/終値だけを表す点)である場合がある。このbarがちょうど新しい
+    # 10分境界(例:15:30:00)に乗ると、実取引ゼロの単独バーだけで新規バケットが
+    # 作られ、「引けの足だけ出来高0」という誤解を招く見た目になる(直前の
+    # 15:20-15:29台の実出来高は既にその手前のバケットへ正しく集計済みなのに、
+    # 引け値を表示するためだけの空のローソクが最後に追加されて見える)。
+    # 対策: 最後のバケットが「単独bar・出来高0」で、かつ直前バケットが存在する
+    # 場合は、その終値/高値/安値だけを直前バケットへ吸収し(=引け値を正しく
+    # 反映)、出来高ゼロの空バケット自体は作らない(出来高を捏造せず単に併合)。
+    if buckets:
+        keys_sorted = sorted(buckets)
+        last_key = keys_sorted[-1]
+        last = buckets[last_key]
+        if last["n"] == 1 and last["volume"] == 0 and len(keys_sorted) >= 2:
+            prev_key = keys_sorted[-2]
+            prev = buckets[prev_key]
+            prev["high"] = max(prev["high"], last["high"])
+            prev["low"] = min(prev["low"], last["low"])
+            prev["close"] = last["close"]
+            del buckets[last_key]
+
+    price_pts = [{"time": t, "price_open": buckets[t]["open"], "price_high": buckets[t]["high"],
+                 "price_low": buckets[t]["low"], "price_close": buckets[t]["close"],
+                 "price_volume": buckets[t]["volume"]}
+                for t in sorted(buckets)]
+
+    sent_pts = []
+    for r in snapshot_rows or []:
+        if (r or {}).get("date") != today:
+            continue
+        ts = r.get("timestamp") or ""
+        if len(ts) < 16:
+            continue
+        sig = r.get("signals") or {}
+        bull = sig.get("bull_ratio")
+        bear = sig.get("bear_ratio")
+        if bull is None and bear is None:
+            continue
+        sent_pts.append({"time": ts[11:16], "bull_ratio": bull, "bear_ratio": bear})
+
+    return {"price": price_pts, "sentiment": sent_pts}
+
+
+def previous_snapshot_for_ai_commentary(previous_record):
+    """★2026-08-19追加(ユーザー依頼「AI考察は前回からの変化に対する考察も入れる」)。
+    直前に書き出し済みの公開レコード(load_public_latest()の戻り値、つまり"今回の更新
+    より前のlatest.json")から、AI考察プロンプトに渡す軽量な比較用スナップショットを
+    抜き出す純関数。集計値のみ(price/bull_ratio/bear_ratio/post_count_today/
+    generated_at)を対象とし、ai_commentary本文やintraday_today等の詳細は含めない
+    (プロンプトを肥大化させないため・個別投稿は元々previous_recordにも含まれない)。
+    previous_record が None/空なら None を返す(=まだ前回データが無い=初回生成扱い、
+    呼び手はNoneならプロンプトに比較セクションを含めない)。"""
+    if not previous_record:
+        return None
+    price = previous_record.get("price") or {}
+    board = previous_record.get("board") or {}
+    return {
+        "generated_at": previous_record.get("generated_at"),
+        "price_last": price.get("last"),
+        "change_pct": price.get("change_pct"),
+        "bull_ratio": board.get("bull_ratio"),
+        "bear_ratio": board.get("bear_ratio"),
+        "post_count_today": board.get("post_count_today"),
+    }
+
+
+def extended_hours_summary(adr_pts_data):
+    """★2026-08-19追加(ユーザー依頼「AI分析はPTS・米国ADRの時間帯もそれらの値を分析
+    するように。翌日の傾向につながる可能性がある」)。
+    price_fetch.fetch_adr_pts_and_save() が保存したnikkei225jp.comフィード
+    (load_price(config.ADR_PTS_PATH)の戻り値)から、直近のPTS(夜間取引)・米国ADR
+    円換算の最新値サマリーを組み立てる純関数。個別投稿は一切参照しない。
+
+    基準点(boundary)＝フィード内で「tse列(TSE正規セッション現在値)が非Noneの最後の
+    行」＝その日のTSE最終気配(実質的な大引け値)。これより後のPTS/ADR観測値だけを
+    「延長取引時間帯」とみなし、それぞれの直近値(取引が無ければNone=捏造しない)を
+    抜き出す。change_pctはTSE最終値との比較(=「もし翌営業日にこの変化が反映され
+    たら」という解釈で使える値)。
+
+    戻り値: {tse_close:{price,time}, pts:{price,change_pct,time}|None,
+    adr:{price_yen,price_usd,change_pct,time}|None} または、フィード自体が
+    無ければ None(fail-soft)。
+    """
+    rows = (adr_pts_data or {}).get("rows") or []
+    if not rows:
+        return None
+    rows = sorted(rows, key=lambda r: r.get("ts") or 0)
+    tse_rows = [r for r in rows if r.get("tse") is not None]
+    if not tse_rows:
+        return None
+    tse_close_row = tse_rows[-1]
+    tse_close = tse_close_row.get("tse")
+    boundary_ts = tse_close_row.get("ts") or 0
+    after = [r for r in rows if (r.get("ts") or 0) > boundary_ts]
+
+    def _fmt_time(ts):
+        d = dt.datetime.utcfromtimestamp(ts) + dt.timedelta(hours=9)
+        return d.strftime("%m/%d %H:%M")
+
+    def _chg(v):
+        if v is None or not tse_close:
+            return None
+        return round((v - tse_close) / tse_close * 100.0, 2)
+
+    pts_rows = [r for r in after if r.get("pts") is not None]
+    pts_summary = None
+    if pts_rows:
+        last = pts_rows[-1]
+        pts_summary = {"price": last["pts"], "change_pct": _chg(last["pts"]),
+                       "time": _fmt_time(last["ts"])}
+
+    adr_rows = [r for r in after if r.get("adr_yen") is not None]
+    adr_summary = None
+    if adr_rows:
+        last = adr_rows[-1]
+        adr_summary = {"price_yen": last["adr_yen"], "price_usd": last.get("adr_usd"),
+                       "change_pct": _chg(last["adr_yen"]), "time": _fmt_time(last["ts"])}
+
+    return {
+        "tse_close": {"price": tse_close, "time": _fmt_time(boundary_ts)},
+        "pts": pts_summary,
+        "adr": adr_summary,
+    }
+
+
+# ============================================================================
+# 純関数: 公開レコード組み立て(既存の集計済み結果だけを受け取る=生コメント非依存)
+# ============================================================================
+def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None,
+                        generated_at=None, price_sentiment_series=None,
+                        ai_commentary=None, regime=None, intraday_today=None,
+                        previous=None, extended_hours=None):
+    """
+    既存の集計結果から公開用レコードを組み立てる純関数。個別投稿情報は一切参照しない
+    (引数として生コメントのリストを受け取らない設計=構造的に混入を防ぐ)。
+
+    引数:
+      S          - signals.compute_signals() の戻り値(dict)。true_volume/ratios/gauges/
+                   posts_per_hour/price/cards(9シグナルカード)等の集計済みフィールド
+                   だけを参照する(S['named']['top_authors'] のような個別投稿寄りの
+                   フィールドは意図的に一切参照しない)。
+      price_d    - price_fetch.load_price() の戻り値(dict|None)。S['price']['last'] が
+                   Noneの時のフォールバックにのみ使う(meta.regularMarketPrice)。
+      trend_14d  - trend_14d_from_snapshots() 等が返す集計済みの日次リスト。
+      price_sentiment_series - price_sentiment_series_from_snapshots() 等が返す
+                   集計済みの [{date, price_close, bull_ratio, bear_ratio}, ...]。
+                   省略時は空リスト(既存呼び出し元の動作を壊さない)。
+      ai_commentary - {"text": ..., "generated_at": ...} の dict、または None。
+                   None(既定)なら出力レコードにキー自体を含めない(既存動作を壊さない)。
+                   生成は public_insight.generate_public_insight() が担い、このモジュール
+                   はできあがった dict を差し込むだけ(ここではLLMを呼ばない)。
+      regime     - ★2026-08-19追加(おにや09:00投稿・公開ダッシュボード用)。
+                   {"vol_regime": ..., "vol_regime_score": ..., "calibration_status": ...}
+                   のdict、または None。export_signal.py(内部トレーディングシグナル・
+                   signal_export/latest.json)が既に計算済みの較正状態を読み取り専用で
+                   渡す想定(このモジュール自身は再計算しない・個別投稿は一切不参照)。
+                   None(既定)なら出力レコードに regime キー自体を含めない。
+      intraday_today - ★2026-08-19追加(ユーザー依頼「当日の価格推移とセンチメント推移も
+                   入れる」)。intraday_today_series() が返す
+                   {"price": [...], "sentiment": [...]} の dict、または None。
+                   None(既定)なら出力レコードにキー自体を含めない(既存動作を壊さない)。
+      previous   - ★2026-08-19追加(ユーザー依頼「AI考察は前回からの変化に対する考察も
+                   入れる」)。previous_snapshot_for_ai_commentary() が返す軽量な比較
+                   スナップショット、または None。None(既定)なら出力レコードにキー
+                   自体を含めない(既存動作を壊さない・初回生成時など前回データが
+                   無い場合の想定挙動)。
+      extended_hours - ★2026-08-19追加(ユーザー依頼「AI分析はPTS・米国ADRの時間帯も
+                   それらの値を分析するように」)。extended_hours_summary() が返す
+                   {tse_close, pts, adr} のdict、または None。None(既定)なら出力
+                   レコードにキー自体を含めない(既存動作を壊さない・フィード取得
+                   失敗時等の想定挙動)。
+    """
+    S = S or {}
+    ratios = S.get("ratios") or {}
+    gauges = S.get("gauges") or {}
+    price_info = S.get("price") or {}
+
+    price_last = price_info.get("last")
+    price_change = price_info.get("change_pct")
+    if price_last is None and price_d:
+        meta = (price_d or {}).get("meta") or {}
+        price_last = meta.get("regularMarketPrice")
+
+    rec = {
+        "schema_version": SCHEMA_VERSION,
+        "symbol": symbol or config.SYMBOL,
+        "company_name": company_name or COMPANY_NAME,
+        "generated_at": generated_at or dt.datetime.now().isoformat(timespec="seconds"),
+        "price": {
+            "last": price_last,
+            "change_pct": price_change,
+        },
+        "board": {
+            "post_count_today": S.get("true_volume", 0),
+            "posts_per_hour": S.get("posts_per_hour"),
+            "bull_ratio": ratios.get("bull_ratio"),
+            "bear_ratio": ratios.get("bear_ratio"),
+            "neutral_ratio": ratios.get("neutral_ratio"),
+            "overheat_score": gauges.get("overheat"),
+            "capitulation_score": gauges.get("capitulation"),
+        },
+        # ★2026-08-19追加: 9シグナルカード(灼熱/そう思う票/イナゴ語彙/ネームド集中/
+        # 他銘柄混入/暴落煽り/阿鼻叫喚/話題枯れ/投稿サージ)。各カードは
+        # {name, value, threshold, state, note} の集計値のみ(signals.build_signal_cards
+        # 参照・個別投稿は一切含まない)。公開ダッシュボードのシグナル一覧に使う。
+        "signal_cards": list(S.get("cards") or []),
+        "trend_14d": list(trend_14d or []),
+        "price_sentiment_series": list(price_sentiment_series or []),
+        "disclaimer": DISCLAIMER,
+    }
+    if ai_commentary is not None:
+        rec["ai_commentary"] = ai_commentary
+    if regime is not None:
+        rec["regime"] = {
+            "vol_regime": regime.get("vol_regime"),
+            "vol_regime_score": regime.get("vol_regime_score"),
+            "calibration_status": regime.get("calibration_status"),
+        }
+    if intraday_today is not None:
+        rec["intraday_today"] = {
+            "price": list(intraday_today.get("price") or []),
+            "sentiment": list(intraday_today.get("sentiment") or []),
+        }
+    if previous is not None:
+        rec["previous"] = {
+            "generated_at": previous.get("generated_at"),
+            "price_last": previous.get("price_last"),
+            "change_pct": previous.get("change_pct"),
+            "bull_ratio": previous.get("bull_ratio"),
+            "bear_ratio": previous.get("bear_ratio"),
+            "post_count_today": previous.get("post_count_today"),
+        }
+    if extended_hours is not None:
+        pts = extended_hours.get("pts")
+        adr = extended_hours.get("adr")
+        tse_close = extended_hours.get("tse_close") or {}
+        rec["extended_hours"] = {
+            "tse_close": {"price": tse_close.get("price"), "time": tse_close.get("time")},
+            "pts": ({"price": pts.get("price"), "change_pct": pts.get("change_pct"),
+                    "time": pts.get("time")} if pts else None),
+            "adr": ({"price_yen": adr.get("price_yen"), "price_usd": adr.get("price_usd"),
+                    "change_pct": adr.get("change_pct"), "time": adr.get("time")}
+                   if adr else None),
+        }
+    return rec
+
+
+# ============================================================================
+# 漏洩検証(最重要): 個別投稿由来のキーが混入していないか再帰的に検証
+# ============================================================================
+def validate_no_leak(rec):
+    """
+    レコード(dict/list/スカラーのネスト構造)を再帰的に走査し、個別投稿由来と
+    疑われるキー名(text/user/author/id等・大小無視の完全一致)が含まれていないか
+    検証する。エラー文字列のリストを返す(空=OK)。
+
+    キー名の完全一致で判定するため、post_count_today のような正規の集計キーを
+    誤検知しない。値の中身までは判定しない(このモジュールの出力は数値/日付文字列/
+    定型文だけを想定しており、値ベースの自由記述テキスト検査は対象外)。
+
+    唯一の例外: パスが厳密に "$.ai_commentary.text" かつ値が文字列の場合だけ、
+    キー名"text"での検出をスキップする(_LEAK_KEY_EXEMPT_EXACT_PATHS参照。
+    public_insight.generate_public_insight() が集計値のみから生成する公開用考察文)。
+    """
+    errs = []
+
+    def _walk(node, path):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                kl = str(k).strip().lower()
+                full_path = f"{path}.{k}"
+                exempt = (full_path in _LEAK_KEY_EXEMPT_EXACT_PATHS
+                         and isinstance(v, str))
+                if kl in _LEAK_KEY_HINTS and not exempt:
+                    errs.append(f"leaked key '{k}' at {full_path}")
+                _walk(v, full_path)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                _walk(v, f"{path}[{i}]")
+
+    _walk(rec, "$")
+    return errs
+
+
+# ============================================================================
+# 書き込み(export_signal.py と同型のI/Oパターン・完全に独立したパス/スキーマ)
+# ============================================================================
+def _atomic_write_json(path, obj):
+    """temp へ書いて os.replace(WinError5安全)。"""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _append_jsonl(path, obj):
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+
+def _log(msg):
+    line = f"[{dt.datetime.now().isoformat(timespec='seconds')}] public_export: {msg}"
+    print(line)
+    try:
+        config.ensure_data_dir()
+        with open(config.LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def write_public_export(S, price_d, trend_14d, **kw):
+    """
+    build_public_record() でレコードを作り、validate_no_leak() を通らなければ
+    書き込みを中止して例外を送出する(fail-closed)。通れば history.jsonl に
+    append(退避主義) + latest.json を atomic 置換。戻り値: 書いたレコード。
+    """
+    config.ensure_public_export_dir()
+    rec = build_public_record(S, price_d, trend_14d, **kw)
+    errs = validate_no_leak(rec)
+    if errs:
+        _log(f"ERROR individual-post leak detected, write ABORTED: {errs}")
+        raise ValueError(
+            f"public_export: individual-post leak detected, write aborted: {errs}")
+    _append_jsonl(config.PUBLIC_EXPORT_HISTORY_PATH, rec)      # append-only
+    _atomic_write_json(config.PUBLIC_EXPORT_LATEST_PATH, rec)  # atomic
+    _log(f"export post_count_today={rec['board']['post_count_today']} "
+         f"bear_ratio={rec['board']['bear_ratio']} bull_ratio={rec['board']['bull_ratio']} "
+         f"trend_days={len(rec['trend_14d'])} "
+         f"pss_days={len(rec.get('price_sentiment_series') or [])} "
+         f"has_commentary={'ai_commentary' in rec}")
+    return rec
+
+
+def load_public_latest():
+    """消費側/動作確認用: latest.json を読む。無ければ None。"""
+    p = config.PUBLIC_EXPORT_LATEST_PATH
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _parse_public_json_csv(csv_text):
+    """★2026-08-19追加。Google Sheetsの「ウェブに公開」CSV書き出し(json_blobタブ・
+    A1セルにlatest.json全体のJSON文字列が入っている)をパースする純関数
+    (ネット非依存・load_public_latest_from_url()から分離してselftest対象にする
+    =price_fetch.parse_chart_json/_fetchと同じ「純関数とネットワークI/Oの分離」
+    パターン)。
+
+    「ウェブに公開」のCSVはRFC4180準拠(セル内の改行/カンマ/引用符は正しく
+    エスケープされる)のため、素朴な文字列分割ではなくPython標準csvモジュールで
+    パースする(JSON文字列自体にカンマ・引用符が大量に含まれるため必須)。
+    A1セル(1行目1列目)の値をそのままjson.loads()する。失敗時はNone(fail-soft)。
+    """
+    import csv
+    import io
+    try:
+        reader = csv.reader(io.StringIO(csv_text or ""))
+        first_row = next(reader, None)
+        if not first_row or not first_row[0]:
+            return None
+        return json.loads(first_row[0])
+    except Exception:
+        return None
+
+
+def load_public_latest_from_url(url, timeout=None):
+    """★2026-08-19追加(ユーザー依頼: 公開ダッシュボードをStreamlit Community Cloud
+    へデプロイするため)。クラウド環境からはローカルPCのdata/public_export/latest.json
+    へ直接アクセスできない。橋渡し役として、public_sheets_sync.py(★同日追加の
+    json_blobタブ)が毎run latest.jsonの全内容をGoogle Sheetsの1セルへJSON文字列と
+    して書き込み、そのシートを「ウェブに公開」したCSV書き出しURL(gid付きの
+    `.../export?format=csv&gid=<json_blobタブのgid>` 形式)を渡す想定。
+    実際のCSVパースは_parse_public_json_csv()(純関数)に委譲する。
+
+    fail-soft: ネットワーク失敗・空応答・不正なJSON等いずれも例外を投げずNoneを
+    返す(呼び手[public_dashboard.py]は「データ蓄積中です」を表示するだけで
+    アプリ自体はクラッシュしない)。ローカルのlatest.json同様、読み取り専用
+    (このURLへの書き込みは一切行わない)。
+    """
+    import requests
+    try:
+        r = requests.get(url, timeout=timeout or 15)
+        if r.status_code != 200:
+            return None
+        return _parse_public_json_csv(r.text)
+    except Exception:
+        return None
+
+
+def load_public_history():
+    """history.jsonl を list で。無ければ []。"""
+    p = config.PUBLIC_EXPORT_HISTORY_PATH
+    rows = []
+    if not os.path.exists(p):
+        return rows
+    # ★2026-08-19修正(おにや22:13投稿・重大障害調査の横展開): torn write対策
+    # (バイナリモード+行ごと個別decode)。1行分のバイト破損で以降の行が全滅しない。
+    try:
+        with open(p, "rb") as f:
+            for raw_line in f:
+                try:
+                    line = raw_line.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    continue
+                if line:
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return rows
+
+
+# ============================================================================
+# AI考察(ai_commentary)の1日1回自動生成ゲート(config.PUBLIC_EXPORT_COMMENTARY_DAILY)
+# ============================================================================
+def _commentary_already_generated_today(latest_record, history_rows, today):
+    """純関数(I/O非依存): 今日(today, 'YYYY-MM-DD' JST日付文字列)分の ai_commentary が
+    既に生成済みかを判定する。
+
+    優先順位:
+      1) latest_record(latest.json 相当)の ai_commentary.generated_at の日付。
+      2) 1) に無ければ history_rows(history.jsonl 相当・古い→新しい順を想定)を新しい順に
+         走査し、最初に見つかった ai_commentary.generated_at の日付。
+
+    latest.json は毎run(commentaryの有無に関わらず)atomic上書きされるため、commentary
+    無しのrunが後から来ると latest.json の ai_commentary は消える(キー自体が無くなる)。
+    そのため 1) だけでは「今日は既に生成済み」を見失う ―― history.jsonl は append-only
+    で過去のcommentary付きレコードを保持しているので 2) がフォールバックとして機能する。
+
+    どちらにも今日分が見つからなければ False(=未生成・生成対象)。
+    """
+    ac = (latest_record or {}).get("ai_commentary") or {}
+    gen_at = ac.get("generated_at")
+    if gen_at:
+        return str(gen_at)[:10] == today
+
+    for row in reversed(list(history_rows or [])):
+        ac2 = (row or {}).get("ai_commentary") or {}
+        gen_at2 = ac2.get("generated_at")
+        if gen_at2:
+            return str(gen_at2)[:10] == today
+    return False
+
+
+def should_generate_commentary_today(today=None):
+    """I/O込み: load_public_latest() / load_public_history() を読み、JST当日分の
+    ai_commentary がまだ生成されていなければ True(=このrunで with_commentary=True に
+    すべき)を返す。既に今日分が生成済みなら False。
+
+    today を省略した場合は dt.date.today()(このプロジェクトの他モジュール[afterhours_bearish
+    等]と同じく、壁時計=JSTローカル実行前提)。呼び手(run_once.py)は
+    config.PUBLIC_EXPORT_COMMENTARY_DAILY が True の時だけこの関数を呼ぶ想定。
+    """
+    today = today or dt.date.today().isoformat()
+    latest = load_public_latest()
+    history = load_public_history()
+    return not _commentary_already_generated_today(latest, history, today)
+
+
+# ============================================================================
+# CLI: 実データ(読み取り専用)から1回分の公開レコードを生成する最小エントリ
+# ============================================================================
+def _build_from_live_data(with_commentary=False):
+    """実データ(read-only)から1回分の公開レコードを組み立てて書き出す。CLI用。
+    raw_comments/analyzed/snapshots/price の各ファイルは jsonl_window / price_fetch
+    経由で読むだけ(書込み・削除・切り詰め一切なし)。
+
+    with_commentary=True の時だけ、①で validate_no_leak() を通過済みの公開レコードを
+    public_insight.generate_public_insight() に渡して ai_commentary を追加生成する
+    (有料API・明示フラグ経由のみ=既定は生成しない=課金なし)。生成失敗時は
+    generate_public_insight() 自体がfail-soft(None)なので、ai_commentary無しで続行する。
+    """
+    import jsonl_window
+    import signals as sigmod
+    import price_fetch
+
+    analyzed = jsonl_window.read_jsonl_recent(config.ANALYZED_PATH,
+                                              days=TREND_READ_WINDOW_DAYS)
+    raw = jsonl_window.read_jsonl_recent(config.RAW_COMMENTS_PATH,
+                                         days=TREND_READ_WINDOW_DAYS)
+    price_daily = price_fetch.load_price(config.PRICE_DAILY_PATH)
+    price_intraday = price_fetch.load_price(config.PRICE_INTRADAY_PATH)
+
+    S = sigmod.compute_signals(analyzed, raw_rows=raw,
+                               price_daily=price_daily, price_intraday=price_intraday)
+
+    snaps = jsonl_window.read_jsonl_recent(config.SNAPSHOTS_PATH,
+                                           days=TREND_READ_WINDOW_DAYS)
+    trend = trend_14d_from_snapshots(snaps)
+    pss = price_sentiment_series_from_snapshots(snaps, price_daily)
+    regime = _load_regime_readonly()
+    intraday_today = intraday_today_series(snaps, price_intraday)
+    # ★2026-08-19追加(ユーザー依頼「AI分析はPTS・米国ADRの時間帯もそれらの値を分析
+    # するように」)。price_fetch.fetch_adr_pts_and_save()が別stepで保存済みの
+    # フィードを読み取り専用で読む(このモジュール自身はネット非依存を維持)。
+    adr_pts_data = price_fetch.load_price(config.ADR_PTS_PATH)
+    extended_hours = extended_hours_summary(adr_pts_data)
+    # ★2026-08-19追加(ユーザー依頼「AI考察は前回からの変化に対する考察も入れる」)。
+    # 今回の書き出しで latest.json が上書きされる"前"の状態を読んでおく(=前回分の
+    # 公開レコード)。読み取り専用(load_public_latest())・今回のrec組み立てより前に
+    # 呼ぶ必要がある(write_public_export()が実行されるとlatest.jsonは今回の内容に
+    # なってしまうため)。
+    previous = previous_snapshot_for_ai_commentary(load_public_latest())
+
+    ai_commentary = None
+    if with_commentary:
+        # まず①(price_sentiment_series 込み)の公開レコードを組み立て、
+        # validate_no_leak() を通過したものだけを public_insight へ渡す
+        # (=個別投稿を一切受け取れない関数へは、検証済みの集計dictしか渡らない)。
+        prelim = build_public_record(S, price_intraday, trend, price_sentiment_series=pss,
+                                     regime=regime, intraday_today=intraday_today,
+                                     previous=previous, extended_hours=extended_hours)
+        errs = validate_no_leak(prelim)
+        if errs:
+            _log(f"ERROR leak detected before commentary generation, skip: {errs}")
+        else:
+            import public_insight
+            result = public_insight.generate_public_insight(prelim)
+            if result:
+                ai_commentary = {
+                    "text": result.get("text"),
+                    "generated_at": result.get("generated_at"),
+                }
+                _log(f"ai_commentary generated chars={len(result.get('text') or '')}")
+            else:
+                _log("WARN ai_commentary generation failed (fail-soft None); "
+                     "exporting without ai_commentary")
+
+    return write_public_export(S, price_intraday, trend, price_sentiment_series=pss,
+                               ai_commentary=ai_commentary, regime=regime,
+                               intraday_today=intraday_today, previous=previous,
+                               extended_hours=extended_hours)
+
+
+def _load_regime_readonly():
+    """★2026-08-19追加(おにや09:00投稿・公開ダッシュボードのボラ・レジーム帯用)。
+    export_signal.py(内部トレーディングシグナル)が既に書き出し済みの
+    signal_export/latest.json を**読み取り専用**で開き、vol_regime/vol_regime_score/
+    calibration_status の3フィールドだけを取り出す(それ以外のフィールド
+    [direction_candidate/features/thresholds_crossed等]は公開スコープ外のため
+    意図的に無視・出力レコードへ混入させない)。ファイルが無い/壊れている/
+    このrunでまだ研究層が走っていない等でも fail-soft で None を返す
+    (呼び手はNoneならrec['regime']キー自体を出力しないだけで、他の処理は続行する)。"""
+    try:
+        if not os.path.exists(config.SIGNAL_LATEST_PATH):
+            return None
+        with open(config.SIGNAL_LATEST_PATH, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return {
+            "vol_regime": d.get("vol_regime"),
+            "vol_regime_score": d.get("vol_regime_score"),
+            "calibration_status": d.get("calibration_status"),
+        }
+    except Exception:
+        return None
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="public_export.py - 公開用集計値エクスポート(Phase 1・手動実行)")
+    parser.add_argument("--selftest", action="store_true",
+                        help="selftest.py 全体を実行(このモジュール専用テスト込み)")
+    parser.add_argument("--with-commentary", action="store_true",
+                        help="public_insight.generate_public_insight() でAI考察を生成し"
+                             "ai_commentaryフィールドに含める(有料API課金・明示フラグ時のみ)")
+    args = parser.parse_args()
+
+    if args.selftest:
+        import selftest
+        return selftest.main()
+
+    rec = _build_from_live_data(with_commentary=args.with_commentary)
+    print(json.dumps(rec, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

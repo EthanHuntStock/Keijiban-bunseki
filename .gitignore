@@ -1,0 +1,33 @@
+# ★2026-08-19追加(ユーザー依頼: 公開ダッシュボードをStreamlit Community Cloudへ
+# デプロイするため、コードのみをGitHubリポジトリへ公開する)。
+# 生データ・鍵ファイル・キャッシュは絶対にコミットしない。
+
+# 生データ(別ディレクトリ C:\AI用フォルダ\... が既定だが、念のため除外)
+data/
+*.jsonl
+*.jsonl.tmp
+
+# 認証鍵(Google Sheets service account等)
+*key*.json
+gsheets_key.json
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# ロックファイル・一時ファイル
+*.lock
+.export.lock
+.analyze.lock
+.price_fetch.lock
+*.tmp
+
+# OS/エディタ
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

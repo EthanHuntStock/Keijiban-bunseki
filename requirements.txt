@@ -1,0 +1,7 @@
+# ★2026-08-19追加(Streamlit Community Cloudデプロイ用)。
+# public_dashboard.py実行に必要な最小依存(ローカル検証済みバージョンを目安に記載)。
+streamlit>=1.59.0
+plotly>=6.8.0
+requests>=2.34.2
+beautifulsoup4>=4.15.0
+streamlit-autorefresh>=1.0.1
