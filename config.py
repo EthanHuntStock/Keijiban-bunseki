@@ -522,6 +522,12 @@ def ensure_public_export_dir():
 # (ローカル環境ではこの分岐に一切影響しない=既存の全selftest/実行を壊さない)。
 PUBLIC_JSON_SOURCE_URL = os.environ.get("BBS_PUBLIC_JSON_URL")
 
+# ★2026-08-20追加(ユーザー依頼: 公開サイトの閲覧者数を集計して表示)。既存の
+# Google Sheets連携基盤を流用し、Google Apps Script Web App(doGet・visit_counter
+# タブへ1加算/読取)のURLをここで受ける。未設定なら公開ダッシュボード側で
+# バッジ自体を表示しない(fail-soft・新しい第三者サービスへは接続しない設計)。
+PUBLIC_VISIT_COUNTER_URL = os.environ.get("BBS_VISIT_COUNTER_URL")
+
 
 # ============================================================================
 # Google Sheets 同期(public_sheets_sync.py) — public_export.py の latest.json を

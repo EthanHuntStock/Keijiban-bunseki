@@ -88,6 +88,33 @@ def _header(rec):
         unsafe_allow_html=True)
     st.caption(f"更新時刻: {gen_at or '不明'}"
                f"（このページは{PUBLIC_DASHBOARD_AUTOREFRESH_SEC}秒毎に自動更新されます）")
+    _visit_counter_badge()
+
+
+# ============================================================================
+# ★2026-08-20追加(ユーザー依頼: 公開サイトの閲覧者数を集計して表示)。
+# 既存のGoogle Sheets連携基盤上のGoogle Apps Script Web App(config側で説明)へ
+# 問い合わせてバッジ表示する。streamlit-autorefresh(60秒毎)による定期rerunの
+# たびに加算すると「閲覧者数」でなく「ページ再読込回数」を数えてしまうため、
+# st.session_stateで1ブラウザセッション(タブ)につき1回だけ加算(action=hit)し、
+# 以降のrerunはaction=read(加算なし)で現在値だけ取得し直して表示を新鮮に保つ。
+# URL未設定・通信失敗時はバッジ自体を表示しない(fail-soft)。
+# ============================================================================
+def _visit_counter_badge():
+    url = config.PUBLIC_VISIT_COUNTER_URL
+    if not url:
+        return
+    action = "read" if st.session_state.get("_visit_counted") else "hit"
+    count = public_export.record_visit(url, action=action)
+    if action == "hit":
+        st.session_state["_visit_counted"] = True
+    if count is not None:
+        st.session_state["_visit_count"] = count
+    else:
+        count = st.session_state.get("_visit_count")
+    if count is None:
+        return
+    st.caption(f"👀 累計閲覧数: {count:,}")
 
 
 # ============================================================================

@@ -143,7 +143,53 @@ def _price_ohlc_by_date(price_daily, gmtoffset=None):
     return out
 
 
-def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14):
+def _daily_ohlc_from_intraday(price_intraday, gmtoffset=None):
+    """★2026-08-20追加(ユーザー指摘: 「過去14日間の推移は自己データで作成して
+    いるのでは」を受けた改善)。price_fetch.load_price(config.PRICE_INTRADAY_PATH)
+    の5分足バーをJST日付ごとに集計し、{date: {open, high, low, close, volume}}を
+    組み立てる純関数(ネット非依存)。_price_ohlc_by_date()と同じ形の辞書を返す。
+
+    背景: Yahoo Finance APIの日足(interval=1d)は日付切替直後の数十分〜1時間程度、
+    直近営業日の終値が一時的にnullで返ってくることが実測で確認された(2026-08-20
+    未明に実際に発生・price_fetch.parse_chart_jsonがnull終値のbarを正しく除外する
+    ため、その日がohlc_by_dateから丸ごと欠落する)。一方、日中足(interval=5m)は
+    その営業日の間ずっと収集済みの実データを保持しており(直近5日分)、そこから
+    自前でOHLCVを組み立てれば同じ値が独立に得られる(実測でYahoo公式日足の
+    OHLCと完全一致することを確認済み・volumeのみ5分足の合算のため若干のズレが
+    生じ得る)。_price_ohlc_by_date()の呼び手は、この関数の結果を「日足に無い日を
+    埋める補完専用」として使う(日足が既に持つ日は上書きしない=公式値を優先)。
+    """
+    price_intraday = price_intraday or {}
+    bars = price_intraday.get("bars") or []
+    meta = price_intraday.get("meta") or {}
+    off = gmtoffset if gmtoffset is not None else (meta.get("gmtoffset") or 32400)
+    buckets = {}
+    for b in bars:
+        ts = b.get("ts")
+        c = b.get("close")
+        if ts is None or c is None:
+            continue
+        d = dt.datetime.utcfromtimestamp(ts + off).strftime("%Y-%m-%d")
+        o, h, low = b.get("open"), b.get("high"), b.get("low")
+        vol = b.get("volume") or 0
+        if d not in buckets:
+            buckets[d] = {"open": o if o is not None else c,
+                         "high": h if h is not None else c,
+                         "low": low if low is not None else c,
+                         "close": c, "volume": vol}
+        else:
+            cur = buckets[d]
+            if h is not None:
+                cur["high"] = max(cur["high"], h)
+            if low is not None:
+                cur["low"] = min(cur["low"], low)
+            cur["close"] = c
+            cur["volume"] += vol
+    return buckets
+
+
+def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14,
+                                          price_intraday=None):
     """直近 days **営業日**分の [{date, price_open, price_high, price_low, price_close,
     bull_ratio, bear_ratio}, ...] を組み立てる。純関数。
 
@@ -165,9 +211,20 @@ def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14):
 
     ★2026-08-19(追加): ユーザー依頼「価格推移に出来高を足せますか」を受け
     price_volume(その日の出来高)も追加。
+
+    ★2026-08-20追加(ユーザー指摘への対応): price_intraday(省略可)を渡すと、
+    Yahoo日足(price_daily)に無い日(=日付切替直後の一時的なnull終値など)を
+    自前の日中足集計(_daily_ohlc_from_intraday)で補完する。日足に既にある日は
+    公式値を優先し上書きしない(補完はあくまでフォールバック)。price_intraday
+    省略時は従来通り日足のみを使う(既存呼び出し元の動作を壊さない)。
     """
     by_date = _last_snapshot_per_day(snapshot_rows)
     ohlc_by_date = _price_ohlc_by_date(price_daily)
+    if price_intraday:
+        intraday_by_date = _daily_ohlc_from_intraday(price_intraday)
+        for d, ohlc in intraday_by_date.items():
+            if d not in ohlc_by_date:
+                ohlc_by_date[d] = ohlc
     out = []
     for d in sorted(ohlc_by_date)[-days:]:
         snap = by_date.get(d) or {}
@@ -646,6 +703,45 @@ def load_public_latest_from_url(url, timeout=None):
         return None
 
 
+def _parse_visit_counter_response(text):
+    """★2026-08-20追加(ユーザー依頼: 公開サイトの閲覧者数を集計して表示)。
+    閲覧数カウンター用Google Apps Script Web App(doGet)の応答本文
+    (JSON文字列 例 '{"count": 42}')をパースする純関数(ネット非依存・
+    record_visit()から分離してselftest対象にする=_parse_public_json_csvと
+    同じ「純関数とネットワークI/Oの分離」パターン)。不正/空応答はNone(fail-soft)。
+    """
+    try:
+        data = json.loads(text or "")
+        count = data.get("count")
+        return int(count) if count is not None else None
+    except Exception:
+        return None
+
+
+def record_visit(url, action="hit", timeout=None):
+    """★2026-08-20追加(ユーザー依頼: 公開サイトの閲覧者数を集計して表示)。
+    Google Sheetsを裏側の永続化先とする閲覧数カウンター(Google Apps Script
+    Web App・doGet)へ問い合わせる。新しい第三者サービスへは接続せず、既に
+    承認済みのGoogle Sheets連携基盤(public_sheets_sync.py)を流用する設計。
+    action="hit" は1加算してから現在値を返す、action="read" は加算せず現在値
+    のみ返す(public_dashboard.py側で1ブラウザセッションにつき1回だけ"hit"を
+    呼び、以降の自動更新では"read"のみにしてページ再読込回数の水増しを防ぐ)。
+
+    fail-soft: URL未設定・通信失敗・不正応答いずれも例外を投げずNoneを返す
+    (呼び手はバッジを表示しないだけでアプリ自体はクラッシュしない)。
+    """
+    if not url:
+        return None
+    import requests
+    try:
+        r = requests.get(url, params={"action": action}, timeout=timeout or 8)
+        if r.status_code != 200:
+            return None
+        return _parse_visit_counter_response(r.text)
+    except Exception:
+        return None
+
+
 def load_public_history():
     """history.jsonl を list で。無ければ []。"""
     p = config.PUBLIC_EXPORT_HISTORY_PATH
@@ -748,7 +844,11 @@ def _build_from_live_data(with_commentary=False):
     snaps = jsonl_window.read_jsonl_recent(config.SNAPSHOTS_PATH,
                                            days=TREND_READ_WINDOW_DAYS)
     trend = trend_14d_from_snapshots(snaps)
-    pss = price_sentiment_series_from_snapshots(snaps, price_daily)
+    # ★2026-08-20: price_intradayを渡し、Yahoo日足に一時的に無い日(日付切替直後の
+    # null終値等)を自前の日中足集計で補完できるようにする(_price_ohlc_by_dateの
+    # docstring参照)。
+    pss = price_sentiment_series_from_snapshots(snaps, price_daily,
+                                                price_intraday=price_intraday)
     regime = _load_regime_readonly()
     intraday_today = intraday_today_series(snaps, price_intraday)
     # ★2026-08-19追加(ユーザー依頼「AI分析はPTS・米国ADRの時間帯もそれらの値を分析
