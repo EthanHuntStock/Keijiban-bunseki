@@ -214,15 +214,21 @@ def _price_and_sentiment_charts(rec):
         st.markdown("**過去14日間のセンチメント推移（強気/弱気/中立比率）**")
         if HAS_PLOTLY:
             f = go.Figure()
+            # ★2026-08-20: ユーザー依頼「グラフの線を太く」「凡例が横軸表記に
+            # かぶらないように」を受け、線幅を2→3(中立は1→1.5)へ太くし、
+            # 凡例をプロット領域の"上"に明示配置(yanchor="bottom", y=1.02)して
+            # 横軸ラベルとの重なりを避ける。上部余白(margin.t)もその分広げる。
             f.add_trace(go.Scatter(x=date_labels, y=bulls, name="強気", mode="lines",
-                                   line=dict(color=COL["red"], width=2)))
+                                   line=dict(color=COL["red"], width=5)))
             f.add_trace(go.Scatter(x=date_labels, y=bears, name="弱気", mode="lines",
-                                   line=dict(color=COL["blue"], width=2)))
+                                   line=dict(color=COL["blue"], width=5)))
             f.add_trace(go.Scatter(x=date_labels, y=neutrals, name="中立", mode="lines",
-                                   line=dict(color=COL["grey"], width=1, dash="dot")))
+                                   line=dict(color=COL["grey"], width=2.5, dash="dot")))
             f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
-                            height=260, margin=dict(l=8, r=8, t=8, b=8),
-                            font=dict(color=COL["text"]), legend=dict(orientation="h"),
+                            height=280, margin=dict(l=8, r=8, t=36, b=8),
+                            font=dict(color=COL["text"]),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                       xanchor="left", x=0),
                             xaxis=dict(type="category"),
                             yaxis=dict(tickformat=".0%", gridcolor=COL["border"]))
             st.plotly_chart(f, width="stretch")
@@ -288,13 +294,17 @@ def _intraday_today_charts(rec):
             bulls = [p.get("bull_ratio") for p in sent_pts]
             bears = [p.get("bear_ratio") for p in sent_pts]
             f = go.Figure()
+            # ★2026-08-20: ユーザー依頼「線を太く」「凡例が横軸表記にかぶらない
+            # ように」に対応(14日チャートの本日版と同じ設計)。
             f.add_trace(go.Scatter(x=times, y=bulls, name="強気", mode="lines",
-                                   line=dict(color=COL["red"], width=2)))
+                                   line=dict(color=COL["red"], width=5)))
             f.add_trace(go.Scatter(x=times, y=bears, name="弱気", mode="lines",
-                                   line=dict(color=COL["blue"], width=2)))
+                                   line=dict(color=COL["blue"], width=5)))
             f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
-                            height=220, margin=dict(l=8, r=8, t=8, b=8),
-                            font=dict(color=COL["text"]), legend=dict(orientation="h"),
+                            height=240, margin=dict(l=8, r=8, t=36, b=8),
+                            font=dict(color=COL["text"]),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                       xanchor="left", x=0),
                             yaxis=dict(tickformat=".0%", gridcolor=COL["border"]))
             st.plotly_chart(f, width="stretch")
         else:

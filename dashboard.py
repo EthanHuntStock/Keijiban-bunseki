@@ -107,6 +107,16 @@ COL = {
 REGIME_BANDS = [("calm", "#D6F0E0"), ("normal", "#D6E4FA"),
                 ("elevated", "#FBE7C6"), ("extreme", "#F7CFCF")]
 
+# ★2026-08-20追加(ユーザー依頼「ボラ・レジーム帯の英語の記載は日本語に」)。
+# REGIME_BANDSの英語キー(calm/normal/elevated/extreme)自体は
+# signal_engine.classify_regime()等が返す内部データ値と一致させる必要があるため
+# そのまま維持し、UI表示のときだけこの辞書で日本語ラベルに変換する
+# (=データと表示ロジックを分離・キーの一致判定には影響しない)。
+_REGIME_LABEL_JA = {
+    "calm": "平穏", "normal": "平常", "elevated": "警戒", "extreme": "急変",
+    "calibrating": "較正中",
+}
+
 # 価格×センチメントの時間レンジ。表示幅に応じて足を切替(狭い→1分足・中→5分足・広→日足)。
 RANGE_OPTIONS = ["1時間", "3時間", "5時間", "12時間", "1日", "3日", "5日", "1ヶ月", "6ヶ月"]
 RANGE_DAILY = {"1ヶ月", "6ヶ月"}            # 日足
@@ -998,8 +1008,11 @@ def regime_band(latest_export):
     if HAS_PLOTLY:
         f = go.Figure()
         for name, color in REGIME_BANDS:
+            # ★2026-08-20: バー上のラベル(text)・凡例名(name)は日本語表示に変換
+            # (英語キー自体はデータ照合用にそのまま=_REGIME_LABEL_JA参照)。
+            label = _REGIME_LABEL_JA.get(name, name)
             f.add_trace(go.Bar(x=[25], y=["regime"], orientation="h", marker_color=color,
-                               name=name, text=name, textposition="inside",
+                               name=label, text=label, textposition="inside",
                                insidetextanchor="middle", hoverinfo="name"))
         if vrs is not None:
             f.add_vline(x=vrs * 100, line=dict(color=COL["text"], width=3))
@@ -1010,10 +1023,10 @@ def regime_band(latest_export):
                         yaxis=dict(visible=False), font=dict(color=COL["text"]))
         st.plotly_chart(f, width="stretch")
     if vrs is None:
-        st.markdown("<div class='calib'>レジーム: <b>calibrating</b> "
+        st.markdown("<div class='calib'>レジーム: <b>較正中</b> "
                     "(BVP未確立・dense session蓄積待ち)</div>", unsafe_allow_html=True)
     else:
-        st.caption(f"現在レジーム: {regime}  (BVP={vrs})")
+        st.caption(f"現在レジーム: {_REGIME_LABEL_JA.get(regime, regime)}  (BVP={vrs})")
 
 
 def _direction_view(S):
