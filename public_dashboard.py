@@ -223,7 +223,7 @@ def _price_and_sentiment_charts(rec):
             f.add_trace(go.Scatter(x=date_labels, y=bears, name="弱気", mode="lines",
                                    line=dict(color=COL["blue"], width=5)))
             f.add_trace(go.Scatter(x=date_labels, y=neutrals, name="中立", mode="lines",
-                                   line=dict(color=COL["grey"], width=2.5, dash="dot")))
+                                   line=dict(color=COL["grey"], width=4, dash="dot")))
             f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
                             height=280, margin=dict(l=8, r=8, t=36, b=8),
                             font=dict(color=COL["text"]),
