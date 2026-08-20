@@ -576,6 +576,24 @@ def load_live_price_from_url(url, timeout=None):
         return None
 
 
+def load_sentiment_24h_from_url(url, timeout=None):
+    """★2026-08-20緊急追加(ユーザー報告「過去24時間のセンチメント推移が表示
+    されない」への対応)。sentiment_last_24h(過去24時間・10分毎)をjson_blobへ
+    そのまま含めるとGoogle Sheetsの1セル上限(50,000字)を超過し、json_blob全体の
+    同期がAPIError[400]で毎回失敗する重大障害を引き起こしたため、
+    public_sheets_sync.build_sentiment_24h_values()が書く専用タブ(sentiment_24h)
+    から個別に読む。load_live_price_from_url()と同じCSVブリッジパターン。
+    fail-soft: 失敗時はNone(呼び手はrec['sentiment_last_24h']へフォールバック)。"""
+    import requests
+    try:
+        r = requests.get(url, timeout=timeout or 8)
+        if r.status_code != 200:
+            return None
+        return _parse_public_json_csv(r.text)
+    except Exception:
+        return None
+
+
 def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14,
                                           price_intraday=None):
     """直近 days **営業日**分の [{date, price_open, price_high, price_low, price_close,

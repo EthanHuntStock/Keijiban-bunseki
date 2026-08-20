@@ -443,16 +443,23 @@ def _effective_today_buckets(actual_times):
 # ============================================================================
 # ★2026-08-19追加(ユーザー依頼): 当日の価格推移とセンチメント推移(イントラデイ)
 # ============================================================================
-def _intraday_today_charts(rec, live_price=None):
+def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None):
     intraday = rec.get("intraday_today") or {}
     price_pts = intraday.get("price") or []
     # ★2026-08-20変更(ユーザー指示「本日のセンチメント推移は、過去24時間の10分毎の
     # センチメントの推移に」): 従来はintraday_today['sentiment'](本日暦日ぶんのみ・
-    # snapshot生成の実際の間隔のまま)を使っていたが、rec['sentiment_last_24h']
+    # snapshot生成の実際の間隔のまま)を使っていたが、sentiment_last_24h
     # (public_export.sentiment_last_24h_10min()・過去24時間を10分刻みにリサンプル
     # 済み)へ切り替える。intraday_today_series()側の'sentiment'計算自体は既存の
     # selftestが対象にしているため削除しない(未使用のまま残す)。
-    sent_pts = rec.get("sentiment_last_24h") or []
+    # ★2026-08-20緊急追加: sentiment_last_24hはセル上限超過を避けるため専用タブ
+    # (sentiment_24h)へ分離した(config.PUBLIC_SENTIMENT_24H_SOURCE_URLのdocstring
+    # 参照)。取得できていればそちらを優先し、未設定/失敗時のみrec直下の
+    # sentiment_last_24h(ローカル直接読み時や旧同期が残っている場合)を使う。
+    if sentiment_24h_remote and sentiment_24h_remote.get("sentiment_last_24h"):
+        sent_pts = sentiment_24h_remote["sentiment_last_24h"]
+    else:
+        sent_pts = rec.get("sentiment_last_24h") or []
     # ★2026-08-20追加(ユーザー指示「本日の推移の株価も60秒毎に最新値に」)。
     # live_price(kabuティックから60秒毎に生成)に本日の10分足系列があれば、
     # Sheets由来(最大10分古い)のものより優先して丸ごと差し替える。センチメント
@@ -723,6 +730,16 @@ def main():
     if config.PUBLIC_LIVE_PRICE_SOURCE_URL:
         live_price = public_export.load_live_price_from_url(config.PUBLIC_LIVE_PRICE_SOURCE_URL)
 
+    # ★2026-08-20緊急追加(ユーザー報告「過去24時間のセンチメント推移が表示されない」
+    # への対応): sentiment_last_24hはセル上限超過を避けるためjson_blobから分離し
+    # 専用タブ(sentiment_24h)へ書かれる設計に変更した(config.PUBLIC_SENTIMENT_24H_SOURCE_URL
+    # のdocstring参照)。未設定/失敗時はrec['sentiment_last_24h']へフォールバックする
+    # (_intraday_today_charts側で処理)。
+    sentiment_24h_remote = None
+    if config.PUBLIC_SENTIMENT_24H_SOURCE_URL:
+        sentiment_24h_remote = public_export.load_sentiment_24h_from_url(
+            config.PUBLIC_SENTIMENT_24H_SOURCE_URL)
+
     _header(rec, live_price)
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -760,7 +777,7 @@ def main():
                "(Antweiler & Frank, 2004)。")
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    _intraday_today_charts(rec, live_price)
+    _intraday_today_charts(rec, live_price, sentiment_24h_remote)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     _price_and_sentiment_charts(rec, live_price)

@@ -543,6 +543,15 @@ KABU_PROTO1_285A_TICKS_DIR = os.environ.get(
 # 使わず、フォールバック(Yahoo直接取得→Sheets由来のrec['price'])へ順に落ちる。
 PUBLIC_LIVE_PRICE_SOURCE_URL = os.environ.get("BBS_LIVE_PRICE_URL")
 
+# ★2026-08-20緊急追加(ユーザー報告「過去24時間のセンチメント推移が表示されない」
+# への対応): sentiment_last_24h(過去24時間・10分毎)はjson_blobへ含めると
+# Google Sheetsの1セル上限(50,000字)を超過するため、専用タブ(sentiment_24h)へ
+# 分離した(public_sheets_sync.TAB_SENTIMENT_24H参照)。クラウド公開ダッシュボード
+# 側がそのタブを読むための「ウェブに公開」CSV URL。未設定ならこの経路を使わず、
+# rec['sentiment_last_24h'](ローカル直接読み・またはjson_blob同期が古い版のまま
+# だった場合はキー自体が無い)へフォールバックする。
+PUBLIC_SENTIMENT_24H_SOURCE_URL = os.environ.get("BBS_SENTIMENT_24H_URL")
+
 # ★2026-08-20追加(ユーザー提案「live_price_bridgeの死活監視」)。live_priceタブの
 # generated_atがこの分数より古ければ、公開ダッシュボードのヘッダーに軽い注意表示を
 # 出す(public_export.live_price_staleness_minutes参照)。1分毎更新の設計に対し、
