@@ -802,7 +802,10 @@ def main():
               config.SIG_OVERHEAT_TH, [COL["green"], COL["yellow"], COL["orange"]])
         _meter_sparkline(board_history_14d, "overheat_score", COL["orange"])
     with top[1]:
-        _gauge(board.get("capitulation_score") or 0, "😱 阿鼻叫喚(セリクラ)",
+        # ★2026-08-21修正(ユーザー指摘「タイトルが『阿鼻叫喚』になっているので
+        # 『メーター』を足して」): 灼熱側は"🔥 灼熱メーター(過熱)"と"メーター"を
+        # 含むのに対し、こちらは"メーター"が抜けていた表記不統一を是正。
+        _gauge(board.get("capitulation_score") or 0, "😱 阿鼻叫喚メーター(セリクラ)",
               config.SIG_CAPITULATION_FIRE, [COL["green"], COL["orange"], COL["red"]])
         _meter_sparkline(board_history_14d, "capitulation_score", COL["red"])
     with top[2]:

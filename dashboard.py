@@ -953,7 +953,9 @@ def tab_cockpit(S, latest_export, analyzed, raw, ctrl):
         _gauge(g["overheat"], "🔥 灼熱メーター(過熱)", ctrl["th_overheat"],
                [COL["green"], COL["yellow"], COL["orange"]])
     with top[1]:
-        _gauge(g["capitulation"], "😱 阿鼻叫喚(セリクラ)", ctrl["th_capit"],
+        # ★2026-08-21修正(ユーザー指摘・public_dashboard.py側と同じ是正): 灼熱側は
+        # "メーター"を含むのに対しこちらは抜けていた表記不統一を是正。
+        _gauge(g["capitulation"], "😱 阿鼻叫喚メーター(セリクラ)", ctrl["th_capit"],
                [COL["green"], COL["orange"], COL["red"]])
     with top[2]:
         regime_band(latest_export)
