@@ -993,8 +993,13 @@ def _gauge(value, title, fire_th, colors):
                              {"range": [min(50, fire_th), fire_th], "color": _rgba(colors[1], 0.62)},
                              {"range": [fire_th, 100], "color": _rgba(colors[2], 0.78)}],
                    "threshold": {"line": {"color": COL["text"], "width": 3}, "value": fire_th}}))
+        # ★2026-08-20修正(ユーザー指摘「100の目盛りが見切れている」): 右マージン18pxでは
+        # "100"の目盛りラベル(幅約18px)を収めきれず、実測でプロット右端から約8px
+        # はみ出していた(ブラウザのgetBoundingClientRectで直接確認)。左右マージンを
+        # 30pxに広げ、ゲージ本体を少し縮めることでラベルの収まる余白を確保する
+        # (左右対称を維持=見た目のバランスを崩さない)。
         f.update_layout(paper_bgcolor=COL["panel"], height=210,
-                        margin=dict(l=18, r=18, t=40, b=6), font=dict(color=COL["text"]))
+                        margin=dict(l=30, r=30, t=40, b=6), font=dict(color=COL["text"]))
         st.plotly_chart(f, width="stretch")
     else:
         st.markdown(f"**{title}: {value}/100** (発火>{fire_th})")
