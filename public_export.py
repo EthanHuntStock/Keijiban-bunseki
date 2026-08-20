@@ -423,6 +423,97 @@ def kabu_tick_today_summary(rows, today=None):
     return {"price_pts": price_pts, "day_bar": day_bar, "last": last_price, "last_time": last_time}
 
 
+def board_score_daily_series(history_rows, days=14, today=None):
+    """★2026-08-20追加(ユーザー提案「灼熱/阿鼻叫喚メーターに推移スパークラインを」)。
+    history.jsonl相当の行リスト(古い→新しい順の想定・append-onlyなので実際そうなる)
+    から、日付(generated_atの先頭10文字・JST日付文字列)ごとに「その日最後に記録された」
+    board.overheat_score/capitulation_scoreを1点だけ拾い、直近days日ぶんを日付昇順で
+    返す純関数。today(省略時はJST今日)以降の行は除外する(=今日ぶんは含めない・
+    呼び手[_build_from_live_data]が今まさに計算した最新値を別途1点追加する設計。
+    理由: history.jsonlは1日に何度もappendされるため、今日分をここに混ぜると
+    「今日の最後の値」ではなく「このrunより前の直近の値」を拾ってしまい、
+    呼び手が本来渡したい"今この瞬間"の値と二重管理になる)。
+    データ蓄積が浅くdays日に満たない場合はある分だけを返す(fail-soft・捏造しない)。
+    """
+    today = today or (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    by_date = {}
+    for row in history_rows or []:
+        gen_at = (row or {}).get("generated_at")
+        if not gen_at:
+            continue
+        date = str(gen_at)[:10]
+        if date >= today:
+            continue
+        board = (row or {}).get("board") or {}
+        by_date[date] = {"date": date, "overheat_score": board.get("overheat_score"),
+                         "capitulation_score": board.get("capitulation_score")}
+    ordered = [by_date[d] for d in sorted(by_date)]
+    return ordered[-days:] if days else ordered
+
+
+def signal_state_changes(current_cards, history_rows, today=None):
+    """★2026-08-20追加(ユーザー提案「9指標の状態変化が分かるように」)。
+    現在の9指標カード(current_cards・signals.compute_signals()のS['cards']相当、
+    各要素は{name, state, ...})と、history.jsonlの中で直近に記録された取引日
+    (today[省略時はJST今日]より前で最新の日)の最終スナップショットのsignal_cardsを
+    比較し、発火状態(OK/警戒/発火)が変わったカードだけを返す純関数。
+    比較対象となる過去日のスナップショットが1件も無い(運用開始直後でhistory.jsonl
+    が浅い等)場合は、比較不能を「変化なし」と誤表示しないよう空リストを返す
+    (fail-soft)。
+    """
+    today = today or (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    by_date = {}
+    for row in history_rows or []:
+        gen_at = (row or {}).get("generated_at")
+        if not gen_at:
+            continue
+        date = str(gen_at)[:10]
+        if date >= today:
+            continue
+        cards = (row or {}).get("signal_cards")
+        if cards:
+            by_date[date] = cards
+    if not by_date:
+        return []
+    last_date = sorted(by_date)[-1]
+    prev_state = {c.get("name"): c.get("state") for c in (by_date[last_date] or [])}
+    changes = []
+    for c in current_cards or []:
+        name = c.get("name")
+        cur_state = c.get("state")
+        old_state = prev_state.get(name)
+        if old_state is not None and old_state != cur_state:
+            changes.append({"name": name, "from": old_state, "to": cur_state,
+                            "compared_date": last_date})
+    return changes
+
+
+def previous_deltas(rec):
+    """★2026-08-20追加(ユーザー提案「AI考察の前回比較を視覚的なバッジでも」)。
+    rec['previous'](前回生成時点のスナップショット・previous_snapshot_for_ai_commentary
+    が組み立てたもの)と、rec自身の現在値(price/board)から、価格・強気比率・弱気比率・
+    投稿数の差分(現在−前回)を計算する純関数。UI側(st.metricのdelta引数等)にそのまま
+    渡せる形で返す。比較不能な項目(値欠損・previous自体が無い等)はNone(fail-soft・
+    ゼロで埋めて「変化なし」と誤表示しない)。
+    """
+    prev = (rec or {}).get("previous") or {}
+    price = (rec or {}).get("price") or {}
+    board = (rec or {}).get("board") or {}
+
+    def _diff(cur, old):
+        if cur is None or old is None:
+            return None
+        return cur - old
+
+    return {
+        "price_last": _diff(price.get("last"), prev.get("price_last")),
+        "bull_ratio": _diff(board.get("bull_ratio"), prev.get("bull_ratio")),
+        "bear_ratio": _diff(board.get("bear_ratio"), prev.get("bear_ratio")),
+        "post_count_today": _diff(board.get("post_count_today"), prev.get("post_count_today")),
+        "previous_generated_at": prev.get("generated_at"),
+    }
+
+
 def next_commentary_failure_streak(prev_streak, succeeded):
     """★2026-08-20追加(ユーザー提案「AI考察生成の失敗が静かに握りつぶされないように」)。
     AI考察(ai_commentary)生成の成功/失敗から、次の「連続失敗回数」を返す純関数。
@@ -773,7 +864,8 @@ def extended_hours_summary(adr_pts_data):
 def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None,
                         generated_at=None, price_sentiment_series=None,
                         ai_commentary=None, regime=None, intraday_today=None,
-                        previous=None, extended_hours=None):
+                        previous=None, extended_hours=None,
+                        board_history_14d=None, signal_changes=None):
     """
     既存の集計結果から公開用レコードを組み立てる純関数。個別投稿情報は一切参照しない
     (引数として生コメントのリストを受け取らない設計=構造的に混入を防ぐ)。
@@ -813,6 +905,14 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                    {tse_close, pts, adr} のdict、または None。None(既定)なら出力
                    レコードにキー自体を含めない(既存動作を壊さない・フィード取得
                    失敗時等の想定挙動)。
+      board_history_14d - ★2026-08-20追加(ユーザー提案「メーターに推移スパークラインを」)。
+                   board_score_daily_series() が返す
+                   [{date, overheat_score, capitulation_score}, ...] のリスト、または
+                   None。None(既定)なら出力レコードにキー自体を含めない。
+      signal_changes - ★2026-08-20追加(ユーザー提案「9指標の状態変化が分かるように」)。
+                   signal_state_changes() が返す [{name, from, to, compared_date}, ...]
+                   のリスト、または None。None(既定)なら出力レコードにキー自体を
+                   含めない。出力レコード上のキー名は"signal_state_changes"。
     """
     S = S or {}
     ratios = S.get("ratios") or {}
@@ -886,6 +986,10 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                     "change_pct": adr.get("change_pct"), "time": adr.get("time")}
                    if adr else None),
         }
+    if board_history_14d is not None:
+        rec["board_history_14d"] = list(board_history_14d)
+    if signal_changes is not None:
+        rec["signal_state_changes"] = list(signal_changes)
     return rec
 
 
@@ -1219,6 +1323,21 @@ def _build_from_live_data(with_commentary=False):
     # なってしまうため)。
     previous = previous_snapshot_for_ai_commentary(load_public_latest())
 
+    # ★2026-08-20追加(ユーザー提案「灼熱/阿鼻叫喚メーターに推移スパークラインを」
+    # 「9指標の状態変化が分かるように」)。history.jsonl(今回の書き出し"前"の状態・
+    # まだ今回ぶんは含まれない)から過去日ぶんの日別最終値を読み、今回計算済みの
+    # 現在値(S['gauges']/S['cards'])を1点追加して公開レコードへ埋め込む(=cloud側の
+    # ダッシュボードは新たなSheets同期を増やさず、既存のjson_blob同期だけで
+    # このデータも受け取れる)。
+    history_rows = load_public_history()
+    today_jst = (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    gauges = S.get("gauges") or {}
+    board_history_14d = board_score_daily_series(history_rows) + [{
+        "date": today_jst, "overheat_score": gauges.get("overheat"),
+        "capitulation_score": gauges.get("capitulation"),
+    }]
+    signal_changes = signal_state_changes(S.get("cards") or [], history_rows)
+
     ai_commentary = None
     if with_commentary:
         # まず①(price_sentiment_series 込み)の公開レコードを組み立て、
@@ -1226,7 +1345,9 @@ def _build_from_live_data(with_commentary=False):
         # (=個別投稿を一切受け取れない関数へは、検証済みの集計dictしか渡らない)。
         prelim = build_public_record(S, price_intraday, trend, price_sentiment_series=pss,
                                      regime=regime, intraday_today=intraday_today,
-                                     previous=previous, extended_hours=extended_hours)
+                                     previous=previous, extended_hours=extended_hours,
+                                     board_history_14d=board_history_14d,
+                                     signal_changes=signal_changes)
         errs = validate_no_leak(prelim)
         if errs:
             _log(f"ERROR leak detected before commentary generation, skip: {errs}")
@@ -1246,7 +1367,9 @@ def _build_from_live_data(with_commentary=False):
     return write_public_export(S, price_intraday, trend, price_sentiment_series=pss,
                                ai_commentary=ai_commentary, regime=regime,
                                intraday_today=intraday_today, previous=previous,
-                               extended_hours=extended_hours)
+                               extended_hours=extended_hours,
+                               board_history_14d=board_history_14d,
+                               signal_changes=signal_changes)
 
 
 def _load_regime_readonly():

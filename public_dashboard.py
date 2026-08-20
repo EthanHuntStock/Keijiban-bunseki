@@ -166,6 +166,34 @@ def _visit_counter_badge():
 
 
 # ============================================================================
+# ★2026-08-20追加(ユーザー提案「灼熱/阿鼻叫喚メーターに推移スパークラインを」)。
+# 「今の値」が歴史的に高いのか低いのか一目で分かるよう、各ゲージの下に軸目盛り
+# 無しの小さな折れ線(スパークライン)を添える。データ源はrec['board_history_14d']
+# (public_export.board_score_daily_series()が組み立て済み・cloud側も既存の
+# json_blob同期だけで受け取れる=新たな通信を増やさない)。
+# ============================================================================
+def _meter_sparkline(history_14d, score_key, line_color):
+    pts = [p for p in (history_14d or []) if p.get(score_key) is not None]
+    if len(pts) < 2:
+        st.caption("推移データ蓄積中です。")
+        return
+    date_labels = [_mmdd(p.get("date")) for p in pts]
+    values = [p.get(score_key) for p in pts]
+    if HAS_PLOTLY:
+        f = go.Figure(go.Scatter(x=date_labels, y=values, mode="lines+markers",
+                                 line=dict(color=line_color, width=2),
+                                 marker=dict(size=4)))
+        f.update_layout(height=70, margin=dict(l=4, r=4, t=2, b=18),
+                        paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
+                        xaxis=dict(type="category", showgrid=False,
+                                  tickfont=dict(size=9, color=COL["muted"])),
+                        yaxis=dict(showgrid=False, showticklabels=False))
+        st.plotly_chart(f, width="stretch", config={"displayModeBar": False})
+    else:
+        st.line_chart({score_key: values})
+
+
+# ============================================================================
 # (d) 9シグナル一覧(what-ifしきい値調整UIは含めない・現在値+閾値+バッジのみ)
 # ============================================================================
 _STATE_COLOR = {"発火": COL["red"], "警戒": COL["orange"], "OK": COL["green"]}
@@ -185,6 +213,17 @@ _SIGNAL_DESC = {
     "話題枯れ": "過去の平均と比べて本日の投稿数が著しく少ないか(閑散・関心低下のサイン)。",
     "投稿サージ": "過去の平均と比べて本日の投稿数が著しく多いか(急な注目集中のサイン)。",
 }
+
+
+# ★2026-08-20追加(ユーザー提案「9指標の状態変化が分かるように」)。前回の取引日
+# から状態(OK/警戒/発火)が変わった指標だけを一覧の直前に強調表示する。データ源は
+# rec['signal_state_changes'](public_export.signal_state_changes()が組み立て済み)。
+def _signal_changes_note(rec):
+    changes = rec.get("signal_state_changes") or []
+    if not changes:
+        return
+    lines = "、".join(f"「{c.get('name')}」{c.get('from')}→{c.get('to')}" for c in changes)
+    st.info(f"📌 前回の取引日({changes[0].get('compared_date', '')})からの状態変化: {lines}")
 
 
 def _signal_list(rec):
@@ -211,6 +250,19 @@ def _signal_list(rec):
             f"<span style='color:{COL['muted']};font-size:.88em'>{c.get('note', '')}</span>"
             f"<span>{chip_html}</span>"
             f"</div>", unsafe_allow_html=True)
+
+
+# ★2026-08-20: 「YYYY-MM-DD」→「M/D」表記への変換(ユーザー依頼「グラフの日付は
+# aug15でなく8/15に」)。元は_price_and_sentiment_charts内のローカル関数だったが、
+# メーター推移スパークライン(_meter_sparkline)でも同じ変換が必要になったため
+# モジュール直下へ引き上げて共用する。
+def _mmdd(d):
+    if not d or "-" not in d:
+        return d
+    parts = d.split("-")
+    if len(parts) != 3:
+        return d
+    return f"{int(parts[1])}/{int(parts[2])}"
 
 
 # ============================================================================
@@ -245,13 +297,6 @@ def _price_and_sentiment_charts(rec, live_price=None):
     # 既定の日付ティック書式(英語省略月名、例:Aug15)で表示してしまっていた。
     # 明示的に「月/日」形式のラベル文字列に変換し、x軸もcategory型にすることで
     # 意図した「8/15」表記・かつ非営業日ぶんの隙間なしの詰め表示にする。
-    def _mmdd(d):
-        if not d or "-" not in d:
-            return d
-        parts = d.split("-")
-        if len(parts) != 3:
-            return d
-        return f"{int(parts[1])}/{int(parts[2])}"
     date_labels = [_mmdd(d) for d in dates]
     closes = [p.get("price_close") for p in pss]
     bulls = [p.get("bull_ratio") for p in pss]
@@ -474,12 +519,42 @@ def _intraday_today_charts(rec, live_price=None):
                           "弱気": [p.get("bear_ratio") for p in sent_pts]})
 
 
+# ★2026-08-20追加(ユーザー提案「AI考察の前回比較を視覚的なバッジでも」)。
+# AI考察本文は前回比較を文章で触れているが、文中に埋もれて読み飛ばされやすいため、
+# 本文の直前にst.metricのdelta表示(▲▼＋色)で価格・強気/弱気比率を並べる。
+# データ源はpublic_export.previous_deltas(rec)(前回スナップショットが無ければ
+# 全項目Noneで返る=st.metricはdelta=Noneの時、矢印無しの通常表示になるので
+# 自然にフォールバックする)。
+def _previous_deltas_row(rec):
+    d = public_export.previous_deltas(rec)
+    if not d.get("previous_generated_at"):
+        return
+    price = rec.get("price") or {}
+    board = rec.get("board") or {}
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        last = price.get("last")
+        st.metric("株価", f"{last:,.0f}円" if last is not None else "—",
+                  delta=(f"{d['price_last']:+.0f}円" if d["price_last"] is not None else None))
+    with c2:
+        b = board.get("bull_ratio")
+        st.metric("強気比率", f"{b:.1%}" if b is not None else "—",
+                  delta=(f"{d['bull_ratio']*100:+.1f}pt" if d["bull_ratio"] is not None else None))
+    with c3:
+        r = board.get("bear_ratio")
+        st.metric("弱気比率", f"{r:.1%}" if r is not None else "—",
+                  delta=(f"{d['bear_ratio']*100:+.1f}pt" if d["bear_ratio"] is not None else None),
+                  delta_color="inverse")
+    st.caption(f"前回集計({d.get('previous_generated_at')})との比較")
+
+
 # ============================================================================
 # (g) AI考察
 # ============================================================================
 def _ai_commentary(rec):
     ac = rec.get("ai_commentary")
     st.markdown("#### 🤖 AI考察")
+    _previous_deltas_row(rec)
     if not ac or not ac.get("text"):
         st.caption("AI考察は準備中です。")
         return
@@ -488,6 +563,63 @@ def _ai_commentary(rec):
         f"border-radius:8px;padding:14px;color:{COL['text']};line-height:1.7'>"
         f"{ac['text']}</div>", unsafe_allow_html=True)
     st.caption(f"生成時刻: {ac.get('generated_at', '不明')}")
+
+
+# ============================================================================
+# ★2026-08-20追加(ユーザー提案「PTS/ADR情報の専用カード化」)。従来は
+# rec['extended_hours']をAI考察の本文(文章の一部)にしか使っておらず、翌営業日の
+# 値動きを気にする閲覧者が見つけにくかった。ヘッダー直下に小さな専用カードとして
+# 独立表示する(値が無い項目[休場・未取得等]は自然に非表示・fail-soft)。
+# ============================================================================
+def _extended_hours_card(rec):
+    eh = rec.get("extended_hours") or {}
+    pts = eh.get("pts")
+    adr = eh.get("adr")
+    if not pts and not adr:
+        return
+    cols = st.columns(2)
+    if pts:
+        with cols[0]:
+            chg = pts.get("change_pct")
+            chg_text = f"{chg:+.2f}%" if chg is not None else None
+            st.metric(f"PTS（{pts.get('time', '')}）",
+                      f"{pts['price']:,.0f}円" if pts.get("price") is not None else "—",
+                      delta=chg_text)
+    if adr:
+        with cols[1]:
+            chg = adr.get("change_pct")
+            chg_text = f"{chg:+.2f}%" if chg is not None else None
+            price_text = (f"{adr['price_yen']:,.0f}円"
+                         if adr.get("price_yen") is not None else "—")
+            st.metric(f"米国ADR（{adr.get('time', '')}）", price_text, delta=chg_text)
+    st.caption("PTS=東証取引時間外の私設取引システム／ADR=米国預託証券。"
+               "翌営業日の値動きの参考情報です(それ自体が売買シグナルではありません)。")
+
+
+# ============================================================================
+# ★2026-08-20追加(ユーザー提案「初見者向けの読み方ガイド」)。YouTube等からの
+# 流入者が専門用語(灼熱メーター・BVP・9指標等)で迷わないよう、ページ冒頭に
+# 折りたたみ式の全体像ガイドを置く(各指標個別の説明キャプションは既存だが、
+# 「まずどこを見ればいいか」の道案内が無かった)。既定は閉じた状態(collapsed)
+# =初見でなくリピーターの多くには不要な情報のため、常に開いて場所を取らない。
+# ============================================================================
+def _reading_guide():
+    with st.expander("📖 このダッシュボードの読み方（初めての方向け）"):
+        st.markdown(
+            "- **🔥灼熱メーター／😱阿鼻叫喚メーター**：掲示板の投稿内容から算出した"
+            "「過熱度」「セリングクライマックス度」の合成指標です。値が高いほど"
+            "投稿の偏り・熱量が大きいことを示しますが、売買のシグナルではありません。\n"
+            "- **ボラ・レジーム帯**：現在の値動きの荒さ(ボラティリティ)が"
+            "「平穏〜急変」のどの水準にあるかの目安です。\n"
+            "- **🎯シグナル発火状況（9指標）**：投稿の偏り・語彙・投稿量などを"
+            "9つの観点で統計的にチェックした一覧です。「発火」は閾値超過を示す"
+            "記述的なラベルであり、売買の推奨ではありません。\n"
+            "- **本日の推移／過去14日間の推移**：株価(ローソク足)と掲示板センチメント"
+            "(強気/弱気比率・投稿量)の推移です。\n"
+            "- **🤖AI考察**：上記の集計値だけをもとにAIが生成した文章です。"
+            "個別の投稿内容は一切含まれません。\n\n"
+            "本ダッシュボードは研究・エンタメ用途の情報提供であり、投資助言では"
+            "ありません。最終的な投資判断はご自身の責任で行ってください。")
 
 
 # ============================================================================
@@ -521,6 +653,7 @@ def main():
     # ★2026-08-19追加(ユーザー依頼「タイトルを最上部に書く」): ブラウザタブの
     # page_titleとは別に、ページ本文の最上部にも見出しとして明示する。
     st.markdown("### 📊 掲示板投稿の詳細分析による投資情報")
+    _reading_guide()
 
     # ★2026-08-19追加(ユーザー依頼: Streamlit Community Cloudへデプロイ)。
     # クラウド環境ではローカルPCのdata/public_export/latest.jsonへ直接アクセス
@@ -552,18 +685,22 @@ def main():
 
     top = st.columns([1.1, 1.1, 1.6])
     board = rec.get("board") or {}
+    board_history_14d = rec.get("board_history_14d") or []
     with top[0]:
         _gauge(board.get("overheat_score") or 0, "🔥 灼熱メーター(過熱)",
               config.SIG_OVERHEAT_TH, [COL["green"], COL["yellow"], COL["orange"]])
+        _meter_sparkline(board_history_14d, "overheat_score", COL["orange"])
     with top[1]:
         _gauge(board.get("capitulation_score") or 0, "😱 阿鼻叫喚(セリクラ)",
               config.SIG_CAPITULATION_FIRE, [COL["green"], COL["orange"], COL["red"]])
+        _meter_sparkline(board_history_14d, "capitulation_score", COL["red"])
     with top[2]:
         regime = rec.get("regime") or {}
         # dashboard.py の regime_band() は {"vol_regime_score":..., "vol_regime":...} を
         # 持つ dict を期待する(内部ダッシュボードでは signal_export/latest.json 相当)。
         # public_export側でも同じキー名に揃えてあるためそのまま渡せる。
         regime_band(regime)
+        _extended_hours_card(rec)
 
     st.markdown("#### 🎯 シグナル発火状況（9指標）")
     # ★2026-08-19追加(ユーザー依頼): 「発火」が何を意味するか一目でわかるよう説明を追加。
@@ -573,6 +710,7 @@ def main():
         "**売買のシグナルではなく**、「統計的に見て平常時より偏りが大きい状態」を"
         "示す記述的な警告ラベルです。🟢OK=平常範囲内　🟠警戒=やや偏りが大きい　"
         "🔴発火=しきい値超過(過熱・悲観が強い)。")
+    _signal_changes_note(rec)
     _signal_list(rec)
     st.caption("※研究・エンタメ用途・未検証。売買シグナルではありません。"
                "掲示板は方向よりボラを予測する傾向が文献で報告されています"
