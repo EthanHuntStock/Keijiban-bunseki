@@ -801,86 +801,90 @@ def intraday_today_series(snapshot_rows, price_intraday, today=None, adr_pts=Non
     return {"price": price_pts, "sentiment": sent_pts}
 
 
-def sentiment_last_24h_10min(snapshot_rows, now=None):
-    """★2026-08-20追加(ユーザー指示「本日のセンチメント推移は、過去24時間の10分毎の
-    センチメントの推移にしましょう」)。intraday_today_series()内のセンチメント部分
-    (「本日(暦日)ぶんの各snapshot行をそのまま1点ずつ」)には2つの制約があった:
-    (a)日をまたぐと0時でグラフが途切れる (b)点の間隔がsnapshot収集の実際の間隔
-    (深夜は疎・場中は密)のままバラつく。この関数はnow(省略時はJST現在時刻)から
-    遡って過去24時間ぶんのsnapshot行を対象に、10分刻みのバケットへリサンプルして
-    返す(暦日をまたいでも途切れない・間隔が揃う)。
+def sentiment_last_24h_10min(raw_rows, analyzed_rows, now=None):
+    """★2026-08-20追加・同日中に再設計(ユーザー指示「本日のセンチメント推移は、
+    過去24時間の10分毎のセンチメントの推移にしましょう」→ユーザー指摘「(収集が
+    まとまった時の)突出した投稿量は、投稿時刻でばらけさせるべきでは」)。
 
-    バケット内に複数snapshotがある場合は、そのバケット内で最後に観測された
-    bull_ratio/bear_ratio(=そのバケット終了時点の最新値)を採用する(ローソク足の
-    終値と同じ考え方)。
+    当初はsnapshots.jsonl(=収集/スナップショット実行のたびの巡回時刻)を基準に
+    バケット化していたため、収集側にバックログが溜まって一度に大量取得した場合
+    (実例2026-08-20: Yahoo!掲示板の未取得分19,801件を1回のrunでまとめて取得)、
+    実際にはもっと広い時間帯にわたって投稿されていたはずの投稿が、収集が完了した
+    1つの10分バケットへまるごと計上されてしまっていた(バグではなく設計上の限界)。
 
-    ★重要(24時間窓ゆえの2つの注意点):
-      1) バケットのキーは"HH:MM"だけでは不足(24時間窓は暦日をまたぐため、同じ
-         "14:30"が「約24時間前」と「たった今」の2回現れ得て衝突する)。内部の
-         グルーピングキーは"M/D HH:MM"にして衝突を避け、表示用のtimeフィールドも
-         同じ形式で返す(呼び手側で日付またぎが視覚的にも分かるようにする)。
-      2) post_count(バケット内の新規投稿数)は signals.true_volume(その営業日で
-         リセットされ単調増加する累積投稿数)の直前行との差分から求めるが、24時間窓は
-         暦日をまたぐため単純に「日でフィルタしてから差分」という intraday_today_series
-         と同じ手法は使えない。★2026-08-20実障害修正: 当初は「直前より値が小さければ
-         リセット」と判定していたが、実データで誤検知が発覚した(true_volumeが同日内で
-         ごく僅かに減ることがある[例: 3825→3822、バックエンド側の重複排除・再集計に
-         よるものと推定]。これを「リセット」と誤判定し、その僅かな減少どころか
-         true_volumeの値そのもの[数千]をまるごと「新規投稿数」として計上してしまい、
-         実際のセンチメント推移グラフで無関係な時刻に不自然な投稿量スパイクが
-         現れる不具合を引き起こしていた[ユーザー報告で発覚])。判定基準を「値が
-         減ったか」ではなく「**暦日(JST日付)が実際に変わったか**」に変更する
-         (prev_dateとの比較)。同日内の僅かな減少はリセットではなく単に
-         max(0, tv-prev)=0として扱う(負の投稿数を捏造しない・ただし過大計上もしない)。
+    raw_comments.jsonl/analyzed.jsonlの各行が持つ**実際の投稿時刻**("ts"。収集
+    時刻を表す"fetched_at"/"analyzed_at"とは別フィールド・実データで確認済み)で
+    バケット化することで、収集のタイミングに関わらず「実際に投稿された時刻」で
+    グラフへ反映されるようにする。
+
+    post_count: raw_rows(生投稿・meaningfulフィルタ前の全件)を各行のtsでバケット化
+    した件数(signals.compute_signals()のtrue_volume="当日の生投稿総数(全件)"と
+    同じ定義)。
+    bull_ratio/bear_ratio: analyzed_rows のうち meaningful=True の行のみを対象に
+    各行のtsでバケット化し、そのバケット内のbullish/bearish件数の比率
+    (signals.py._meaningful()/_ratios()と同じmeaningfulのみを対象とする定義)。
+    meaningful行が1件も無いバケットはNone(比率を捏造しない・fail-soft)。
+
+    ★個別投稿情報の漏洩防止: raw_rows/analyzed_rowsの各行から使うのは
+    "ts"(両方)・"meaningful"/"sentiment"(analyzed_rows側)のみ。text/author/id/
+    user/votes/rationale等は一切読み取らず戻り値にも含めない(このモジュール全体の
+    設計原則=集計値のみを外部へ渡す)。
 
     戻り値: [{time("M/D HH:MM"), bull_ratio, bear_ratio, post_count}, ...]
-    (古い→新しい順・snapshot_rowsが時系列順[append-only]であることに依存)。
+    (古い→新しい順・バケットの実時刻でソート=文字列キーの日跨ぎ衝突が起きない)。
     データが無ければ空リスト。
     """
     now = now or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9))
     window_start = now - dt.timedelta(hours=24)
 
-    buckets = {}
-    order = []
-    prev_true_volume = None
-    prev_date = None
-    for r in snapshot_rows or []:
-        # snapshots.jsonlのtimestampは"YYYY-MM-DDTHH:MM:SS"(ISO区切り・T)形式
-        # (実データで確認済み。空白区切りではない)。
-        ts_str = (r or {}).get("timestamp") or ""
+    def _parse_ts(row):
+        # raw_comments.jsonl/analyzed.jsonlのtsは"YYYY-MM-DDTHH:MM:SS"(ISO区切り・T)
+        ts_str = (row or {}).get("ts") or ""
         try:
-            ts = dt.datetime.strptime(ts_str[:19], "%Y-%m-%dT%H:%M:%S")
+            return dt.datetime.strptime(ts_str[:19], "%Y-%m-%dT%H:%M:%S")
         except ValueError:
-            continue
-        sig = (r or {}).get("signals") or {}
-        tv = sig.get("true_volume")
-        delta = None
-        if tv is not None:
-            cur_date = ts.date()
-            is_reset = prev_true_volume is None or (prev_date is not None and cur_date != prev_date)
-            delta = tv if is_reset else max(0, tv - prev_true_volume)
-            prev_true_volume = tv
-            prev_date = cur_date
-        if ts < window_start or ts > now:
-            continue   # 窓の外(直前差分の追跡自体は上で継続して行う)
-        bull = sig.get("bull_ratio")
-        bear = sig.get("bear_ratio")
-        if bull is None and bear is None:
-            continue
-        bucket_minute = (ts.minute // 10) * 10
-        bucket_ts = ts.replace(minute=bucket_minute, second=0, microsecond=0)
-        key = f"{bucket_ts.month}/{bucket_ts.day} {bucket_ts.strftime('%H:%M')}"
-        if key not in buckets:
-            buckets[key] = {"bull": bull, "bear": bear, "post_count": delta or 0}
-            order.append(key)
-        else:
-            b = buckets[key]
-            b["bull"], b["bear"] = bull, bear
-            b["post_count"] += delta or 0
+            return None
 
-    return [{"time": k, "bull_ratio": buckets[k]["bull"], "bear_ratio": buckets[k]["bear"],
-             "post_count": buckets[k]["post_count"]}
-            for k in order]
+    def _bucket_dt(ts):
+        bucket_minute = (ts.minute // 10) * 10
+        return ts.replace(minute=bucket_minute, second=0, microsecond=0)
+
+    post_counts = {}
+    for r in raw_rows or []:
+        ts = _parse_ts(r)
+        if ts is None or ts < window_start or ts > now:
+            continue
+        bkey = _bucket_dt(ts)
+        post_counts[bkey] = post_counts.get(bkey, 0) + 1
+
+    sentiment_counts = {}
+    for r in analyzed_rows or []:
+        if not (r or {}).get("meaningful"):
+            continue
+        ts = _parse_ts(r)
+        if ts is None or ts < window_start or ts > now:
+            continue
+        bkey = _bucket_dt(ts)
+        c = sentiment_counts.setdefault(bkey, {"bull": 0, "bear": 0, "total": 0})
+        c["total"] += 1
+        s = (r or {}).get("sentiment")
+        if s == "bullish":
+            c["bull"] += 1
+        elif s == "bearish":
+            c["bear"] += 1
+
+    result = []
+    for bkey in sorted(set(post_counts) | set(sentiment_counts)):
+        c = sentiment_counts.get(bkey)
+        bull_ratio = round(c["bull"] / c["total"], 3) if c and c["total"] > 0 else None
+        bear_ratio = round(c["bear"] / c["total"], 3) if c and c["total"] > 0 else None
+        result.append({
+            "time": f"{bkey.month}/{bkey.day} {bkey.strftime('%H:%M')}",
+            "bull_ratio": bull_ratio,
+            "bear_ratio": bear_ratio,
+            "post_count": post_counts.get(bkey, 0),
+        })
+    return result
 
 
 def previous_snapshot_for_ai_commentary(previous_record):
@@ -1453,9 +1457,12 @@ def _build_from_live_data(with_commentary=False):
     }]
     signal_changes = signal_state_changes(S.get("cards") or [], history_rows)
 
-    # ★2026-08-20追加(ユーザー指示「本日のセンチメント推移は、過去24時間の10分毎の
-    # センチメントの推移に」)。既に読み込み済みのsnaps(snapshots.jsonl)から算出。
-    sentiment_last_24h = sentiment_last_24h_10min(snaps)
+    # ★2026-08-20追加・同日中に再設計(ユーザー指示「本日のセンチメント推移は、過去
+    # 24時間の10分毎のセンチメントの推移に」→ユーザー指摘「投稿量は投稿時刻で
+    # ばらけさせるべきでは」)。既に読み込み済みのraw/analyzed(各行の実投稿時刻"ts"
+    # を持つ)から算出(snapshots.jsonlベースだと収集タイミングに投稿が偏って
+    # 見える問題があった。sentiment_last_24h_10min()のdocstring参照)。
+    sentiment_last_24h = sentiment_last_24h_10min(raw, analyzed)
 
     ai_commentary = None
     if with_commentary:
