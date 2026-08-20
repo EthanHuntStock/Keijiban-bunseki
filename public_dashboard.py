@@ -188,14 +188,22 @@ def _meter_sparkline(history_14d, score_key, line_color):
     date_labels = [_mmdd(p.get("date")) for p in pts]
     values = [p.get(score_key) for p in pts]
     if HAS_PLOTLY:
+        # ★2026-08-21(ユーザー依頼「縦軸に単位を付けて・線の太さは3に」): 従来は
+        # showticklabels=Falseで目盛りラベル自体を出していなかった(ミニマルな
+        # スパークライン設計)が、スコアの単位(0-100点)が分からないとの指摘を受け、
+        # ダッシュボード他所(ゲージ・9指標一覧)と同じ"/100"表記に統一して復活させる。
+        # nticks=3で最小限(上端・中間・下端程度)に抑え、スパークラインとしての
+        # 軽さは維持する。
         f = go.Figure(go.Scatter(x=date_labels, y=values, mode="lines+markers",
-                                 line=dict(color=line_color, width=2),
+                                 line=dict(color=line_color, width=3),
                                  marker=dict(size=4)))
-        f.update_layout(height=70, margin=dict(l=4, r=4, t=2, b=18),
+        f.update_layout(height=70, margin=dict(l=32, r=4, t=2, b=18),
                         paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
                         xaxis=dict(type="category", showgrid=False,
                                   tickfont=dict(size=9, color=COL["muted"])),
-                        yaxis=dict(showgrid=False, showticklabels=False))
+                        yaxis=dict(showgrid=False, showticklabels=True, nticks=3,
+                                  ticksuffix="/100",
+                                  tickfont=dict(size=8, color=COL["muted"])))
         st.plotly_chart(f, width="stretch", config={"displayModeBar": False})
     else:
         st.line_chart({score_key: values})
@@ -365,15 +373,16 @@ def _price_and_sentiment_charts(rec, live_price=None):
             f = make_subplots(rows=2, cols=1, shared_xaxes=True,
                               row_heights=[0.72, 0.28], vertical_spacing=0.03)
             # ★2026-08-20: ユーザー依頼「グラフの線を太く」「凡例が横軸表記に
-            # かぶらないように」を受け、線幅を2→3(中立は1→1.5)へ太くし、
-            # 凡例をプロット領域の"上"に明示配置(yanchor="bottom", y=1.02)して
-            # 横軸ラベルとの重なりを避ける。上部余白(margin.t)もその分広げる。
+            # かぶらないように」を受け、線幅を太くし、凡例をプロット領域の"上"に
+            # 明示配置(yanchor="bottom", y=1.02)して横軸ラベルとの重なりを避ける。
+            # 上部余白(margin.t)もその分広げる。★2026-08-21: ユーザー依頼「線の
+            # 太さを3に」を受け全トレース幅3へ統一(従来は強気/弱気5・中立4)。
             f.add_trace(go.Scatter(x=date_labels, y=bulls, name="強気", mode="lines",
-                                   line=dict(color=COL["red"], width=5)), row=1, col=1)
+                                   line=dict(color=COL["red"], width=3)), row=1, col=1)
             f.add_trace(go.Scatter(x=date_labels, y=bears, name="弱気", mode="lines",
-                                   line=dict(color=COL["blue"], width=5)), row=1, col=1)
+                                   line=dict(color=COL["blue"], width=3)), row=1, col=1)
             f.add_trace(go.Scatter(x=date_labels, y=neutrals, name="中立", mode="lines",
-                                   line=dict(color=COL["grey"], width=4, dash="dot")), row=1, col=1)
+                                   line=dict(color=COL["grey"], width=3, dash="dot")), row=1, col=1)
             f.add_trace(go.Bar(x=date_labels, y=posts, marker_color=COL["muted"],
                                showlegend=False), row=2, col=1)
             f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
@@ -551,11 +560,12 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None):
             f = make_subplots(rows=2, cols=1, shared_xaxes=True,
                               row_heights=[0.72, 0.28], vertical_spacing=0.04)
             # ★2026-08-20: ユーザー依頼「線を太く」「凡例が横軸表記にかぶらない
-            # ように」に対応(14日チャートの本日版と同じ設計)。
+            # ように」に対応(14日チャートの本日版と同じ設計)。★2026-08-21: ユーザー
+            # 依頼「線の太さを3に」を受け幅3へ統一(従来は5)。
             f.add_trace(go.Scatter(x=times, y=bulls, name="強気", mode="lines",
-                                   line=dict(color=COL["red"], width=5)), row=1, col=1)
+                                   line=dict(color=COL["red"], width=3)), row=1, col=1)
             f.add_trace(go.Scatter(x=times, y=bears, name="弱気", mode="lines",
-                                   line=dict(color=COL["blue"], width=5)), row=1, col=1)
+                                   line=dict(color=COL["blue"], width=3)), row=1, col=1)
             f.add_trace(go.Bar(x=times, y=posts, marker_color=COL["muted"],
                                showlegend=False), row=2, col=1)
             f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
