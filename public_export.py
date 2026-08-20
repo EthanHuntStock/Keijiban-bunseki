@@ -532,6 +532,20 @@ def next_commentary_failure_streak(prev_streak, succeeded):
     return (prev_streak or 0) + 1
 
 
+def next_lock_busy_streak(prev_streak, was_busy):
+    """★2026-08-21追加(おにや提案・連携ログ2026-08-21 01:38投稿=エンジニアの深堀質問③
+    「analyzeロック長時間占有の自動検知は無いのでは」への回答で発覚)。
+    analyze_lock/export_lockの取得busy(取れなかった)から、次の「連続busy回数」を返す
+    純関数。ロジックはnext_commentary_failure_streak()と同型(busyでなければ0にリセット、
+    busyならprev_streak+1)だが、2026-08-19に実際に起きた「おにやが3回連続で手動の実データ
+    再検証でしか気づけなかった」障害の再発防止として、意味を明確にするため別名の関数として
+    独立させる。ファイルI/O自体は呼び手(run_once.py)が担う(既存の純関数とI/Oの分離パターン
+    を踏襲)。"""
+    if not was_busy:
+        return 0
+    return (prev_streak or 0) + 1
+
+
 def _is_trading_hours(now=None):
     """★2026-08-20追加。現在時刻(JST)が東証の取引時間帯(前場9:00-11:30・
     後場12:30-15:30・土日は除外。祝日カレンダーまでは見ない簡易判定)かどうかを

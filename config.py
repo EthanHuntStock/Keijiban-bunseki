@@ -619,6 +619,16 @@ AI_COMMENTARY_FAILURE_STATE_PATH = os.path.join(DATA_DIR, "ai_commentary_failure
 AI_COMMENTARY_FAILURE_WARN_THRESHOLD = int(
     os.environ.get("BBS_AI_COMMENTARY_FAILURE_THRESHOLD", "3"))
 
+# ★2026-08-21追加(おにや提案・連携ログ01:38投稿=エンジニアの深堀質問③への回答で発覚)。
+# analyze_lock/export_lockの取得失敗(busy)は従来WARN単発ログのみで、連続回数・累積占有を
+# 追跡する仕組みが無く「手動の実データ再検証でしか気づけない」状態だった(2026-08-19に
+# おにやが3回連続で手動発見)。AI考察失敗ストリーク(直上)と全く同型のパターンを
+# ロック取得busy側にも横展開する(run_once._update_lock_busy_streak()参照)。
+# ロックは2種(analyze/export)あるため状態ファイルも別々に持つ。
+ANALYZE_LOCK_BUSY_STATE_PATH = os.path.join(DATA_DIR, "analyze_lock_busy_state.json")
+EXPORT_LOCK_BUSY_STATE_PATH = os.path.join(DATA_DIR, "export_lock_busy_state.json")
+LOCK_BUSY_WARN_THRESHOLD = int(os.environ.get("BBS_LOCK_BUSY_THRESHOLD", "3"))
+
 
 # ============================================================================
 # moomoo / Futu OpenAPI 読み取り専用アダプタ (moomoo_source.py) — 全てOFF-by-default
