@@ -52,14 +52,18 @@ _PUBLIC_INSIGHT_SYS = (
     "入力は集計数値だけであり、個別投稿の情報は渡されていない)。\n"
     "(3) 『買い時/売り時/上がる/下がる/仕込め/利確しろ』等、断定的な将来予測や"
     "煽り表現、売買の推奨・指示は一切書かない。\n"
-    "(4) 与えられた集計数値(価格・投稿量・強気/弱気比率・過熱度等)に基づく、"
-    "事実ベースの客観的な記述に徹する。\n"
-    "(5) 日本語で200〜400字程度、簡潔にまとめる。"
+    "(4) 与えられた集計数値(価格・投稿量・強気/弱気比率・過熱度・9指標のシグナル"
+    "発火状況・ボラ・レジーム帯等、ダッシュボードに表示されている集計値全般)に"
+    "基づく、事実ベースの客観的な記述に徹する。\n"
+    "(5) 日本語で400〜600字程度、簡潔にまとめる。"
 )
 
 # ★2026-08-19: ローカルLLM(lmstudio)経路専用のシステムプロンプト(おにや08:57投稿・
 #   試作600字版がベース)。安全設計の(1)〜(4)はClaude版と全く同じ、(5)の目標文字数
-#   だけ600字程度へ変更(ローカルLLMは無料のためClaude版より詳しめの分量で運用する)。
+#   だけ元は600字程度へ変更(ローカルLLMは無料のためClaude版より詳しめの分量で運用
+#   する)。★2026-08-21: ユーザー依頼(「AI考察では、ダッシュボードに記載の情報に
+#   対する考察もさせるように。シグナル発火状況とか。文字数は増えても構いません」)を
+#   受け、(4)にシグナル発火状況・ボラレジーム帯を追加し(5)を800字程度へ引き上げ。
 _PUBLIC_INSIGHT_SYS_LOCAL = (
     "あなたは日本株の掲示板センチメント集計データを解説する、一般公開向けの客観的な"
     "アナリストです。想定読者は一般の個人投資家です。次を絶対に守ります。\n"
@@ -70,9 +74,10 @@ _PUBLIC_INSIGHT_SYS_LOCAL = (
     "(3) 『買い時/売り時/上がる/下がる/仕込め/利確しろ』等、断定的な将来予測や"
     "煽り表現、売買の推奨・指示は一切書かない。\n"
     "(4) 与えられた集計数値(価格動向・投稿量・強気/弱気比率・過熱度スコア・"
-    "総悲観度スコア等)に基づく、事実ベースの客観的な記述に徹する。\n"
-    "(5) 日本語で600字程度、価格動向/投稿量/強気弱気比率/過熱度・総悲観度スコアに"
-    "触れながらまとめる。"
+    "総悲観度スコア・9指標のシグナル発火状況・ボラ・レジーム帯等、ダッシュボードに"
+    "表示されている集計値全般)に基づく、事実ベースの客観的な記述に徹する。\n"
+    "(5) 日本語で800字程度、価格動向/投稿量/強気弱気比率/過熱度・総悲観度スコア/"
+    "シグナル発火状況/ボラ・レジーム帯に触れながらまとめる。"
 )
 
 
@@ -99,6 +104,9 @@ def build_public_insight_context(public_record):
     trend = r.get("trend_14d") or []
     previous = r.get("previous")
     extended_hours = r.get("extended_hours")
+    signal_cards = r.get("signal_cards") or []
+    regime = r.get("regime")
+    signal_state_changes = r.get("signal_state_changes") or []
 
     return {
         "symbol": r.get("symbol"),
@@ -157,6 +165,39 @@ def build_public_insight_context(public_record):
             "pts": (extended_hours.get("pts") if isinstance(extended_hours, dict) else None),
             "adr": (extended_hours.get("adr") if isinstance(extended_hours, dict) else None),
         } if isinstance(extended_hours, dict) else None),
+        # ★2026-08-21追加(ユーザー依頼「AI考察では、ダッシュボードに記載の情報に対する
+        # 考察もさせるように。シグナル発火状況とか」)。9指標カード(public_export.py
+        # signal_cards・{name,value,threshold,state,note}の集計値のみ)をそのまま渡す。
+        # 個別投稿情報は元々含まれないフィールドのため、他項目と同じホワイトリスト
+        # 方式で1件ずつ明示的に抜き出す(dictをそのまま右から左へ流さない設計を維持)。
+        "signal_cards": [
+            {
+                "name": c.get("name"),
+                "value": c.get("value"),
+                "threshold": c.get("threshold"),
+                "state": c.get("state"),
+                "note": c.get("note"),
+            }
+            for c in signal_cards if isinstance(c, dict)
+        ],
+        # ★2026-08-21追加: ボラ・レジーム帯(public_export.py regime・{vol_regime,
+        # vol_regime_score,calibration_status}の集計値のみ)。
+        "regime": ({
+            "vol_regime": regime.get("vol_regime"),
+            "vol_regime_score": regime.get("vol_regime_score"),
+            "calibration_status": regime.get("calibration_status"),
+        } if isinstance(regime, dict) else None),
+        # ★2026-08-21追加: 前回取引日から発火状態が変化した指標(public_export.py
+        # signal_state_changes・{name,from,to,compared_date}の集計値のみ)。無ければ空。
+        "signal_state_changes": [
+            {
+                "name": c.get("name"),
+                "from": c.get("from"),
+                "to": c.get("to"),
+                "compared_date": c.get("compared_date"),
+            }
+            for c in signal_state_changes if isinstance(c, dict)
+        ],
     }
 
 
@@ -172,14 +213,18 @@ def _fmt_pct(v):
     return "不明" if v is None else f"{v * 100:.1f}%"
 
 
-def render_public_prompt(context, target_length="200〜400字程度"):
+def render_public_prompt(context, target_length="400〜600字程度"):
     """build_public_insight_context() の出力 -> ユーザープロンプト文字列(純関数)。
     system は _PUBLIC_INSIGHT_SYS(またはローカルLLM経路では_PUBLIC_INSIGHT_SYS_LOCAL)。
     個別投稿の情報は入力(context)に存在しないため、出力にも一切現れない。
 
-    target_length: 出力の指示文に埋め込む目標文字数(既定は従来のClaude版と同じ
-    "200〜400字程度"・後方互換)。★2026-08-19: ローカルLLM経路(おにや08:57投稿の
-    600字版プロンプト)向けに"600字程度"を渡せるようパラメータ化。"""
+    target_length: 出力の指示文に埋め込む目標文字数(既定はClaude経路向け)。
+    ★2026-08-19: ローカルLLM経路(おにや08:57投稿の600字版プロンプト)向けに
+    別の値を渡せるようパラメータ化。★2026-08-21: ユーザー依頼(「AI考察では、
+    ダッシュボードに記載の情報に対する考察もさせるように。文字数は増えても
+    構いません」)を受け、シグナル発火状況・ボラレジーム帯等のセクションを
+    追加した分、既定値を200〜400字→400〜600字(Claude経路)・600字→800字
+    (ローカルLLM経路)へ引き上げた。"""
     c = context or {}
     p = c.get("price") or {}
     b = c.get("board") or {}
@@ -205,6 +250,37 @@ def render_public_prompt(context, target_length="200〜400字程度"):
              f" / 中立比率: {_fmt_pct(b.get('neutral_ratio'))}")
     L.append(f"  過熱度スコア: {_fmt(b.get('overheat_score'))} / 総悲観度スコア: {_fmt(b.get('capitulation_score'))}")
     L.append("")
+
+    # ★2026-08-21追加(ユーザー依頼「AI考察では、ダッシュボードに記載の情報に対する
+    # 考察もさせるように。シグナル発火状況とか」)。ダッシュボードに既に表示されている
+    # ボラ・レジーム帯/9指標カード/前回取引日からの状態変化を、AI考察の題材にも使う。
+    regime = c.get("regime")
+    if regime:
+        L.append("■ ボラ・レジーム帯")
+        if regime.get("calibration_status") == "calibrating" or regime.get("vol_regime_score") is None:
+            L.append("  較正中(まだ判定に十分なデータが蓄積されていません)")
+        else:
+            L.append(f"  現在のレジーム: {_fmt(regime.get('vol_regime'))}"
+                     f"(ボラティリティ指標BVP={_fmt(regime.get('vol_regime_score'))})")
+        L.append("")
+
+    signal_cards = c.get("signal_cards") or []
+    if signal_cards:
+        L.append("■ シグナル発火状況(9指標)")
+        L.append("  掲示板の偏りを統計的にチェックした一覧。🟢OK=平常範囲内"
+                 "　🟠警戒=やや偏りが大きい　🔴発火=しきい値超過。")
+        for card in signal_cards:
+            L.append(f"  ・{_fmt(card.get('name'))}: {_fmt(card.get('state'))}"
+                     f"({_fmt(card.get('note'))})")
+        L.append("")
+
+    signal_changes = c.get("signal_state_changes") or []
+    if signal_changes:
+        compared_date = signal_changes[0].get("compared_date")
+        L.append(f"■ 前回取引日({_fmt(compared_date)})からの状態変化")
+        for ch in signal_changes:
+            L.append(f"  ・{_fmt(ch.get('name'))}: {_fmt(ch.get('from'))} → {_fmt(ch.get('to'))}")
+        L.append("")
 
     if pss:
         L.append("■ 直近の日次推移(価格終値・強気/弱気比率)")
@@ -288,6 +364,18 @@ def render_public_prompt(context, target_length="200〜400字程度"):
                  "東証の値動きを見る上での参考情報として一言触れる(ただし『翌日は"
                  "上がる/下がる』等の断定的な予測はしない。あくまで『PTS/ADRでは"
                  "こう動いている』という事実の記述に留める)。")
+    if signal_cards:
+        L.append("  ・「■ シグナル発火状況(9指標)」のうち、OK以外(警戒/発火)の"
+                 "指標があれば具体的にどれがどんな状態かに触れる。全て平常範囲内"
+                 "(OK)であれば、その旨を簡潔に述べる程度でよい(9指標を一つずつ"
+                 "機械的に列挙しない)。「発火」はあくまで統計的な偏りの記述的"
+                 "ラベルであり売買シグナルではないことを踏まえた書き方にする。")
+    if signal_changes:
+        L.append("  ・「■ 前回取引日からの状態変化」があれば、どの指標がどう"
+                 "変わったかに触れる。")
+    if regime:
+        L.append("  ・「■ ボラ・レジーム帯」にも一言触れ、現在の値動きの荒さの"
+                 "目安を伝える(較正中であればその旨を正直に書く)。")
     return "\n".join(L)
 
 
@@ -386,7 +474,7 @@ def generate_public_insight(public_record, *, model=None, max_tokens=None, clien
         use_backend = backend or config.PUBLIC_INSIGHT_BACKEND
 
         if use_backend == "lmstudio":
-            prompt = render_public_prompt(context, target_length="600字程度")
+            prompt = render_public_prompt(context, target_length="800字程度")
             text, usage, use_model = _call_lmstudio_insight(prompt, model=model, post_fn=post_fn)
             if not text:
                 _log("WARN empty text from LLM (lmstudio); returning None (fail-soft)")
@@ -590,6 +678,51 @@ def _run_selftests():
     check("context: extended_hours None when absent", ctx["extended_hours"] is None)
     check("prompt: no PTS section when extended_hours absent", "PTS(私設取引システム" not in prompt)
 
+    # ---- signal_cards/regime/signal_state_changes(ダッシュボード掲載情報)----
+    # ★2026-08-21追加(ユーザー依頼「AI考察では、ダッシュボードに記載の情報に対する
+    # 考察もさせるように。シグナル発火状況とか」)。
+    rec_sig = dict(rec)
+    rec_sig["signal_cards"] = [
+        {"name": "灼熱メーター(過熱)", "value": 15.5, "threshold": ">36", "state": "OK",
+         "note": "過熱スコア15.5 (閾値36)",
+         "leaked_text": "SECRET_INDIVIDUAL_COMMENT"},  # ホワイトリスト検証用の未知キー
+        {"name": "阿鼻叫喚(セリクラ)", "value": 45.0, "threshold": ">30", "state": "発火",
+         "note": "阿鼻叫喚スコア45.0 安値圏"},
+    ]
+    rec_sig["regime"] = {"vol_regime": "警戒", "vol_regime_score": 0.62, "calibration_status": "ok"}
+    rec_sig["signal_state_changes"] = [
+        {"name": "阿鼻叫喚(セリクラ)", "from": "OK", "to": "発火", "compared_date": "2026-08-15"},
+    ]
+    ctx_sig = build_public_insight_context(rec_sig)
+    check("context: signal_cards passthrough (name/value/threshold/state/note)",
+          ctx_sig["signal_cards"][1]["name"] == "阿鼻叫喚(セリクラ)"
+          and ctx_sig["signal_cards"][1]["state"] == "発火")
+    check("context: signal_cards drops unknown per-card keys (whitelist)",
+          "leaked_text" not in ctx_sig["signal_cards"][0]
+          and set(ctx_sig["signal_cards"][0]) == {"name", "value", "threshold", "state", "note"})
+    check("context: regime passthrough", ctx_sig["regime"]["vol_regime"] == "警戒"
+          and ctx_sig["regime"]["vol_regime_score"] == 0.62)
+    check("context: signal_state_changes passthrough",
+          ctx_sig["signal_state_changes"][0]["to"] == "発火")
+    check("context: signal_cards/regime/signal_state_changes empty/absent when not provided",
+          ctx["signal_cards"] == [] and ctx["regime"] is None and ctx["signal_state_changes"] == [])
+
+    prompt_sig = render_public_prompt(ctx_sig)
+    check("prompt: signal_cards section lists each card's name and state",
+          "灼熱メーター(過熱)" in prompt_sig and "阿鼻叫喚(セリクラ)" in prompt_sig
+          and "発火" in prompt_sig)
+    check("prompt: no leaked per-card field even from a dirty signal_cards entry",
+          "SECRET_INDIVIDUAL_COMMENT" not in prompt_sig)
+    check("prompt: regime section present", "ボラ・レジーム帯" in prompt_sig and "警戒" in prompt_sig)
+    check("prompt: signal_state_changes section present with compared_date",
+          "2026-08-15" in prompt_sig and "OK → 発火" in prompt_sig)
+    check("prompt: signal_cards instruction present",
+          "9指標を一つずつ機械的に列挙しない" in prompt_sig)
+    # 未提供時は既存動作を壊さず、いずれのセクションも現れない
+    check("prompt: no signal_cards/regime/state-change sections when absent",
+          "シグナル発火状況" not in prompt and "ボラ・レジーム帯" not in prompt
+          and "からの状態変化" not in prompt)
+
     # ---- generate_public_insight: 正常系(モック・claude経路)----
     # ★2026-08-19: config.PUBLIC_INSIGHT_BACKEND の既定が"lmstudio"へ変わったため、
     # 以下のclaude(Anthropic)経路のテストは全て backend="claude" を明示する
@@ -655,10 +788,10 @@ def _run_selftests():
     check("generate(lmstudio): one LLM call", len(lm_calls) == 1)
     check("generate(lmstudio): model is the configured lmstudio model",
           out_lm["model"] == config.LOCAL_LLM_ENDPOINTS["lmstudio"]["model"])
-    check("generate(lmstudio): system prompt is the 600字 local variant",
+    check("generate(lmstudio): system prompt is the local variant",
           lm_calls[0]["json"]["messages"][0]["content"] == _PUBLIC_INSIGHT_SYS_LOCAL)
-    check("generate(lmstudio): prompt asks for 600字程度 (not the claude 200-400字)",
-          "600字程度" in lm_calls[0]["json"]["messages"][1]["content"])
+    check("generate(lmstudio): prompt asks for 800字程度 (not the claude 400-600字)",
+          "800字程度" in lm_calls[0]["json"]["messages"][1]["content"])
     check("generate(lmstudio): usage mapped from prompt/completion_tokens",
           out_lm["usage"] == {"input_tokens": 400, "output_tokens": 200})
     check("generate(lmstudio): backend echoed back as lmstudio", out_lm.get("backend") == "lmstudio")
