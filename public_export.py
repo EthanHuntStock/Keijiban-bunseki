@@ -776,6 +776,78 @@ def intraday_today_series(snapshot_rows, price_intraday, today=None, adr_pts=Non
     return {"price": price_pts, "sentiment": sent_pts}
 
 
+def sentiment_last_24h_10min(snapshot_rows, now=None):
+    """★2026-08-20追加(ユーザー指示「本日のセンチメント推移は、過去24時間の10分毎の
+    センチメントの推移にしましょう」)。intraday_today_series()内のセンチメント部分
+    (「本日(暦日)ぶんの各snapshot行をそのまま1点ずつ」)には2つの制約があった:
+    (a)日をまたぐと0時でグラフが途切れる (b)点の間隔がsnapshot収集の実際の間隔
+    (深夜は疎・場中は密)のままバラつく。この関数はnow(省略時はJST現在時刻)から
+    遡って過去24時間ぶんのsnapshot行を対象に、10分刻みのバケットへリサンプルして
+    返す(暦日をまたいでも途切れない・間隔が揃う)。
+
+    バケット内に複数snapshotがある場合は、そのバケット内で最後に観測された
+    bull_ratio/bear_ratio(=そのバケット終了時点の最新値)を採用する(ローソク足の
+    終値と同じ考え方)。
+
+    ★重要(24時間窓ゆえの2つの注意点):
+      1) バケットのキーは"HH:MM"だけでは不足(24時間窓は暦日をまたぐため、同じ
+         "14:30"が「約24時間前」と「たった今」の2回現れ得て衝突する)。内部の
+         グルーピングキーは"M/D HH:MM"にして衝突を避け、表示用のtimeフィールドも
+         同じ形式で返す(呼び手側で日付またぎが視覚的にも分かるようにする)。
+      2) post_count(バケット内の新規投稿数)は signals.true_volume(その営業日で
+         リセットされ単調増加する累積投稿数)の直前行との差分から求めるが、24時間窓は
+         暦日をまたぐため単純に「日でフィルタしてから差分」という intraday_today_series
+         と同じ手法は使えない。直前より値が小さければ(=日付が変わりカウンタが
+         リセットされた)、そのバケットの新規投稿数はtrue_volumeの値そのものとして
+         扱う(リセット後にこれまで積み上がった投稿数、という定義。負値を出さない
+         fail-soft設計)。
+
+    戻り値: [{time("M/D HH:MM"), bull_ratio, bear_ratio, post_count}, ...]
+    (古い→新しい順・snapshot_rowsが時系列順[append-only]であることに依存)。
+    データが無ければ空リスト。
+    """
+    now = now or (dt.datetime.utcnow() + dt.timedelta(hours=9))
+    window_start = now - dt.timedelta(hours=24)
+
+    buckets = {}
+    order = []
+    prev_true_volume = None
+    for r in snapshot_rows or []:
+        # snapshots.jsonlのtimestampは"YYYY-MM-DDTHH:MM:SS"(ISO区切り・T)形式
+        # (実データで確認済み。空白区切りではない)。
+        ts_str = (r or {}).get("timestamp") or ""
+        try:
+            ts = dt.datetime.strptime(ts_str[:19], "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            continue
+        sig = (r or {}).get("signals") or {}
+        tv = sig.get("true_volume")
+        delta = None
+        if tv is not None:
+            delta = tv if (prev_true_volume is None or tv < prev_true_volume) else max(0, tv - prev_true_volume)
+            prev_true_volume = tv
+        if ts < window_start or ts > now:
+            continue   # 窓の外(直前差分の追跡自体は上で継続して行う)
+        bull = sig.get("bull_ratio")
+        bear = sig.get("bear_ratio")
+        if bull is None and bear is None:
+            continue
+        bucket_minute = (ts.minute // 10) * 10
+        bucket_ts = ts.replace(minute=bucket_minute, second=0, microsecond=0)
+        key = f"{bucket_ts.month}/{bucket_ts.day} {bucket_ts.strftime('%H:%M')}"
+        if key not in buckets:
+            buckets[key] = {"bull": bull, "bear": bear, "post_count": delta or 0}
+            order.append(key)
+        else:
+            b = buckets[key]
+            b["bull"], b["bear"] = bull, bear
+            b["post_count"] += delta or 0
+
+    return [{"time": k, "bull_ratio": buckets[k]["bull"], "bear_ratio": buckets[k]["bear"],
+             "post_count": buckets[k]["post_count"]}
+            for k in order]
+
+
 def previous_snapshot_for_ai_commentary(previous_record):
     """★2026-08-19追加(ユーザー依頼「AI考察は前回からの変化に対する考察も入れる」)。
     直前に書き出し済みの公開レコード(load_public_latest()の戻り値、つまり"今回の更新
@@ -865,7 +937,8 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                         generated_at=None, price_sentiment_series=None,
                         ai_commentary=None, regime=None, intraday_today=None,
                         previous=None, extended_hours=None,
-                        board_history_14d=None, signal_changes=None):
+                        board_history_14d=None, signal_changes=None,
+                        sentiment_last_24h=None):
     """
     既存の集計結果から公開用レコードを組み立てる純関数。個別投稿情報は一切参照しない
     (引数として生コメントのリストを受け取らない設計=構造的に混入を防ぐ)。
@@ -913,6 +986,11 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                    signal_state_changes() が返す [{name, from, to, compared_date}, ...]
                    のリスト、または None。None(既定)なら出力レコードにキー自体を
                    含めない。出力レコード上のキー名は"signal_state_changes"。
+      sentiment_last_24h - ★2026-08-20追加(ユーザー指示「本日のセンチメント推移は、
+                   過去24時間の10分毎のセンチメントの推移に」)。
+                   sentiment_last_24h_10min() が返す [{time, bull_ratio, bear_ratio,
+                   post_count}, ...] のリスト、または None。None(既定)なら出力
+                   レコードにキー自体を含めない。
     """
     S = S or {}
     ratios = S.get("ratios") or {}
@@ -990,6 +1068,8 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
         rec["board_history_14d"] = list(board_history_14d)
     if signal_changes is not None:
         rec["signal_state_changes"] = list(signal_changes)
+    if sentiment_last_24h is not None:
+        rec["sentiment_last_24h"] = list(sentiment_last_24h)
     return rec
 
 
@@ -1338,6 +1418,10 @@ def _build_from_live_data(with_commentary=False):
     }]
     signal_changes = signal_state_changes(S.get("cards") or [], history_rows)
 
+    # ★2026-08-20追加(ユーザー指示「本日のセンチメント推移は、過去24時間の10分毎の
+    # センチメントの推移に」)。既に読み込み済みのsnaps(snapshots.jsonl)から算出。
+    sentiment_last_24h = sentiment_last_24h_10min(snaps)
+
     ai_commentary = None
     if with_commentary:
         # まず①(price_sentiment_series 込み)の公開レコードを組み立て、
@@ -1347,7 +1431,8 @@ def _build_from_live_data(with_commentary=False):
                                      regime=regime, intraday_today=intraday_today,
                                      previous=previous, extended_hours=extended_hours,
                                      board_history_14d=board_history_14d,
-                                     signal_changes=signal_changes)
+                                     signal_changes=signal_changes,
+                                     sentiment_last_24h=sentiment_last_24h)
         errs = validate_no_leak(prelim)
         if errs:
             _log(f"ERROR leak detected before commentary generation, skip: {errs}")
@@ -1369,7 +1454,8 @@ def _build_from_live_data(with_commentary=False):
                                intraday_today=intraday_today, previous=previous,
                                extended_hours=extended_hours,
                                board_history_14d=board_history_14d,
-                               signal_changes=signal_changes)
+                               signal_changes=signal_changes,
+                               sentiment_last_24h=sentiment_last_24h)
 
 
 def _load_regime_readonly():

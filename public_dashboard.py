@@ -404,9 +404,21 @@ def _today_time_buckets():
     に切り替えたことで、この吸収ロジックが無いまま独立した15:30バケット(実出来高
     ありの正当なデータ)がそのまま残るようになり、固定x軸range(この関数の要素数を
     基準)の外側に押し出されて非表示になっていた。後場終了を15:30まで拡張する。
+
+    ★2026-08-20再追記(ユーザー指示「本日の推移のチャートは、昼休みは詰めて表示
+    しましょう」): 前場終了を当初11:30まで含めていたが、実データ(2026-08-20の
+    ticks_285A_*.csv)で実測したところ、前引け(11:30)ちょうどに乗る独立ティックは
+    観測されず、最後の前場バケットは常に11:20だった(後場引け15:30とは非対称=
+    後場引けは実際に15:30:00の出来高付きティックが記録される一方、前引けは
+    11:29台までで記録が止まる)。そのため固定categoryarrayに"11:30"という
+    常に空のカテゴリ枠が1つ挟まり、そのぶんだけ昼休みの隙間が広く見えていた。
+    前場終了を11:20までに縮め、この空き枠を無くす。万一将来11:30に実データが
+    現れた場合に備え、呼び手側(_effective_today_buckets)で実データにしか無い
+    カテゴリも動的に合成するため、この関数自体を万能の正としない(=このテンプレは
+    「通常時の想定」であり、実データが優先される設計)。
     """
     labels = []
-    for start_min, end_min in ((9 * 60, 11 * 60 + 30), (12 * 60 + 30, 15 * 60 + 30)):
+    for start_min, end_min in ((9 * 60, 11 * 60 + 20), (12 * 60 + 30, 15 * 60 + 30)):
         for m in range(start_min, end_min + 1, 10):
             labels.append(f"{m // 60:02d}:{m % 60:02d}")
     return labels
@@ -415,13 +427,32 @@ def _today_time_buckets():
 _TODAY_TIME_BUCKETS = _today_time_buckets()
 
 
+def _effective_today_buckets(actual_times):
+    """★2026-08-20追加(ユーザー指示「昼休みは詰めて表示」対応の一部)。
+    _TODAY_TIME_BUCKETS(通常想定される固定テンプレ)と、実際に観測された時刻
+    (actual_times)の和集合を時刻順で返す。本日のHH:MMラベルは日をまたがない
+    範囲(9:00-15:30)にしか存在しないため、通常の文字列ソートがそのまま時刻順に
+    一致する。テンプレに無い時刻(例:将来また前引けにティックが乗った日の
+    "11:30")が実データ側にあっても、和集合を取ることで自動的にカテゴリへ
+    追加され、2026-08-20に一度実際に起きた「固定rangeの外に実データが
+    押し出されて非表示になる」事故(後場引け15:30が消えた件)を再発させない。
+    """
+    return sorted(set(_TODAY_TIME_BUCKETS) | set(actual_times or []))
+
+
 # ============================================================================
 # ★2026-08-19追加(ユーザー依頼): 当日の価格推移とセンチメント推移(イントラデイ)
 # ============================================================================
 def _intraday_today_charts(rec, live_price=None):
     intraday = rec.get("intraday_today") or {}
     price_pts = intraday.get("price") or []
-    sent_pts = intraday.get("sentiment") or []
+    # ★2026-08-20変更(ユーザー指示「本日のセンチメント推移は、過去24時間の10分毎の
+    # センチメントの推移に」): 従来はintraday_today['sentiment'](本日暦日ぶんのみ・
+    # snapshot生成の実際の間隔のまま)を使っていたが、rec['sentiment_last_24h']
+    # (public_export.sentiment_last_24h_10min()・過去24時間を10分刻みにリサンプル
+    # 済み)へ切り替える。intraday_today_series()側の'sentiment'計算自体は既存の
+    # selftestが対象にしているため削除しない(未使用のまま残す)。
+    sent_pts = rec.get("sentiment_last_24h") or []
     # ★2026-08-20追加(ユーザー指示「本日の推移の株価も60秒毎に最新値に」)。
     # live_price(kabuティックから60秒毎に生成)に本日の10分足系列があれば、
     # Sheets由来(最大10分古い)のものより優先して丸ごと差し替える。センチメント
@@ -473,12 +504,16 @@ def _intraday_today_charts(rec, live_price=None):
             # autorange=False + 1日分の想定カテゴリ数ぶんの固定range を明示することで、
             # データが少ない寄り直後から終値時点と同じ幅で描画されるようにする
             # (右側の空白はデータ蓄積中として自然に残る)。
-            _n_buckets = len(_TODAY_TIME_BUCKETS)
+            # ★2026-08-20: 固定テンプレ(_TODAY_TIME_BUCKETS)だけでなく実データの
+            # 時刻も和集合した「有効バケット列」を使う(_effective_today_bucketsの
+            # docstring参照・2026-08-20の15:30消失事故の再発防止)。
+            _effective_buckets = _effective_today_buckets(times)
+            _n_buckets = len(_effective_buckets)
             f.update_xaxes(type="category", categoryorder="array",
-                           categoryarray=_TODAY_TIME_BUCKETS,
+                           categoryarray=_effective_buckets,
                            autorange=False, range=[-0.5, _n_buckets - 0.5], row=1, col=1)
             f.update_xaxes(type="category", categoryorder="array",
-                           categoryarray=_TODAY_TIME_BUCKETS,
+                           categoryarray=_effective_buckets,
                            autorange=False, range=[-0.5, _n_buckets - 0.5], row=2, col=1)
             f.update_yaxes(gridcolor=COL["border"], tickformat=",", row=1, col=1)
             f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
@@ -486,9 +521,11 @@ def _intraday_today_charts(rec, live_price=None):
         else:
             st.line_chart({"終値": [p.get("price_close") for p in price_pts]})
     with col2:
-        st.markdown("**本日のセンチメント推移（強気/弱気比率・投稿量）**")
+        # ★2026-08-20変更(ユーザー指示「本日のセンチメント推移は、過去24時間の
+        # 10分毎のセンチメントの推移に」): 見出しも実態に合わせて変更。
+        st.markdown("**過去24時間のセンチメント推移（10分毎・強気/弱気比率・投稿量）**")
         if not sent_pts:
-            st.caption("本日のセンチメントデータ蓄積中です。")
+            st.caption("センチメントデータ蓄積中です。")
         elif HAS_PLOTLY:
             times = [p.get("time") for p in sent_pts]
             bulls = [p.get("bull_ratio") for p in sent_pts]
@@ -511,6 +548,12 @@ def _intraday_today_charts(rec, live_price=None):
                             font=dict(color=COL["text"]),
                             legend=dict(orientation="h", yanchor="bottom", y=1.02,
                                        xanchor="left", x=0))
+            # ★2026-08-20追加: timeのラベルが"M/D HH:MM"形式(過去24時間窓は暦日を
+            # またぐため日付を含む)になり、"/"と":"を含む文字列をPlotlyが日付型と
+            # 誤認識し得る(14日チャートの日付表記で過去に一度実際に発生した誤認識と
+            # 同型のリスク)。明示的にcategory型にして誤認識・表記崩れを防ぐ。
+            f.update_xaxes(type="category", row=1, col=1)
+            f.update_xaxes(type="category", row=2, col=1)
             f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
             f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
             st.plotly_chart(f, width="stretch")
