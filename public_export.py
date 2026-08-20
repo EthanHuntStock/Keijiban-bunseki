@@ -468,6 +468,13 @@ def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14,
     自前の日中足集計(_daily_ohlc_from_intraday)で補完する。日足に既にある日は
     公式値を優先し上書きしない(補完はあくまでフォールバック)。price_intraday
     省略時は従来通り日足のみを使う(既存呼び出し元の動作を壊さない)。
+
+    ★2026-08-20追加(ユーザー依頼「センチメント推移のグラフに、投稿量の棒グラフを
+    足せますか」): post_count(その営業日の投稿数)も追加する。trend_14d_from_snapshots()
+    と同じ抽出ロジック(signals.true_volume・無ければday_cumulativeへフォールバック)
+    だが、trend_14dは暦日(collect-onlyが24時間365日走るため土日祝も含む)ベースで
+    日付集合がこの関数(営業日のみ)と一致しないため、あえて重複実装しマージしない
+    設計にする(=このpss自身の営業日集合に対して直接投稿数を引く)。
     """
     by_date = _last_snapshot_per_day(snapshot_rows)
     ohlc_by_date = _price_ohlc_by_date(price_daily)
@@ -481,6 +488,9 @@ def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14,
         snap = by_date.get(d) or {}
         sig = snap.get("signals") or {}
         ohlc = ohlc_by_date[d]
+        post_count = sig.get("true_volume")
+        if post_count is None:
+            post_count = snap.get("day_cumulative")
         out.append({
             "date": d,
             "price_open": ohlc["open"],
@@ -490,6 +500,7 @@ def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14,
             "price_volume": ohlc.get("volume"),
             "bull_ratio": sig.get("bull_ratio"),
             "bear_ratio": sig.get("bear_ratio"),
+            "post_count": int(post_count) if post_count is not None else None,
         })
     return out
 
@@ -598,7 +609,14 @@ def intraday_today_series(snapshot_rows, price_intraday, today=None, adr_pts=Non
     if adr_pts and not _today_yahoo_has_volume(price_intraday, today=today):
         price_pts = _today_tse_ohlc_from_adr_pts(adr_pts, today=today)
 
+    # ★2026-08-20追加(ユーザー依頼「センチメント推移のグラフに、投稿量の棒グラフを
+    # 足せますか」): signals.true_volume はその営業日でリセットされ単調増加する
+    # 累積投稿数(実測確認済み: 前日23:57時点17650->当日00:02時点6)。todayで
+    # フィルタ済みの行どうしの単純な差分だけで、日境界をまたがず安全に「直前の
+    # スナップショットから何件増えたか」(=そのスナップショット区間の新規投稿数)
+    # を求められる。先頭点は直前が無いのでtrue_volumeの値そのものを使う。
     sent_pts = []
+    prev_true_volume = None
     for r in snapshot_rows or []:
         if (r or {}).get("date") != today:
             continue
@@ -610,7 +628,13 @@ def intraday_today_series(snapshot_rows, price_intraday, today=None, adr_pts=Non
         bear = sig.get("bear_ratio")
         if bull is None and bear is None:
             continue
-        sent_pts.append({"time": ts[11:16], "bull_ratio": bull, "bear_ratio": bear})
+        tv = sig.get("true_volume")
+        post_count = None
+        if tv is not None:
+            post_count = tv if prev_true_volume is None else max(0, tv - prev_true_volume)
+            prev_true_volume = tv
+        sent_pts.append({"time": ts[11:16], "bull_ratio": bull, "bear_ratio": bear,
+                         "post_count": post_count})
 
     return {"price": price_pts, "sentiment": sent_pts}
 

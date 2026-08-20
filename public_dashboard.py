@@ -222,7 +222,7 @@ def _price_and_sentiment_charts(rec, live_price=None):
             pss.append({"date": bar["date"], "price_open": bar["price_open"],
                        "price_high": bar["price_high"], "price_low": bar["price_low"],
                        "price_close": bar["price_close"], "price_volume": bar["price_volume"],
-                       "bull_ratio": None, "bear_ratio": None})
+                       "bull_ratio": None, "bear_ratio": None, "post_count": None})
     st.markdown("#### 📈 過去14日間の推移")
     if not pss:
         st.caption("価格×センチメントの推移データ蓄積中です。")
@@ -291,26 +291,35 @@ def _price_and_sentiment_charts(rec, live_price=None):
         else:
             st.line_chart({"終値": closes})
     with col2:
-        st.markdown("**過去14日間のセンチメント推移（強気/弱気/中立比率）**")
+        st.markdown("**過去14日間のセンチメント推移（強気/弱気/中立比率・投稿量）**")
         if HAS_PLOTLY:
-            f = go.Figure()
+            # ★2026-08-20: ユーザー依頼「センチメント推移のグラフに、投稿量の棒
+            # グラフを足せますか」対応。価格チャート(ローソク足+出来高)と同じ設計
+            # (make_subplotsで2段・shared_xaxes)で、下段に投稿量の棒グラフを追加する。
+            posts = [p.get("post_count") for p in pss]
+            f = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                              row_heights=[0.72, 0.28], vertical_spacing=0.03)
             # ★2026-08-20: ユーザー依頼「グラフの線を太く」「凡例が横軸表記に
             # かぶらないように」を受け、線幅を2→3(中立は1→1.5)へ太くし、
             # 凡例をプロット領域の"上"に明示配置(yanchor="bottom", y=1.02)して
             # 横軸ラベルとの重なりを避ける。上部余白(margin.t)もその分広げる。
             f.add_trace(go.Scatter(x=date_labels, y=bulls, name="強気", mode="lines",
-                                   line=dict(color=COL["red"], width=5)))
+                                   line=dict(color=COL["red"], width=5)), row=1, col=1)
             f.add_trace(go.Scatter(x=date_labels, y=bears, name="弱気", mode="lines",
-                                   line=dict(color=COL["blue"], width=5)))
+                                   line=dict(color=COL["blue"], width=5)), row=1, col=1)
             f.add_trace(go.Scatter(x=date_labels, y=neutrals, name="中立", mode="lines",
-                                   line=dict(color=COL["grey"], width=4, dash="dot")))
+                                   line=dict(color=COL["grey"], width=4, dash="dot")), row=1, col=1)
+            f.add_trace(go.Bar(x=date_labels, y=posts, marker_color=COL["muted"],
+                               showlegend=False), row=2, col=1)
             f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
-                            height=280, margin=dict(l=8, r=8, t=36, b=8),
+                            height=310, margin=dict(l=8, r=8, t=36, b=8),
                             font=dict(color=COL["text"]),
                             legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                       xanchor="left", x=0),
-                            xaxis=dict(type="category"),
-                            yaxis=dict(tickformat=".0%", gridcolor=COL["border"]))
+                                       xanchor="left", x=0))
+            f.update_xaxes(type="category", row=1, col=1)
+            f.update_xaxes(type="category", row=2, col=1)
+            f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
+            f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
             st.plotly_chart(f, width="stretch")
         else:
             st.line_chart({"強気": bulls, "弱気": bears})
@@ -411,26 +420,33 @@ def _intraday_today_charts(rec, live_price=None):
         else:
             st.line_chart({"終値": [p.get("price_close") for p in price_pts]})
     with col2:
-        st.markdown("**本日のセンチメント推移**")
+        st.markdown("**本日のセンチメント推移（強気/弱気比率・投稿量）**")
         if not sent_pts:
             st.caption("本日のセンチメントデータ蓄積中です。")
         elif HAS_PLOTLY:
             times = [p.get("time") for p in sent_pts]
             bulls = [p.get("bull_ratio") for p in sent_pts]
             bears = [p.get("bear_ratio") for p in sent_pts]
-            f = go.Figure()
+            # ★2026-08-20: ユーザー依頼「センチメント推移のグラフに、投稿量の棒
+            # グラフを足せますか」対応(14日チャートの本日版と同じ2段組design)。
+            posts = [p.get("post_count") for p in sent_pts]
+            f = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                              row_heights=[0.72, 0.28], vertical_spacing=0.04)
             # ★2026-08-20: ユーザー依頼「線を太く」「凡例が横軸表記にかぶらない
             # ように」に対応(14日チャートの本日版と同じ設計)。
             f.add_trace(go.Scatter(x=times, y=bulls, name="強気", mode="lines",
-                                   line=dict(color=COL["red"], width=5)))
+                                   line=dict(color=COL["red"], width=5)), row=1, col=1)
             f.add_trace(go.Scatter(x=times, y=bears, name="弱気", mode="lines",
-                                   line=dict(color=COL["blue"], width=5)))
+                                   line=dict(color=COL["blue"], width=5)), row=1, col=1)
+            f.add_trace(go.Bar(x=times, y=posts, marker_color=COL["muted"],
+                               showlegend=False), row=2, col=1)
             f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
-                            height=240, margin=dict(l=8, r=8, t=36, b=8),
+                            height=270, margin=dict(l=8, r=8, t=36, b=8),
                             font=dict(color=COL["text"]),
                             legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                       xanchor="left", x=0),
-                            yaxis=dict(tickformat=".0%", gridcolor=COL["border"]))
+                                       xanchor="left", x=0))
+            f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
+            f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
             st.plotly_chart(f, width="stretch")
         else:
             st.line_chart({"強気": [p.get("bull_ratio") for p in sent_pts],
