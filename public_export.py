@@ -822,10 +822,16 @@ def sentiment_last_24h_10min(snapshot_rows, now=None):
       2) post_count(バケット内の新規投稿数)は signals.true_volume(その営業日で
          リセットされ単調増加する累積投稿数)の直前行との差分から求めるが、24時間窓は
          暦日をまたぐため単純に「日でフィルタしてから差分」という intraday_today_series
-         と同じ手法は使えない。直前より値が小さければ(=日付が変わりカウンタが
-         リセットされた)、そのバケットの新規投稿数はtrue_volumeの値そのものとして
-         扱う(リセット後にこれまで積み上がった投稿数、という定義。負値を出さない
-         fail-soft設計)。
+         と同じ手法は使えない。★2026-08-20実障害修正: 当初は「直前より値が小さければ
+         リセット」と判定していたが、実データで誤検知が発覚した(true_volumeが同日内で
+         ごく僅かに減ることがある[例: 3825→3822、バックエンド側の重複排除・再集計に
+         よるものと推定]。これを「リセット」と誤判定し、その僅かな減少どころか
+         true_volumeの値そのもの[数千]をまるごと「新規投稿数」として計上してしまい、
+         実際のセンチメント推移グラフで無関係な時刻に不自然な投稿量スパイクが
+         現れる不具合を引き起こしていた[ユーザー報告で発覚])。判定基準を「値が
+         減ったか」ではなく「**暦日(JST日付)が実際に変わったか**」に変更する
+         (prev_dateとの比較)。同日内の僅かな減少はリセットではなく単に
+         max(0, tv-prev)=0として扱う(負の投稿数を捏造しない・ただし過大計上もしない)。
 
     戻り値: [{time("M/D HH:MM"), bull_ratio, bear_ratio, post_count}, ...]
     (古い→新しい順・snapshot_rowsが時系列順[append-only]であることに依存)。
@@ -837,6 +843,7 @@ def sentiment_last_24h_10min(snapshot_rows, now=None):
     buckets = {}
     order = []
     prev_true_volume = None
+    prev_date = None
     for r in snapshot_rows or []:
         # snapshots.jsonlのtimestampは"YYYY-MM-DDTHH:MM:SS"(ISO区切り・T)形式
         # (実データで確認済み。空白区切りではない)。
@@ -849,8 +856,11 @@ def sentiment_last_24h_10min(snapshot_rows, now=None):
         tv = sig.get("true_volume")
         delta = None
         if tv is not None:
-            delta = tv if (prev_true_volume is None or tv < prev_true_volume) else max(0, tv - prev_true_volume)
+            cur_date = ts.date()
+            is_reset = prev_true_volume is None or (prev_date is not None and cur_date != prev_date)
+            delta = tv if is_reset else max(0, tv - prev_true_volume)
             prev_true_volume = tv
+            prev_date = cur_date
         if ts < window_start or ts > now:
             continue   # 窓の外(直前差分の追跡自体は上で継続して行う)
         bull = sig.get("bull_ratio")
