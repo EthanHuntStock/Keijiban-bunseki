@@ -543,6 +543,13 @@ KABU_PROTO1_285A_TICKS_DIR = os.environ.get(
 # 使わず、フォールバック(Yahoo直接取得→Sheets由来のrec['price'])へ順に落ちる。
 PUBLIC_LIVE_PRICE_SOURCE_URL = os.environ.get("BBS_LIVE_PRICE_URL")
 
+# ★2026-08-20追加(ユーザー提案「live_price_bridgeの死活監視」)。live_priceタブの
+# generated_atがこの分数より古ければ、公開ダッシュボードのヘッダーに軽い注意表示を
+# 出す(public_export.live_price_staleness_minutes参照)。1分毎更新の設計に対し、
+# 数分程度のズレ(タスクの実行タイミングのブレ・場中の一時的な遅延)は正常範囲として
+# 許容し、それを明確に超えたら「ブリッジが止まっているかもしれない」サインとする。
+LIVE_PRICE_STALE_MINUTES = int(os.environ.get("BBS_LIVE_PRICE_STALE_MINUTES", "5"))
+
 
 # ============================================================================
 # Google Sheets 同期(public_sheets_sync.py) — public_export.py の latest.json を
@@ -592,6 +599,16 @@ PUBLIC_INSIGHT_BACKEND = os.environ.get("PUBLIC_INSIGHT_BACKEND", "lmstudio")
 # False なら自動commentary生成は完全に無効(手動 `public_export.py --with-commentary` のみ)。
 # 止める時は PUBLIC_EXPORT_COMMENTARY_DAILY=0。
 PUBLIC_EXPORT_COMMENTARY_DAILY = os.environ.get("PUBLIC_EXPORT_COMMENTARY_DAILY", "1") == "1"
+
+# ★2026-08-20追加(ユーザー提案「AI考察生成の失敗が静かに握りつぶされないように」)。
+# AI考察(ai_commentary)の生成が連続でこの回数以上失敗したら、run.logへ通常のWARNより
+# 目立つERRORレベルで記録する(run_once._update_commentary_failure_streak()参照)。
+# 連携ログへの自動書き込みはしない(投稿は人/AIセッションが実際に確認してから書く、
+# という既存の運用規律を機械生成のログで壊さないため)。日次監視チェックリスト側で
+# このrun.log警告の有無を確認する運用とする。
+AI_COMMENTARY_FAILURE_STATE_PATH = os.path.join(DATA_DIR, "ai_commentary_failure_state.json")
+AI_COMMENTARY_FAILURE_WARN_THRESHOLD = int(
+    os.environ.get("BBS_AI_COMMENTARY_FAILURE_THRESHOLD", "3"))
 
 
 # ============================================================================

@@ -79,26 +79,36 @@ def _header(rec, live_price=None):
     # ③rec['price'](Sheets由来・最大10分古い。①②とも失敗した時の最終手段)
     # のどれかで「今この瞬間」に近い値を表示する(全滅時のみ既存rec['price']の
     # まま=後退にしかならない設計)。
+    # ★2026-08-20: dt.datetime.now()はStreamlit Cloudのサーバーローカル時刻
+    # (=多くの場合UTC)を返すため、そのまま表示すると実際の日本時間と9時間
+    # ズレる(実測: JST 11:26のはずが「02:26時点」と表示される不具合を発見)。
+    # 家PC1(JST)でのローカル実行時は問題が起きなかったため見落としていた。
+    # 明示的にJST(UTC+9)へ変換する(このプロジェクトの他箇所と同じ変換方式)。
+    now_jst = dt.datetime.utcnow() + dt.timedelta(hours=9)
+    stale_warning = None
     if live_price and live_price.get("price", {}).get("last") is not None:
         last = live_price["price"]["last"]
         chg = live_price["price"].get("change_pct")
-        # ★2026-08-20: dt.datetime.now()はStreamlit Cloudのサーバーローカル時刻
-        # (=多くの場合UTC)を返すため、そのまま表示すると実際の日本時間と9時間
-        # ズレる(実測: JST 11:26のはずが「02:26時点」と表示される不具合を発見)。
-        # 家PC1(JST)でのローカル実行時は問題が起きなかったため見落としていた。
-        # 明示的にJST(UTC+9)へ変換する(このプロジェクトの他箇所と同じ変換方式)。
-        price_as_of = (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%H:%M:%S")
+        price_as_of = now_jst.strftime("%H:%M:%S")
+        # ★2026-08-20追加(ユーザー提案「live_price_bridgeの死活監視」への対応)。
+        # live_price_bridge.py(1分毎)が何らかの理由で止まっても、この関数自体は
+        # fail-softに動き続けるため、閲覧者にもこちら側にも「古い値のまま更新が
+        # 止まっている」ことが気づかれないリスクがあった(2026-08-20にトレPJ側の
+        # 記録停止で実際に起きた事象と同型のリスクをこちら自身にも予防的に
+        # 入れる)。取引時間中(_is_trading_hours)にだけ判定し、夜間・週末・昼休みの
+        # 正常な休止を異常と誤検知しないようにする。
+        staleness = public_export.live_price_staleness_minutes(
+            live_price.get("generated_at"), now=now_jst)
+        if (staleness is not None and staleness > config.LIVE_PRICE_STALE_MINUTES
+                and public_export._is_trading_hours(now=now_jst)):
+            stale_warning = (f"⚠️ 価格データの更新が約{staleness:.0f}分前から止まっている"
+                             f"可能性があります(通常は1分毎に更新)。")
     else:
         live = public_export.fetch_live_price_header(rec.get("price_sentiment_series"))
         if live and live.get("last") is not None:
             last = live["last"]
             chg = live.get("change_pct")
-            # ★2026-08-20: dt.datetime.now()はStreamlit Cloudのサーバーローカル時刻
-        # (=多くの場合UTC)を返すため、そのまま表示すると実際の日本時間と9時間
-        # ズレる(実測: JST 11:26のはずが「02:26時点」と表示される不具合を発見)。
-        # 家PC1(JST)でのローカル実行時は問題が起きなかったため見落としていた。
-        # 明示的にJST(UTC+9)へ変換する(このプロジェクトの他箇所と同じ変換方式)。
-        price_as_of = (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%H:%M:%S")
+            price_as_of = now_jst.strftime("%H:%M:%S")
 
     chg_color = COL["grey"]
     chg_text = "—"
@@ -124,6 +134,8 @@ def _header(rec, live_price=None):
     else:
         st.caption(f"更新時刻: {gen_at or '不明'}"
                   f"（このページは{PUBLIC_DASHBOARD_AUTOREFRESH_SEC}秒毎に自動更新されます）")
+    if stale_warning:
+        st.caption(stale_warning)
     _visit_counter_badge()
 
 

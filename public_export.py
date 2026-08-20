@@ -423,6 +423,52 @@ def kabu_tick_today_summary(rows, today=None):
     return {"price_pts": price_pts, "day_bar": day_bar, "last": last_price, "last_time": last_time}
 
 
+def next_commentary_failure_streak(prev_streak, succeeded):
+    """★2026-08-20追加(ユーザー提案「AI考察生成の失敗が静かに握りつぶされないように」)。
+    AI考察(ai_commentary)生成の成功/失敗から、次の「連続失敗回数」を返す純関数。
+    成功なら0にリセット、失敗ならprev_streak+1。ファイルI/O自体は呼び手
+    (run_once.py)が担う(状態の永続化とロジックを分離し、ロジックをselftest
+    対象にする=既存の「純関数とI/Oの分離」パターンを踏襲)。"""
+    if succeeded:
+        return 0
+    return (prev_streak or 0) + 1
+
+
+def _is_trading_hours(now=None):
+    """★2026-08-20追加。現在時刻(JST)が東証の取引時間帯(前場9:00-11:30・
+    後場12:30-15:30・土日は除外。祝日カレンダーまでは見ない簡易判定)かどうかを
+    返す純関数。live_price_bridge.pyは市場が開いていない間(夜間・週末・昼休み)は
+    意図的に何もしない設計のため、鮮度警告(live_price_staleness_minutes)をこの
+    時間外にも適用すると常に警告になってしまう(=正常な休止を異常と誤検知する)。
+    呼び手はこれを鮮度警告の表示要否の判定に使う。"""
+    now = now or (dt.datetime.utcnow() + dt.timedelta(hours=9))
+    if now.weekday() >= 5:   # 土(5)・日(6)
+        return False
+    hm = now.hour * 60 + now.minute
+    return (9 * 60 <= hm < 11 * 60 + 30) or (12 * 60 + 30 <= hm < 15 * 60 + 30)
+
+
+def live_price_staleness_minutes(generated_at, now=None):
+    """★2026-08-20追加(ユーザー提案「live_price_bridgeの死活監視」への対応)。
+    live_priceタブ(live_price_bridge.pyが1分毎に書き込む)のgenerated_at(ISO文字列)
+    と現在時刻(JST)との差分を分単位で返す純関数。live_price_bridge.py自体が何らかの
+    理由で止まっても(プロト1のティックファイルが更新されない・タスクスケジューラの
+    停止・Sheets書込み失敗等)、公開ダッシュボード側はfail-softなフォールバック
+    (Yahoo直接取得→Sheets由来のrec)へ黙って落ちるため、「古い値のまま更新が
+    止まっている」ことに閲覧者もこちら側も気づけないリスクがあった
+    (2026-08-20に実際に起きたトレPJ側の記録停止と同型のリスクをこちら自身にも
+    予防的に入れる)。generated_at欠損/パース失敗はNone(fail-soft・呼び手は
+    「鮮度不明」として警告を出さない)。"""
+    if not generated_at:
+        return None
+    try:
+        gen = dt.datetime.fromisoformat(generated_at)
+    except (TypeError, ValueError):
+        return None
+    now = now or (dt.datetime.utcnow() + dt.timedelta(hours=9))
+    return (now - gen).total_seconds() / 60.0
+
+
 def load_live_price_from_url(url, timeout=None):
     """★2026-08-20追加。live_price_bridge.pyが書いたlive_priceタブ(「ウェブに公開」
     CSV書き出し・A1セルにJSON文字列)を公開ダッシュボード自身から読む。
