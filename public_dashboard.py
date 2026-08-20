@@ -82,13 +82,23 @@ def _header(rec, live_price=None):
     if live_price and live_price.get("price", {}).get("last") is not None:
         last = live_price["price"]["last"]
         chg = live_price["price"].get("change_pct")
-        price_as_of = dt.datetime.now().strftime("%H:%M:%S")
+        # ★2026-08-20: dt.datetime.now()はStreamlit Cloudのサーバーローカル時刻
+        # (=多くの場合UTC)を返すため、そのまま表示すると実際の日本時間と9時間
+        # ズレる(実測: JST 11:26のはずが「02:26時点」と表示される不具合を発見)。
+        # 家PC1(JST)でのローカル実行時は問題が起きなかったため見落としていた。
+        # 明示的にJST(UTC+9)へ変換する(このプロジェクトの他箇所と同じ変換方式)。
+        price_as_of = (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%H:%M:%S")
     else:
         live = public_export.fetch_live_price_header(rec.get("price_sentiment_series"))
         if live and live.get("last") is not None:
             last = live["last"]
             chg = live.get("change_pct")
-            price_as_of = dt.datetime.now().strftime("%H:%M:%S")
+            # ★2026-08-20: dt.datetime.now()はStreamlit Cloudのサーバーローカル時刻
+        # (=多くの場合UTC)を返すため、そのまま表示すると実際の日本時間と9時間
+        # ズレる(実測: JST 11:26のはずが「02:26時点」と表示される不具合を発見)。
+        # 家PC1(JST)でのローカル実行時は問題が起きなかったため見落としていた。
+        # 明示的にJST(UTC+9)へ変換する(このプロジェクトの他箇所と同じ変換方式)。
+        price_as_of = (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%H:%M:%S")
 
     chg_color = COL["grey"]
     chg_text = "—"
