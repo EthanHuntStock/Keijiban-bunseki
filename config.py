@@ -528,6 +528,21 @@ PUBLIC_JSON_SOURCE_URL = os.environ.get("BBS_PUBLIC_JSON_URL")
 # バッジ自体を表示しない(fail-soft・新しい第三者サービスへは接続しない設計)。
 PUBLIC_VISIT_COUNTER_URL = os.environ.get("BBS_VISIT_COUNTER_URL")
 
+# ---- ライブ価格ブリッジ(live_price_bridge.py) — プロト1のkabuティックCSV(読み取り専用) ----
+#   ★2026-08-20追加(ユーザー指示: 公開ダッシュボードの価格をYahoo Finance APIでは
+#   なく、株取引API_プロト1がkabuステーションAPIで自己収集済みのティックデータへ
+#   切替え、60秒毎に最新値へ更新する)。プロト1のファイル・コードには一切書き込まない
+#   (config.py既存方針「既存トレPJの台帳/コードは触らない」を維持=読み取り専用)。
+#   パスはこのPC(家PC1)のユーザーフォルダ配下(環境依存)のためenvで上書き可能にする。
+KABU_PROTO1_285A_TICKS_DIR = os.environ.get(
+    "KABU_PROTO1_285A_TICKS_DIR",
+    r"C:\Users\ryuta\OneDrive\AI用フォルダ\株取引API_プロト1\285A_キオクシア\記録データ")
+
+# クラウド公開ダッシュボード側がlive_priceタブ(live_price_bridge.pyが1分毎に書く
+# 軽量スナップショット)を読むための「ウェブに公開」CSV URL。未設定ならこの経路を
+# 使わず、フォールバック(Yahoo直接取得→Sheets由来のrec['price'])へ順に落ちる。
+PUBLIC_LIVE_PRICE_SOURCE_URL = os.environ.get("BBS_LIVE_PRICE_URL")
+
 
 # ============================================================================
 # Google Sheets 同期(public_sheets_sync.py) — public_export.py の latest.json を

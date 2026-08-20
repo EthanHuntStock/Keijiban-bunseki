@@ -279,6 +279,166 @@ def _today_tse_ohlc_from_adr_pts(adr_pts_data, today=None):
            for t in sorted(buckets)]
 
 
+def _prev_close_from_price_sentiment_series(pss, today=None):
+    """★2026-08-20追加(ユーザー依頼「60秒ごとの更新で、その時の株価になるように」
+    への対応)。price_sentiment_series(既に公開レコードに含まれる日足OHLC系列)から、
+    「today より前で最も新しい」日の price_close を返す純関数。公開ダッシュボード
+    (Streamlit Cloud)側にはローカルの price_daily.json が無いため、既にSheets経由で
+    受け取り済みの直近14営業日系列を前日終値の代わりに使う。無ければNone。"""
+    today = today or dt.date.today().isoformat()
+    prior = [p for p in (pss or [])
+            if p.get("date") and p["date"] < today and p.get("price_close") is not None]
+    if not prior:
+        return None
+    prior.sort(key=lambda p: p["date"])
+    return prior[-1]["price_close"]
+
+
+def fetch_live_price_header(price_sentiment_series=None, timeout=None):
+    """★2026-08-20追加(ユーザー依頼「株価の更新が遅すぎる。60秒ごとの更新時に、
+    その時の株価になるようにしてください」)。
+
+    背景: 公開ダッシュボード(Streamlit Cloud)はこれまで、ローカルPCの本番パイプライン
+    (10分毎のcatchup)→Google Sheetsブリッジ経由でしか価格を受け取っておらず、
+    ページ自体は60秒毎に自動更新されていても、中身のデータは最大10分古いままだった
+    (streamlit-autorefreshは「再描画」するだけで、Sheets側のデータ自体は別スケジュール
+    でしか進まないため)。この関数は公開ダッシュボードのプロセス自身から、Yahoo Finance
+    chart API(+本日ボリュームが無ければnikkei225jp.comのTSE現在値フィード。
+    _today_yahoo_has_volume/_latest_tse_price_from_adr_ptsの障害検知ロジックを再利用)を
+    直接叩き、「今この瞬間の株価」を取得する。60秒毎のオートリフレッシュのたびに
+    呼ばれる想定の軽量フェッチ(BBS集計等は一切含まない・価格1点だけ)。
+
+    price_sentiment_series を渡すと(公開レコードに既に含まれる)、そこから前営業日
+    終値を求めて変化率も計算する。省略時はchange_pctはNone。
+
+    fail-soft: Yahoo・nikkei225jp.comのどちらも失敗すればNoneを返す(呼び手は
+    Sheets由来のrec['price']をそのまま表示し続ければよい=既存動作への後退にしか
+    ならない)。ここでのネットワーク呼び出しは意図的にpublic_export.py内へ閉じる
+    (公開ダッシュボード側=public_dashboard.pyはネットワークコードを持たない、
+    という既存の役割分担を維持する)。
+    """
+    import price_fetch
+    import requests
+
+    today = (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    prev_close = _prev_close_from_price_sentiment_series(price_sentiment_series, today=today)
+
+    def _chg(price):
+        if price is None or not prev_close:
+            return None
+        return round((price - prev_close) / prev_close * 100.0, 2)
+
+    try:
+        raw = price_fetch._fetch(config.PRICE_INTRADAY_PARAMS)
+        parsed = price_fetch.parse_chart_json(raw) if raw else None
+    except Exception:
+        parsed = None
+    if parsed and not parsed.get("error") and _today_yahoo_has_volume(parsed, today=today):
+        bars = parsed.get("bars") or []
+        price = bars[-1]["close"] if bars else None
+        if price is not None:
+            return {"last": price, "change_pct": _chg(price), "source": "yahoo"}
+
+    try:
+        symbol = config.SYMBOL
+        url = config.ADR_PTS_URL.format(symbol=symbol)
+        r = requests.get(url, headers={"User-Agent": config.CHROME_UA,
+                                       "Referer": config.ADR_PTS_REFERER.format(symbol=symbol)},
+                         timeout=timeout or 8)
+        if r.status_code == 200:
+            rows = price_fetch.parse_adr_pts_js(r.text)
+            fallback = _latest_tse_price_from_adr_pts({"rows": rows}, today=today)
+            if fallback:
+                return {"last": fallback["price"], "change_pct": _chg(fallback["price"]),
+                       "source": "adr_pts"}
+    except Exception:
+        pass
+    return None
+
+
+def kabu_tick_today_summary(rows, today=None):
+    """★2026-08-20追加(ユーザー指示: 公開ダッシュボードの価格をYahooでなく自己取得の
+    kabuティックデータへ切替え・60秒毎に最新値へ更新する)。
+
+    株取引API_プロト1が既に自己収集しているkabuステーションAPIのティックCSV
+    (ticks_285A_YYYY-MM-DD.csv・列= time,price,vwap,volume,bid,ask,tickvol。
+    time="YYYY-MM-DD HH:MM:SS.mmm"・volume=その日の累積出来高[単調増加]・
+    tickvolは先頭行等で空欄になり得るため使わずvolumeの差分から算出する)を
+    csv.DictReader で読み込んだ行のリストを受け取り、intraday_today_series()と
+    同じ10分足OHLC系列・当日1本のOHLC(14日足の当日ぶん差し替え用)・最新値を
+    組み立てる純関数(ファイル読込自体は呼び手[live_price_bridge.py]が行う)。
+
+    本日(today、省略時はJST今日)以外の行は無視する。価格/時刻いずれかが不正な
+    行は無視する(fail-soft・捏造しない)。本日分の行が1つも無ければ
+    {"price_pts": [], "day_bar": None, "last": None, "last_time": None} を返す。
+    """
+    today = today or (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    buckets = {}
+    first_price = day_high = day_low = last_price = last_time = None
+    prev_cum_vol = 0.0
+
+    for r in rows or []:
+        t = (r.get("time") or "").strip()
+        if len(t) < 16 or not t.startswith(today):
+            continue
+        try:
+            price = float(r.get("price"))
+            hh, mm = int(t[11:13]), int(t[14:16])
+        except (TypeError, ValueError):
+            continue
+        try:
+            cum_vol = float(r.get("volume") or 0)
+        except (TypeError, ValueError):
+            cum_vol = prev_cum_vol
+        bucket_vol = max(0.0, cum_vol - prev_cum_vol)
+        prev_cum_vol = cum_vol
+
+        bucket_minute = (mm // 10) * 10
+        key = f"{hh:02d}:{bucket_minute:02d}"
+        if key not in buckets:
+            buckets[key] = {"open": price, "high": price, "low": price,
+                            "close": price, "volume": bucket_vol}
+        else:
+            b = buckets[key]
+            b["high"] = max(b["high"], price)
+            b["low"] = min(b["low"], price)
+            b["close"] = price
+            b["volume"] += bucket_vol
+
+        if first_price is None:
+            first_price = price
+        day_high = price if day_high is None else max(day_high, price)
+        day_low = price if day_low is None else min(day_low, price)
+        last_price = price
+        last_time = t
+
+    price_pts = [{"time": k, "price_open": buckets[k]["open"], "price_high": buckets[k]["high"],
+                 "price_low": buckets[k]["low"], "price_close": buckets[k]["close"],
+                 "price_volume": buckets[k]["volume"]}
+                for k in sorted(buckets)]
+    day_bar = None
+    if first_price is not None:
+        day_bar = {"date": today, "price_open": first_price, "price_high": day_high,
+                  "price_low": day_low, "price_close": last_price, "price_volume": prev_cum_vol}
+    return {"price_pts": price_pts, "day_bar": day_bar, "last": last_price, "last_time": last_time}
+
+
+def load_live_price_from_url(url, timeout=None):
+    """★2026-08-20追加。live_price_bridge.pyが書いたlive_priceタブ(「ウェブに公開」
+    CSV書き出し・A1セルにJSON文字列)を公開ダッシュボード自身から読む。
+    load_public_latest_from_url()と全く同じCSVブリッジパターン(_parse_public_json_csv
+    に委譲)の別インスタンス。fail-soft: 失敗時はNone(呼び手は次のフォールバック
+    [直接Yahoo取得→Sheets由来のrec['price']]へ進めばよい)。"""
+    import requests
+    try:
+        r = requests.get(url, timeout=timeout or 8)
+        if r.status_code != 200:
+            return None
+        return _parse_public_json_csv(r.text)
+    except Exception:
+        return None
+
+
 def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14,
                                           price_intraday=None):
     """直近 days **営業日**分の [{date, price_open, price_high, price_low, price_close,

@@ -60,13 +60,35 @@ PUBLIC_DASHBOARD_AUTOREFRESH_SEC = 60
 # ============================================================================
 # ヘッダー
 # ============================================================================
-def _header(rec):
+def _header(rec, live_price=None):
     symbol = rec.get("symbol") or config.SYMBOL
     name = rec.get("company_name") or ""
     price = rec.get("price") or {}
     last = price.get("last")
     chg = price.get("change_pct")
     gen_at = rec.get("generated_at")
+    price_as_of = None
+
+    # ★2026-08-20追加(ユーザー依頼「株価の更新が遅すぎる。60秒ごとの更新時に、
+    # その時の株価になるようにしてください」→その後「公開版ではYahooでなく
+    # 自己取得しているkabuのデータを使うように」)。優先順位は
+    # ①live_price(株取引API_プロト1のkabuティックから60秒毎に生成される
+    #   live_priceタブ・main()側で一度だけ取得しここへ渡される。最も正確)
+    # ②fetch_live_price_header(公開ダッシュボード自身からのYahoo直接取得。
+    #   ①のブリッジが未設定/一時的に失敗している時の保険)
+    # ③rec['price'](Sheets由来・最大10分古い。①②とも失敗した時の最終手段)
+    # のどれかで「今この瞬間」に近い値を表示する(全滅時のみ既存rec['price']の
+    # まま=後退にしかならない設計)。
+    if live_price and live_price.get("price", {}).get("last") is not None:
+        last = live_price["price"]["last"]
+        chg = live_price["price"].get("change_pct")
+        price_as_of = dt.datetime.now().strftime("%H:%M:%S")
+    else:
+        live = public_export.fetch_live_price_header(rec.get("price_sentiment_series"))
+        if live and live.get("last") is not None:
+            last = live["last"]
+            chg = live.get("change_pct")
+            price_as_of = dt.datetime.now().strftime("%H:%M:%S")
 
     chg_color = COL["grey"]
     chg_text = "—"
@@ -86,8 +108,12 @@ def _header(rec):
         f"<span style='font-size:1.15em;font-weight:600;color:{chg_color}'>{chg_text}</span>"
         f"</div>",
         unsafe_allow_html=True)
-    st.caption(f"更新時刻: {gen_at or '不明'}"
-               f"（このページは{PUBLIC_DASHBOARD_AUTOREFRESH_SEC}秒毎に自動更新されます）")
+    if price_as_of:
+        st.caption(f"株価: {price_as_of} 時点でライブ取得（{PUBLIC_DASHBOARD_AUTOREFRESH_SEC}秒毎に再取得） "
+                  f"／ その他データの更新時刻: {gen_at or '不明'}")
+    else:
+        st.caption(f"更新時刻: {gen_at or '不明'}"
+                  f"（このページは{PUBLIC_DASHBOARD_AUTOREFRESH_SEC}秒毎に自動更新されます）")
     _visit_counter_badge()
 
 
@@ -168,8 +194,25 @@ def _signal_list(rec):
 # ============================================================================
 # (e)(f) 価格チャート + センチメント推移(price_sentiment_series由来)
 # ============================================================================
-def _price_and_sentiment_charts(rec):
-    pss = rec.get("price_sentiment_series") or []
+def _price_and_sentiment_charts(rec, live_price=None):
+    pss = list(rec.get("price_sentiment_series") or [])
+    # ★2026-08-20追加(ユーザー指示「過去14日間の推移の株価も60秒毎に最新値に」)。
+    # live_price(kabuティックから60秒毎に生成)に本日1本ぶんのOHLCがあれば、
+    # 系列の末尾(本日分)をそれで差し替える(センチメント[bull/bear_ratio]は
+    # kabu側に無いのでSheets由来のまま=価格だけ新鮮に保つ)。日付が末尾と一致
+    # しなければ新しい日として追加する(まだ14日系列に本日分が無い最初の
+    # 数分間の場合)。
+    if live_price and live_price.get("today_daily_bar"):
+        bar = live_price["today_daily_bar"]
+        if pss and pss[-1].get("date") == bar.get("date"):
+            pss[-1] = {**pss[-1], "price_open": bar["price_open"], "price_high": bar["price_high"],
+                      "price_low": bar["price_low"], "price_close": bar["price_close"],
+                      "price_volume": bar["price_volume"]}
+        else:
+            pss.append({"date": bar["date"], "price_open": bar["price_open"],
+                       "price_high": bar["price_high"], "price_low": bar["price_low"],
+                       "price_close": bar["price_close"], "price_volume": bar["price_volume"],
+                       "bull_ratio": None, "bear_ratio": None})
     st.markdown("#### 📈 過去14日間の推移")
     if not pss:
         st.caption("価格×センチメントの推移データ蓄積中です。")
@@ -263,13 +306,43 @@ def _price_and_sentiment_charts(rec):
             st.line_chart({"強気": bulls, "弱気": bears})
 
 
+def _today_time_buckets():
+    """★2026-08-20追加(ユーザー指摘「本日の推移のチャートの幅が市場の始まり時に
+    広すぎる」への対応)。本日想定される10分足バケットの全時刻ラベル("HH:MM")を、
+    東証立会時間(前場9:00-11:30・後場12:30-15:30、間の昼休みは除外)ぶん固定順で
+    生成する。intraday_today_seriesの10分バケットの切り方(分を10で切り捨て)と
+    同じ規則。
+
+    背景: Plotlyのcategory軸はデフォルトで「その瞬間に実際に存在するカテゴリ数」
+    からバー幅を自動計算するため、寄り直後で点が1〜2個しか無い時間帯はローソク足が
+    不自然に太く描画され、データが増えるにつれ細くなっていく(=1日を通して見た目の
+    幅が一定しない)。x軸のcategoryarrayをこの「1日分の想定バケット数」で固定して
+    渡すことで、寄り直後から終値時点と同じ狭い幅で描画されるようにする(空いている
+    右側は単に空白として残る=一般的なリアルタイムチャートと同じ見え方)。
+    """
+    labels = []
+    for start_min, end_min in ((9 * 60, 11 * 60 + 30), (12 * 60 + 30, 15 * 60 + 20)):
+        for m in range(start_min, end_min + 1, 10):
+            labels.append(f"{m // 60:02d}:{m % 60:02d}")
+    return labels
+
+
+_TODAY_TIME_BUCKETS = _today_time_buckets()
+
+
 # ============================================================================
 # ★2026-08-19追加(ユーザー依頼): 当日の価格推移とセンチメント推移(イントラデイ)
 # ============================================================================
-def _intraday_today_charts(rec):
+def _intraday_today_charts(rec, live_price=None):
     intraday = rec.get("intraday_today") or {}
     price_pts = intraday.get("price") or []
     sent_pts = intraday.get("sentiment") or []
+    # ★2026-08-20追加(ユーザー指示「本日の推移の株価も60秒毎に最新値に」)。
+    # live_price(kabuティックから60秒毎に生成)に本日の10分足系列があれば、
+    # Sheets由来(最大10分古い)のものより優先して丸ごと差し替える。センチメント
+    # 系列はkabu側に無いのでrec由来のまま(価格だけを新鮮に保つ)。
+    if live_price and live_price.get("intraday_today_price"):
+        price_pts = live_price["intraday_today_price"]
     if not price_pts and not sent_pts:
         return   # データ蓄積中(場が始まったばかり等)は静かに省略・エラーにしない
 
@@ -307,6 +380,21 @@ def _intraday_today_charts(rec):
                             height=270, margin=dict(l=8, r=8, t=8, b=8),
                             font=dict(color=COL["text"]), xaxis_rangeslider_visible=False,
                             showlegend=False)
+            # ★2026-08-20: ユーザー指摘「本日の推移のチャートの幅が市場の始まり時に
+            # 広すぎる」対応。categoryarrayだけでは並び順が固定されるだけで、表示範囲
+            # (ズーム)は依然として実際に存在するデータ点数へ自動追従してしまう
+            # (実測: 寄り直後・1点しか無い時にxaxis.rangeが[-0.5,0.5]=1カテゴリぶんに
+            # 自動収縮し、その1本のローソク足がプロット全幅を占めていた)。
+            # autorange=False + 1日分の想定カテゴリ数ぶんの固定range を明示することで、
+            # データが少ない寄り直後から終値時点と同じ幅で描画されるようにする
+            # (右側の空白はデータ蓄積中として自然に残る)。
+            _n_buckets = len(_TODAY_TIME_BUCKETS)
+            f.update_xaxes(type="category", categoryorder="array",
+                           categoryarray=_TODAY_TIME_BUCKETS,
+                           autorange=False, range=[-0.5, _n_buckets - 0.5], row=1, col=1)
+            f.update_xaxes(type="category", categoryorder="array",
+                           categoryarray=_TODAY_TIME_BUCKETS,
+                           autorange=False, range=[-0.5, _n_buckets - 0.5], row=2, col=1)
             f.update_yaxes(gridcolor=COL["border"], tickformat=",", row=1, col=1)
             f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
             st.plotly_chart(f, width="stretch")
@@ -401,7 +489,18 @@ def main():
         st.info("データ準備中です。しばらくしてから再度お試しください。")
         return
 
-    _header(rec)
+    # ★2026-08-20追加(ユーザー指示「公開版ではYahooでなく自己取得しているkabuの
+    # データを使う」「トップの株価/本日の推移/過去14日間の株価が60秒ごとに最新値に
+    # なるように」)。live_price_bridge.py(株取引API_プロト1のkabuティックCSVを
+    # 1分毎に読んで生成)が書いたlive_priceタブを、60秒毎のオートリフレッシュの
+    # たびに1回だけ取得し、ヘッダー・本日の推移・過去14日間の推移の3箇所へ
+    # 使い回す(3箇所それぞれが個別にネットワーク往復しない)。未設定/失敗時は
+    # 各関数内のフォールバック(Yahoo直接取得→Sheets由来のrec)へ順に落ちる。
+    live_price = None
+    if config.PUBLIC_LIVE_PRICE_SOURCE_URL:
+        live_price = public_export.load_live_price_from_url(config.PUBLIC_LIVE_PRICE_SOURCE_URL)
+
+    _header(rec, live_price)
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
     top = st.columns([1.1, 1.1, 1.6])
@@ -433,10 +532,10 @@ def main():
                "(Antweiler & Frank, 2004)。")
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    _intraday_today_charts(rec)
+    _intraday_today_charts(rec, live_price)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    _price_and_sentiment_charts(rec)
+    _price_and_sentiment_charts(rec, live_price)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     _ai_commentary(rec)
