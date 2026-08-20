@@ -188,6 +188,97 @@ def _daily_ohlc_from_intraday(price_intraday, gmtoffset=None):
     return buckets
 
 
+def _today_yahoo_has_volume(price_intraday, today=None):
+    """★2026-08-20追加(ユーザー指摘「最新の株価が反映されていない」への対応)。
+    本日分のYahoo日中足(price_intraday)に、出来高>0のbarが1本でも含まれているかを
+    判定する純関数。実測で確認した障害(2026-08-20): Yahoo Finance chart API
+    (query1.finance.yahoo.com)自体が、寄り付き直後の出来高0の合成バー1本を
+    返したまま、以降ずっと最新の実取引バーを返さなくなる不具合が発生することが
+    ある(regularMarketTimeだけはリクエストのたびに進むが価格・出来高は凍結された
+    まま)。0件/全て出来高0(または欠損)なら False を返す。呼び手はこれを
+    「Yahoo側が本日まだ有効な実データを返していない」の判定に使い、
+    nikkei225jp.comのTSE現在値フィード(adr_pts)へフォールバックする
+    (寄り前の特別気配等で本当にまだ出来高が無い場合にも同じ理由で有効に働く)。
+    """
+    today = today or dt.date.today().isoformat()
+    price_intraday = price_intraday or {}
+    bars = price_intraday.get("bars") or []
+    meta = price_intraday.get("meta") or {}
+    off = meta.get("gmtoffset") or 32400
+    for b in bars:
+        ts = b.get("ts")
+        if ts is None:
+            continue
+        d = dt.datetime.utcfromtimestamp(ts + off).strftime("%Y-%m-%d")
+        if d != today:
+            continue
+        if b.get("volume"):
+            return True
+    return False
+
+
+def _previous_close_price(price_daily, today=None):
+    """★2026-08-20追加。price_daily(日足)から「today より前で最も新しい」日の
+    close を返す純関数(本日の日足バー自体がまだ確定/信頼できない時間帯でも、
+    前営業日の確定終値だけは安全に参照できる)。無ければNone。"""
+    today = today or dt.date.today().isoformat()
+    ohlc_by_date = _price_ohlc_by_date(price_daily)
+    prior_dates = sorted(d for d in ohlc_by_date if d < today)
+    if not prior_dates:
+        return None
+    return ohlc_by_date[prior_dates[-1]].get("close")
+
+
+def _latest_tse_price_from_adr_pts(adr_pts_data, today=None):
+    """★2026-08-20追加。nikkei225jp.comのTSE現在値フィード(adr_pts.tse列)から、
+    本日分の最新値を返す純関数(公開ダッシュボードのヘッダー現在値のフォールバック用)。
+    このフィードはYahoo Finance chart APIとは完全に独立したドメイン・別ファイル
+    なので、Yahoo側が本日のデータを返せていない時でも取得できていることがある
+    (2026-08-20に実測確認済み)。無ければNone。"""
+    today = today or dt.date.today().isoformat()
+    rows = (adr_pts_data or {}).get("rows") or []
+    for r in sorted(rows, key=lambda r: r.get("ts") or 0, reverse=True):
+        ts = r.get("ts")
+        price = r.get("tse")
+        if ts is None or price is None:
+            continue
+        d = (dt.datetime.utcfromtimestamp(ts) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+        if d == today:
+            return {"price": price, "ts": ts}
+    return None
+
+
+def _today_tse_ohlc_from_adr_pts(adr_pts_data, today=None):
+    """★2026-08-20追加。nikkei225jp.comのTSE現在値フィード(adr_pts.tse列)の本日分を
+    intraday_today_series()と同じ10分足OHLCへリサンプルする純関数(Yahoo側が本日の
+    有効な日中足を返せていない時の「本日の推移」フォールバック用)。このフィードには
+    出来高が含まれないため price_volume は常にNone(捏造しない)。"""
+    today = today or dt.date.today().isoformat()
+    rows = (adr_pts_data or {}).get("rows") or []
+    buckets = {}
+    for r in sorted(rows, key=lambda r: r.get("ts") or 0):
+        ts = r.get("ts")
+        price = r.get("tse")
+        if ts is None or price is None:
+            continue
+        d = dt.datetime.utcfromtimestamp(ts) + dt.timedelta(hours=9)
+        if d.strftime("%Y-%m-%d") != today:
+            continue
+        bucket_minute = (d.minute // 10) * 10
+        key = d.replace(minute=bucket_minute, second=0, microsecond=0).strftime("%H:%M")
+        if key not in buckets:
+            buckets[key] = {"open": price, "high": price, "low": price, "close": price}
+        else:
+            cur = buckets[key]
+            cur["high"] = max(cur["high"], price)
+            cur["low"] = min(cur["low"], price)
+            cur["close"] = price
+    return [{"time": t, "price_open": buckets[t]["open"], "price_high": buckets[t]["high"],
+            "price_low": buckets[t]["low"], "price_close": buckets[t]["close"],
+            "price_volume": None}
+           for t in sorted(buckets)]
+
+
 def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14,
                                           price_intraday=None):
     """直近 days **営業日**分の [{date, price_open, price_high, price_low, price_close,
@@ -243,9 +334,18 @@ def price_sentiment_series_from_snapshots(snapshot_rows, price_daily, days=14,
     return out
 
 
-def intraday_today_series(snapshot_rows, price_intraday, today=None):
+def intraday_today_series(snapshot_rows, price_intraday, today=None, adr_pts=None):
     """★2026-08-19追加(ユーザー依頼「当日の価格推移とセンチメント推移も入れる」)。
     本日分のイントラデイ推移を集計値のみで組み立てる純関数。個別投稿は一切参照しない。
+
+    ★2026-08-20追加(ユーザー指摘「最新の株価が反映されていない」への対応・
+    ユーザー指示「取得しているデータで更新しましょう」): adr_pts(省略可・
+    price_fetch.load_price(config.ADR_PTS_PATH)の戻り値)を渡すと、本日分の
+    Yahoo日中足に出来高>0のbarが1本も無い場合(_today_yahoo_has_volume()==False。
+    寄り前特別気配、またはYahoo Finance chart API側の一時的なデータ不整合の
+    いずれか)に限り、nikkei225jp.comのTSE現在値フィードから組み立てた本日分の
+    10分足OHLC(_today_tse_ohlc_from_adr_pts()・volumeは無いフィードのため常にNone)
+    へ丸ごと差し替える。Yahoo側に本日の実データがある通常時は従来どおり(挙動不変)。
 
     価格: price_intraday(price_fetch.load_price(config.PRICE_INTRADAY_PATH)の戻り値。
     5分足バー)から本日分のbarを抽出し、**10分足のOHLCへリサンプル**(ユーザー依頼
@@ -334,6 +434,9 @@ def intraday_today_series(snapshot_rows, price_intraday, today=None):
                  "price_low": buckets[t]["low"], "price_close": buckets[t]["close"],
                  "price_volume": buckets[t]["volume"]}
                 for t in sorted(buckets)]
+
+    if adr_pts and not _today_yahoo_has_volume(price_intraday, today=today):
+        price_pts = _today_tse_ohlc_from_adr_pts(adr_pts, today=today)
 
     sent_pts = []
     for r in snapshot_rows or []:
@@ -841,6 +944,30 @@ def _build_from_live_data(with_commentary=False):
     S = sigmod.compute_signals(analyzed, raw_rows=raw,
                                price_daily=price_daily, price_intraday=price_intraday)
 
+    # ★2026-08-19追加(ユーザー依頼「AI分析はPTS・米国ADRの時間帯もそれらの値を分析
+    # するように」)。price_fetch.fetch_adr_pts_and_save()が別stepで保存済みの
+    # フィードを読み取り専用で読む(このモジュール自身はネット非依存を維持)。
+    adr_pts_data = price_fetch.load_price(config.ADR_PTS_PATH)
+
+    # ★2026-08-20追加(ユーザー指摘「最新の株価が反映されていない」への対応・ユーザー
+    # 指示「取得しているデータで更新しましょう」): 実測で確認済みの障害(Yahoo Finance
+    # chart APIが本日分の出来高>0のbarを一切返さなくなる=寄り前特別気配、または
+    # API側の一時的なデータ不整合)が起きている間だけ、公開ダッシュボードの
+    # ヘッダー現在値を、Yahooとは完全独立なnikkei225jp.comのTSE現在値フィード
+    # (adr_pts)へ差し替える。9シグナルの発火判定(gauges/cards)はcompute_signals()
+    # 内で既に確定済みの値をそのまま使う(この上書きはS['price']の表示専用フィールド
+    # だけを対象とし、他のS要素には一切波及しない=意図的に影響範囲を絞った設計)。
+    if not _today_yahoo_has_volume(price_intraday):
+        fallback = _latest_tse_price_from_adr_pts(adr_pts_data)
+        if fallback:
+            prev_close = _previous_close_price(price_daily)
+            chg = (round((fallback["price"] - prev_close) / prev_close * 100.0, 2)
+                  if prev_close else None)
+            S = dict(S)
+            S["price"] = {"last": fallback["price"], "change_pct": chg}
+            _log(f"price fallback: Yahoo intraday has no volume today, "
+                f"using adr_pts tse={fallback['price']} (prev_close={prev_close}, chg={chg})")
+
     snaps = jsonl_window.read_jsonl_recent(config.SNAPSHOTS_PATH,
                                            days=TREND_READ_WINDOW_DAYS)
     trend = trend_14d_from_snapshots(snaps)
@@ -850,11 +977,10 @@ def _build_from_live_data(with_commentary=False):
     pss = price_sentiment_series_from_snapshots(snaps, price_daily,
                                                 price_intraday=price_intraday)
     regime = _load_regime_readonly()
-    intraday_today = intraday_today_series(snaps, price_intraday)
-    # ★2026-08-19追加(ユーザー依頼「AI分析はPTS・米国ADRの時間帯もそれらの値を分析
-    # するように」)。price_fetch.fetch_adr_pts_and_save()が別stepで保存済みの
-    # フィードを読み取り専用で読む(このモジュール自身はネット非依存を維持)。
-    adr_pts_data = price_fetch.load_price(config.ADR_PTS_PATH)
+    # ★2026-08-20: adr_ptsを渡し、本日のYahoo日中足が使えない間は「本日の推移」も
+    # 同じフォールバック(_today_tse_ohlc_from_adr_pts)で埋める(intraday_today_series
+    # のdocstring参照)。
+    intraday_today = intraday_today_series(snaps, price_intraday, adr_pts=adr_pts_data)
     extended_hours = extended_hours_summary(adr_pts_data)
     # ★2026-08-19追加(ユーザー依頼「AI考察は前回からの変化に対する考察も入れる」)。
     # 今回の書き出しで latest.json が上書きされる"前"の状態を読んでおく(=前回分の
