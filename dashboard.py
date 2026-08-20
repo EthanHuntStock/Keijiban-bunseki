@@ -14,6 +14,7 @@ import io
 import csv
 import json
 import logging
+import hashlib
 import datetime as dt
 
 import streamlit as st
@@ -998,9 +999,22 @@ def _gauge(value, title, fire_th, colors):
         # はみ出していた(ブラウザのgetBoundingClientRectで直接確認)。左右マージンを
         # 30pxに広げ、ゲージ本体を少し縮めることでラベルの収まる余白を確保する
         # (左右対称を維持=見た目のバランスを崩さない)。
+        # ★2026-08-21修正(ユーザー指摘「上の字(タイトル)が見切れている」): ローカル
+        # ブラウザ実測(デスクトップ幅・モバイル幅とも)ではmargin.t=40内にタイトルが
+        # 収まっていたが、環境(フォント・OS)によってはタイトル行の実高さがこれより
+        # 大きくなり得るため、上記と同じ設計思想(実測で足りなかった側へ余裕を持たせる)
+        # で48pxへ拡大しさらなる余白バッファを確保する。
         f.update_layout(paper_bgcolor=COL["panel"], height=210,
-                        margin=dict(l=30, r=30, t=40, b=6), font=dict(color=COL["text"]))
-        st.plotly_chart(f, width="stretch")
+                        margin=dict(l=30, r=30, t=48, b=6), font=dict(color=COL["text"]))
+        # ★2026-08-21追加(ユーザー報告「タイトルが『阿鼻叫喚』になっている」=灼熱/阿鼻叫喚
+        # の2つのゲージのタイトルが混同されたように見える不具合報告への対応)。従来は
+        # st.plotly_chart()にkeyを指定しておらず、Streamlitの自動キー割当てに依存していた。
+        # このゲージは1画面内で2回(灼熱/阿鼻叫喚)呼ばれる上、st_autorefresh(60秒毎)で
+        # 頻繁に全体rerunされる構成のため、tilteから導出した安定・一意なkeyを明示して
+        # ウィジェット同一性の取り違えを構造的に防ぐ(titleのハッシュ値=絵文字/日本語の
+        # 文字コード差異に依存しない安全な短縮ID)。
+        gauge_key = "gauge_" + hashlib.md5(title.encode("utf-8")).hexdigest()[:8]
+        st.plotly_chart(f, width="stretch", key=gauge_key)
     else:
         st.markdown(f"**{title}: {value}/100** (発火>{fire_th})")
         st.progress(min(1.0, value / 100))

@@ -204,7 +204,11 @@ def _meter_sparkline(history_14d, score_key, line_color):
                         yaxis=dict(showgrid=False, showticklabels=True, nticks=3,
                                   ticksuffix="/100",
                                   tickfont=dict(size=8, color=COL["muted"])))
-        st.plotly_chart(f, width="stretch", config={"displayModeBar": False})
+        # ★2026-08-21追加(_gauge()と同じ理由=ウィジェット同一性の取り違え防止): この
+        # スパークラインも1画面内でscore_key違いで2回呼ばれる(overheat_score/
+        # capitulation_score)ため、score_keyから導出した安定キーを明示する。
+        st.plotly_chart(f, width="stretch", config={"displayModeBar": False},
+                        key=f"meter_sparkline_{score_key}")
     else:
         st.line_chart({score_key: values})
 
