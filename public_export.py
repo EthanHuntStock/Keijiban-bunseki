@@ -560,6 +560,31 @@ def _is_trading_hours(now=None):
     return (9 * 60 <= hm < 11 * 60 + 30) or (12 * 60 + 30 <= hm < 15 * 60 + 30)
 
 
+def market_session_label(now=None):
+    """★2026-08-21追加(ユーザー依頼「公開ダッシュボードのAI考察では、日本市場の
+    開場時間帯を考慮した考察をするように」)。現在時刻(JST)が東証のどの時間帯に
+    あるかを、_is_trading_hours()の真偽二値よりも粒度細かく返す純関数。
+    寄り付き前/前場中/昼休み/後場中/取引終了後/休場(土日)の6区分。祝日カレンダー
+    までは見ない簡易判定(_is_trading_hours()と同じ制約・既存の呼び出し元互換のため
+    _is_trading_hours()自体は変更しない)。
+    public_insight.pyのAI考察プロンプトへ渡し、取引時間外に「現在の値動きは」の
+    ような書き方を避け、時間帯に即した表現(「前場の終値時点では」「本日の終値は」等)
+    をさせるために使う。"""
+    now = now or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9))
+    if now.weekday() >= 5:   # 土(5)・日(6)
+        return "休場(土日)"
+    hm = now.hour * 60 + now.minute
+    if hm < 9 * 60:
+        return "寄り付き前"
+    if hm < 11 * 60 + 30:
+        return "前場中"
+    if hm < 12 * 60 + 30:
+        return "昼休み"
+    if hm < 15 * 60 + 30:
+        return "後場中"
+    return "取引終了後"
+
+
 def live_price_staleness_minutes(generated_at, now=None):
     """★2026-08-20追加(ユーザー提案「live_price_bridgeの死活監視」への対応)。
     live_priceタブ(live_price_bridge.pyが1分毎に書き込む)のgenerated_at(ISO文字列)

@@ -38,11 +38,21 @@ import inspect
 import datetime as dt
 
 import config
+import public_export  # ★2026-08-21追加: market_session_label()(市場開場時間帯の判定・
+                       # 純関数)を再利用するため。public_export.pyはpublic_insight.pyを
+                       # importしない(循環importなし)。個別投稿データを扱わない純粋な
+                       # 時刻判定ロジックのみ使うため、このモジュールの安全設計
+                       # (個別投稿情報を受け取れない構造)には一切影響しない。
 
 
 # ============================================================================
 # システムプロンプト(安全設計の核心=想定読者・トーン方針を内包)
 # ============================================================================
+# ★2026-08-21追加(ユーザー依頼「公開ダッシュボードのAI考察では、日本市場の開場
+#   時間帯を考慮した考察をするように」): 従来は集計時刻を渡すだけで、寄り付き前・
+#   昼休み・取引終了後でも「現在の値動きは」のような現在進行形の書き方になりうる
+#   構造的な穴があった。新設点(5)+render_public_prompt()の「市場の状態」セクション・
+#   出力指示で対応(以下(6)へ既存(5)を繰り下げ)。
 _PUBLIC_INSIGHT_SYS = (
     "あなたは日本株の掲示板センチメント集計データを解説する、一般公開向けの客観的な"
     "アナリストです。想定読者は一般の個人投資家です。次を絶対に守ります。\n"
@@ -55,7 +65,11 @@ _PUBLIC_INSIGHT_SYS = (
     "(4) 与えられた集計数値(価格・投稿量・強気/弱気比率・過熱度・9指標のシグナル"
     "発火状況・ボラ・レジーム帯等、ダッシュボードに表示されている集計値全般)に"
     "基づく、事実ベースの客観的な記述に徹する。\n"
-    "(5) 日本語で400〜600字程度、簡潔にまとめる。"
+    "(5) 与えられた『市場の状態』(東証の開場時間帯)を踏まえた表現にする。取引時間内"
+    "なら現在進行形で構わないが、寄り付き前・昼休み・取引終了後・休場日は、あたかも"
+    "今まさに値動きが進行しているかのような書き方をせず、その時間帯の実態に即した"
+    "表現(『前営業日の終値を基準に』『本日の終値は』等)にする。\n"
+    "(6) 日本語で400〜600字程度、簡潔にまとめる。"
 )
 
 # ★2026-08-19: ローカルLLM(lmstudio)経路専用のシステムプロンプト(おにや08:57投稿・
@@ -64,6 +78,8 @@ _PUBLIC_INSIGHT_SYS = (
 #   する)。★2026-08-21: ユーザー依頼(「AI考察では、ダッシュボードに記載の情報に
 #   対する考察もさせるように。シグナル発火状況とか。文字数は増えても構いません」)を
 #   受け、(4)にシグナル発火状況・ボラレジーム帯を追加し(5)を800字程度へ引き上げ。
+#   同日追加分: 「日本市場の開場時間帯を考慮した考察を」への対応で新設点(5)を追加、
+#   旧(5)は(6)へ繰り下げ(_PUBLIC_INSIGHT_SYS側の変更理由コメント参照)。
 _PUBLIC_INSIGHT_SYS_LOCAL = (
     "あなたは日本株の掲示板センチメント集計データを解説する、一般公開向けの客観的な"
     "アナリストです。想定読者は一般の個人投資家です。次を絶対に守ります。\n"
@@ -76,7 +92,11 @@ _PUBLIC_INSIGHT_SYS_LOCAL = (
     "(4) 与えられた集計数値(価格動向・投稿量・強気/弱気比率・過熱度スコア・"
     "総悲観度スコア・9指標のシグナル発火状況・ボラ・レジーム帯等、ダッシュボードに"
     "表示されている集計値全般)に基づく、事実ベースの客観的な記述に徹する。\n"
-    "(5) 日本語で800字程度、価格動向/投稿量/強気弱気比率/過熱度・総悲観度スコア/"
+    "(5) 与えられた『市場の状態』(東証の開場時間帯)を踏まえた表現にする。取引時間内"
+    "なら現在進行形で構わないが、寄り付き前・昼休み・取引終了後・休場日は、あたかも"
+    "今まさに値動きが進行しているかのような書き方をせず、その時間帯の実態に即した"
+    "表現(『前営業日の終値を基準に』『本日の終値は』等)にする。\n"
+    "(6) 日本語で800字程度、価格動向/投稿量/強気弱気比率/過熱度・総悲観度スコア/"
     "シグナル発火状況/ボラ・レジーム帯に触れながらまとめる。"
 )
 
@@ -108,10 +128,27 @@ def build_public_insight_context(public_record):
     regime = r.get("regime")
     signal_state_changes = r.get("signal_state_changes") or []
 
+    # ★2026-08-21追加(ユーザー依頼「公開ダッシュボードのAI考察では、日本市場の
+    # 開場時間帯を考慮した考察をするように」)。generated_at(このレコードの集計時刻)
+    # から市場の状態(寄り付き前/前場中/昼休み/後場中/取引終了後/休場)を判定する。
+    # 「今この瞬間」ではなく「このレコードが集計された時点」を基準にすることで、
+    # 実行タイミングに依存しない決定的な(再現可能な)値になる(他の全フィールドが
+    # public_record由来の値である設計とも一貫する)。generated_atが無い/壊れている
+    # 場合はNone(fail-soft・呼び手[render_public_prompt]側でセクションを省く)。
+    generated_at_str = r.get("generated_at")
+    market_session = None
+    if generated_at_str:
+        try:
+            market_session = public_export.market_session_label(
+                now=dt.datetime.fromisoformat(str(generated_at_str)[:19]))
+        except (ValueError, TypeError):
+            market_session = None
+
     return {
         "symbol": r.get("symbol"),
         "company_name": r.get("company_name"),
         "generated_at": r.get("generated_at"),
+        "market_session": market_session,
         "price": {
             "last": price.get("last"),
             "change_pct": price.get("change_pct"),
@@ -234,6 +271,10 @@ def render_public_prompt(context, target_length="400〜600字程度"):
     L = []
     L.append(f"銘柄: {_fmt(c.get('symbol'))}({_fmt(c.get('company_name'))})")
     L.append(f"集計時刻: {_fmt(c.get('generated_at'))}")
+    # ★2026-08-21追加(ユーザー依頼「日本市場の開場時間帯を考慮した考察をするように」)。
+    market_session = c.get("market_session")
+    if market_session:
+        L.append(f"市場の状態(東証・集計時刻時点): {market_session}")
     L.append("")
     L.append("以下は、ある銘柄についての掲示板投稿を統計的に集計した数値データです。"
              "個別の投稿内容は一切含まれていません。これらの集計数値だけを根拠に、"
@@ -356,6 +397,13 @@ def render_public_prompt(context, target_length="400〜600字程度"):
     L.append("  ・断定的な将来予測(上がる/下がる等)や、買い時/売り時等の煽り表現・"
              "売買の推奨をしない。")
     L.append("  ・与えられた集計数値に基づく客観的な記述に徹する。")
+    if market_session:
+        L.append(f"  ・「市場の状態」({market_session})を踏まえた表現にする。"
+                 "前場中・後場中(取引時間内)は「現在の値動きは」等の現在進行形で"
+                 "構わないが、寄り付き前は「前営業日の終値を基準に」、昼休みは"
+                 "「前場の終値時点では」、取引終了後・休場(土日)は「本日の終値は」"
+                 "「直近の取引日の終値は」等、その時間帯の実態に即した書き方にする"
+                 "(取引時間外なのに値動きが今まさに動いているかのような書き方をしない)。")
     if prev:
         L.append("  ・「■ 前回集計時点との比較」の差分にも触れ、直近の短時間での"
                  "変化・勢いについて一言言及する(価格や強弱比率が前回からどう動いたか)。")
@@ -722,6 +770,42 @@ def _run_selftests():
     check("prompt: no signal_cards/regime/state-change sections when absent",
           "シグナル発火状況" not in prompt and "ボラ・レジーム帯" not in prompt
           and "からの状態変化" not in prompt)
+
+    # ---- market_session(市場の開場時間帯)----
+    # ★2026-08-21追加(ユーザー依頼「公開ダッシュボードのAI考察では、日本市場の
+    # 開場時間帯を考慮した考察をするように」)。generated_atから市場状態を判定し、
+    # コンテキスト・プロンプトの双方へ正しく反映されることを検証する。
+    # rec自体のgenerated_at("2026-08-16T15:00:00")は日曜日 -> 休場(土日)になる。
+    check("context: market_session computed from generated_at (Sunday -> 休場(土日))",
+          ctx["market_session"] == "休場(土日)")
+    check("prompt: market_session section present with the computed label",
+          "市場の状態" in prompt and "休場(土日)" in prompt)
+    check("prompt: market_session instruction present",
+          "取引時間外なのに値動きが今まさに動いているかのような書き方をしない" in prompt)
+
+    # 取引時間内(平日昼)のケースも確認(木曜10:00 -> 前場中)。
+    rec_open = dict(rec)
+    rec_open["generated_at"] = "2026-08-20T10:00:00"
+    ctx_open = build_public_insight_context(rec_open)
+    check("context: market_session weekday morning -> 前場中",
+          ctx_open["market_session"] == "前場中")
+    prompt_open = render_public_prompt(ctx_open)
+    check("prompt: market_session label reflects 前場中",
+          "前場中" in prompt_open)
+
+    # generated_at が無い/壊れている場合は None(fail-soft)・セクション自体が現れない。
+    rec_no_gen = dict(rec)
+    del rec_no_gen["generated_at"]
+    check("context: market_session None when generated_at absent",
+          build_public_insight_context(rec_no_gen)["market_session"] is None)
+    rec_bad_gen = dict(rec)
+    rec_bad_gen["generated_at"] = "not-a-timestamp"
+    ctx_bad = build_public_insight_context(rec_bad_gen)
+    check("context: market_session None when generated_at unparseable (fail-soft, no crash)",
+          ctx_bad["market_session"] is None)
+    prompt_bad = render_public_prompt(ctx_bad)
+    check("prompt: no market_session section when unavailable",
+          "市場の状態" not in prompt_bad)
 
     # ---- generate_public_insight: 正常系(モック・claude経路)----
     # ★2026-08-19: config.PUBLIC_INSIGHT_BACKEND の既定が"lmstudio"へ変わったため、
