@@ -84,7 +84,15 @@ def _header(rec, live_price=None):
     # ズレる(実測: JST 11:26のはずが「02:26時点」と表示される不具合を発見)。
     # 家PC1(JST)でのローカル実行時は問題が起きなかったため見落としていた。
     # 明示的にJST(UTC+9)へ変換する(このプロジェクトの他箇所と同じ変換方式)。
-    now_jst = dt.datetime.utcnow() + dt.timedelta(hours=9)
+    # ★2026-08-20修正: dt.datetime.utcnow()はPython 3.12+で非推奨(3.14でも動作は
+    # するが実行のたびDeprecationWarningがStreamlit Cloudのログに大量出力される
+    # ことを実測で確認・実害はないが放置しない)。dt.datetime.now(dt.timezone.utc)
+    # (tz-aware)を素朴に使うと、後続の+timedelta(hours=9)後もtzinfo=UTCのまま
+    # 残り「JSTの値なのにUTCを名乗る」不整合なオブジェクトになる(このモジュール
+    # 全体がnaive datetime前提の設計のため)。.replace(tzinfo=None)で
+    # utcnow()と全く同じ「naiveなUTC値」に戻してから使う=既存の全比較・
+    # strftime呼び出しへの影響を完全にゼロにする変更。
+    now_jst = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)
     stale_warning = None
     if live_price and live_price.get("price", {}).get("last") is not None:
         last = live_price["price"]["last"]

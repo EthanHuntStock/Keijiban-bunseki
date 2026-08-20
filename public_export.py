@@ -320,7 +320,14 @@ def fetch_live_price_header(price_sentiment_series=None, timeout=None):
     import price_fetch
     import requests
 
-    today = (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    # ★2026-08-20修正: このファイル内の「JST今日/現在時刻」取得は全て
+    # dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + timedelta(hours=9)
+    # という形式に統一(旧: dt.datetime.utcnow())。utcnow()はPython 3.12+で非推奨
+    # (3.14でも動作はするがDeprecationWarningがStreamlit Cloudのログに実行の
+    # たび大量出力されることを実測で確認)。.replace(tzinfo=None)でutcnow()と
+    # 全く同じ「naiveなUTC値」に戻すため、このモジュール全体がnaive datetime
+    # 前提の設計(既存の全比較・strftime呼び出し)への影響はゼロ。
+    today = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
     prev_close = _prev_close_from_price_sentiment_series(price_sentiment_series, today=today)
 
     def _chg(price):
@@ -372,7 +379,7 @@ def kabu_tick_today_summary(rows, today=None):
     行は無視する(fail-soft・捏造しない)。本日分の行が1つも無ければ
     {"price_pts": [], "day_bar": None, "last": None, "last_time": None} を返す。
     """
-    today = today or (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    today = today or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
     buckets = {}
     first_price = day_high = day_low = last_price = last_time = None
     prev_cum_vol = 0.0
@@ -435,7 +442,7 @@ def board_score_daily_series(history_rows, days=14, today=None):
     呼び手が本来渡したい"今この瞬間"の値と二重管理になる)。
     データ蓄積が浅くdays日に満たない場合はある分だけを返す(fail-soft・捏造しない)。
     """
-    today = today or (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    today = today or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
     by_date = {}
     for row in history_rows or []:
         gen_at = (row or {}).get("generated_at")
@@ -461,7 +468,7 @@ def signal_state_changes(current_cards, history_rows, today=None):
     が浅い等)場合は、比較不能を「変化なし」と誤表示しないよう空リストを返す
     (fail-soft)。
     """
-    today = today or (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    today = today or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
     by_date = {}
     for row in history_rows or []:
         gen_at = (row or {}).get("generated_at")
@@ -532,7 +539,7 @@ def _is_trading_hours(now=None):
     意図的に何もしない設計のため、鮮度警告(live_price_staleness_minutes)をこの
     時間外にも適用すると常に警告になってしまう(=正常な休止を異常と誤検知する)。
     呼び手はこれを鮮度警告の表示要否の判定に使う。"""
-    now = now or (dt.datetime.utcnow() + dt.timedelta(hours=9))
+    now = now or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9))
     if now.weekday() >= 5:   # 土(5)・日(6)
         return False
     hm = now.hour * 60 + now.minute
@@ -556,7 +563,7 @@ def live_price_staleness_minutes(generated_at, now=None):
         gen = dt.datetime.fromisoformat(generated_at)
     except (TypeError, ValueError):
         return None
-    now = now or (dt.datetime.utcnow() + dt.timedelta(hours=9))
+    now = now or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9))
     return (now - gen).total_seconds() / 60.0
 
 
@@ -824,7 +831,7 @@ def sentiment_last_24h_10min(snapshot_rows, now=None):
     (古い→新しい順・snapshot_rowsが時系列順[append-only]であることに依存)。
     データが無ければ空リスト。
     """
-    now = now or (dt.datetime.utcnow() + dt.timedelta(hours=9))
+    now = now or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9))
     window_start = now - dt.timedelta(hours=24)
 
     buckets = {}
@@ -1428,7 +1435,7 @@ def _build_from_live_data(with_commentary=False):
     # ダッシュボードは新たなSheets同期を増やさず、既存のjson_blob同期だけで
     # このデータも受け取れる)。
     history_rows = load_public_history()
-    today_jst = (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    today_jst = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
     gauges = S.get("gauges") or {}
     board_history_14d = board_score_daily_series(history_rows) + [{
         "date": today_jst, "overheat_score": gauges.get("overheat"),
