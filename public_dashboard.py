@@ -381,11 +381,22 @@ def _price_and_sentiment_charts(rec, live_price=None):
             # 明示配置(yanchor="bottom", y=1.02)して横軸ラベルとの重なりを避ける。
             # 上部余白(margin.t)もその分広げる。★2026-08-21: ユーザー依頼「線の
             # 太さを3に」を受け全トレース幅3へ統一(従来は強気/弱気5・中立4)。
+            # ★2026-08-21追加(ユーザー指摘「投稿量はあるのにグラフが切れている」):
+            # bull_ratio/bear_ratioはmeaningful(AI分析済み)行のみを対象に計算する
+            # ため、投稿(post_count)自体は届いていてもAI分析が追いついていない
+            # バケットはNoneになりうる(analyze.pyは1サイクルあたり240秒の予算制で
+            # 残りを次回runへ持ち越す設計・システム停止でなくても正常に起こりうる)。
+            # connectgaps=Trueで、そうした一時的な欠測点をまたいで前後の実測値
+            # 同士を線で結ぶ(値を捏造するのではなく、単に描画上ギャップを飛び越える
+            # だけ・該当点はNoneのまま=ホバー等では値が無いことがわかる)。
             f.add_trace(go.Scatter(x=date_labels, y=bulls, name="強気", mode="lines",
+                                   connectgaps=True,
                                    line=dict(color=COL["red"], width=3)), row=1, col=1)
             f.add_trace(go.Scatter(x=date_labels, y=bears, name="弱気", mode="lines",
+                                   connectgaps=True,
                                    line=dict(color=COL["blue"], width=3)), row=1, col=1)
             f.add_trace(go.Scatter(x=date_labels, y=neutrals, name="中立", mode="lines",
+                                   connectgaps=True,
                                    line=dict(color=COL["grey"], width=3, dash="dot")), row=1, col=1)
             f.add_trace(go.Bar(x=date_labels, y=posts, marker_color=COL["muted"],
                                showlegend=False), row=2, col=1)
@@ -639,9 +650,18 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
         _t_posts = [p.get("post_count") for p in today_sent_pts]
         f = make_subplots(rows=2, cols=1, shared_xaxes=True,
                           row_heights=[0.72, 0.28], vertical_spacing=0.04)
+        # ★2026-08-21追加(ユーザー指摘「投稿量はあるのにグラフが切れている」):
+        # bull_ratio/bear_ratioはmeaningful(AI分析済み)行のみを対象に計算する
+        # ため、投稿(post_count)自体は届いていてもAI分析が追いついていない
+        # バケットはNoneになりうる(analyze.pyは1サイクルあたり240秒の予算制で
+        # 残りを次回runへ持ち越す設計・システム停止でなくても正常に起こりうる)。
+        # connectgaps=Trueで一時的な欠測点をまたいで前後の実測値同士を線で結ぶ
+        # (値を捏造するのではなく描画上ギャップを飛び越えるだけ)。
         f.add_trace(go.Scatter(x=_t_times, y=_t_bulls, name="強気", mode="lines",
+                               connectgaps=True,
                                line=dict(color=COL["red"], width=3)), row=1, col=1)
         f.add_trace(go.Scatter(x=_t_times, y=_t_bears, name="弱気", mode="lines",
+                               connectgaps=True,
                                line=dict(color=COL["blue"], width=3)), row=1, col=1)
         f.add_trace(go.Bar(x=_t_times, y=_t_posts, marker_color=COL["muted"],
                            showlegend=False), row=2, col=1)
@@ -684,14 +704,20 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
         # ★2026-08-20: ユーザー依頼「センチメント推移のグラフに、投稿量の棒
         # グラフを足せますか」対応(14日チャートの本日版と同じ2段組design)。
         posts = [p.get("post_count") for p in sent_pts]
+        # ★2026-08-21追加(ユーザー指摘「投稿量はあるのにグラフが切れている」・
+        # 本日のセンチメント推移と同じ理由=meaningful分析が投稿収集に対して
+        # 一時的に遅れているだけでシステム停止ではない): connectgaps=Trueで
+        # 一時的な欠測点をまたいで前後の実測値同士を線で結ぶ。
         f = make_subplots(rows=2, cols=1, shared_xaxes=True,
                           row_heights=[0.72, 0.28], vertical_spacing=0.04)
         # ★2026-08-20: ユーザー依頼「線を太く」「凡例が横軸表記にかぶらない
         # ように」に対応(14日チャートの本日版と同じ設計)。★2026-08-21: ユーザー
         # 依頼「線の太さを3に」を受け幅3へ統一(従来は5)。
         f.add_trace(go.Scatter(x=times, y=bulls, name="強気", mode="lines",
+                               connectgaps=True,
                                line=dict(color=COL["red"], width=3)), row=1, col=1)
         f.add_trace(go.Scatter(x=times, y=bears, name="弱気", mode="lines",
+                               connectgaps=True,
                                line=dict(color=COL["blue"], width=3)), row=1, col=1)
         f.add_trace(go.Bar(x=times, y=posts, marker_color=COL["muted"],
                            showlegend=False), row=2, col=1)
