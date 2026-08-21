@@ -492,7 +492,8 @@ def _effective_board_totals_buckets(actual_times):
 # ============================================================================
 # ★2026-08-19追加(ユーザー依頼): 当日の価格推移とセンチメント推移(イントラデイ)
 # ============================================================================
-def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None):
+def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
+                           board_totals_remote=None):
     intraday = rec.get("intraday_today") or {}
     price_pts = intraday.get("price") or []
     # ★2026-08-20変更(ユーザー指示「本日のセンチメント推移は、過去24時間の10分毎の
@@ -518,105 +519,113 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None):
     if not price_pts and not sent_pts:
         return   # データ蓄積中(場が始まったばかり等)は静かに省略・エラーにしない
 
+    # ★2026-08-21修正(ユーザー依頼「本日の価格推移と板のグラフを上下に並べる
+    # ようにしてください」続けて「センチメントはその下に」): 従来はcol1(価格推移)/
+    # col2(センチメント推移)の左右2列だったが、価格推移→板総計→センチメント
+    # 推移の縦一列(全幅)へ変更する。板グラフは同じ「本日のイントラデイ」時間軸を
+    # 扱う点で価格推移と関連が深く、上下に並べることで見比べやすくなる。
     st.markdown("#### 📅 本日の推移（イントラデイ）")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**本日の価格推移（10分足ローソク足・出来高）**")
-        if not price_pts:
-            st.caption("本日の価格データ蓄積中です。")
-        elif HAS_PLOTLY:
-            # ★2026-08-19: ユーザー依頼「価格推移をローソク足にしてほしい」を受け
-            # Scatter(終値の折れ線)からCandlestickへ変更(14日足チャートと同じ配色)。
-            times = [p.get("time") for p in price_pts]
-            opens = [p.get("price_open") for p in price_pts]
-            closes = [p.get("price_close") for p in price_pts]
-            vols = [p.get("price_volume") for p in price_pts]
-            # ★2026-08-19: ユーザー依頼「価格推移に出来高を足せますか」対応。
-            # 14日チャートと同じ設計(candlestick+volume bar・shared_xaxes・
-            # 陽線/陰線と同じ配色)をイントラデイにも適用。
-            vol_colors = [COL["grey"] if (o is None or c is None) else
-                         (COL["red"] if c >= o else COL["blue"])
-                         for o, c in zip(opens, closes)]
-            f = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                              row_heights=[0.7, 0.3], vertical_spacing=0.04)
-            f.add_trace(go.Candlestick(
-                x=times, open=opens,
-                high=[p.get("price_high") for p in price_pts],
-                low=[p.get("price_low") for p in price_pts],
-                close=closes,
-                increasing_line_color=COL["red"], decreasing_line_color=COL["blue"]),
-                row=1, col=1)
-            f.add_trace(go.Bar(x=times, y=vols, marker_color=vol_colors,
-                               showlegend=False), row=2, col=1)
-            f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
-                            height=270, margin=dict(l=8, r=8, t=8, b=8),
-                            font=dict(color=COL["text"]), xaxis_rangeslider_visible=False,
-                            showlegend=False)
-            # ★2026-08-20: ユーザー指摘「本日の推移のチャートの幅が市場の始まり時に
-            # 広すぎる」対応。categoryarrayだけでは並び順が固定されるだけで、表示範囲
-            # (ズーム)は依然として実際に存在するデータ点数へ自動追従してしまう
-            # (実測: 寄り直後・1点しか無い時にxaxis.rangeが[-0.5,0.5]=1カテゴリぶんに
-            # 自動収縮し、その1本のローソク足がプロット全幅を占めていた)。
-            # autorange=False + 1日分の想定カテゴリ数ぶんの固定range を明示することで、
-            # データが少ない寄り直後から終値時点と同じ幅で描画されるようにする
-            # (右側の空白はデータ蓄積中として自然に残る)。
-            # ★2026-08-20: 固定テンプレ(_TODAY_TIME_BUCKETS)だけでなく実データの
-            # 時刻も和集合した「有効バケット列」を使う(_effective_today_bucketsの
-            # docstring参照・2026-08-20の15:30消失事故の再発防止)。
-            _effective_buckets = _effective_today_buckets(times)
-            _n_buckets = len(_effective_buckets)
-            f.update_xaxes(type="category", categoryorder="array",
-                           categoryarray=_effective_buckets,
-                           autorange=False, range=[-0.5, _n_buckets - 0.5], row=1, col=1)
-            f.update_xaxes(type="category", categoryorder="array",
-                           categoryarray=_effective_buckets,
-                           autorange=False, range=[-0.5, _n_buckets - 0.5], row=2, col=1)
-            f.update_yaxes(gridcolor=COL["border"], tickformat=",", row=1, col=1)
-            f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
-            st.plotly_chart(f, width="stretch")
-        else:
-            st.line_chart({"終値": [p.get("price_close") for p in price_pts]})
-    with col2:
-        # ★2026-08-20変更(ユーザー指示「本日のセンチメント推移は、過去24時間の
-        # 10分毎のセンチメントの推移に」): 見出しも実態に合わせて変更。
-        st.markdown("**過去24時間のセンチメント推移（10分毎・強気/弱気比率・投稿量）**")
-        if not sent_pts:
-            st.caption("センチメントデータ蓄積中です。")
-        elif HAS_PLOTLY:
-            times = [p.get("time") for p in sent_pts]
-            bulls = [p.get("bull_ratio") for p in sent_pts]
-            bears = [p.get("bear_ratio") for p in sent_pts]
-            # ★2026-08-20: ユーザー依頼「センチメント推移のグラフに、投稿量の棒
-            # グラフを足せますか」対応(14日チャートの本日版と同じ2段組design)。
-            posts = [p.get("post_count") for p in sent_pts]
-            f = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                              row_heights=[0.72, 0.28], vertical_spacing=0.04)
-            # ★2026-08-20: ユーザー依頼「線を太く」「凡例が横軸表記にかぶらない
-            # ように」に対応(14日チャートの本日版と同じ設計)。★2026-08-21: ユーザー
-            # 依頼「線の太さを3に」を受け幅3へ統一(従来は5)。
-            f.add_trace(go.Scatter(x=times, y=bulls, name="強気", mode="lines",
-                                   line=dict(color=COL["red"], width=3)), row=1, col=1)
-            f.add_trace(go.Scatter(x=times, y=bears, name="弱気", mode="lines",
-                                   line=dict(color=COL["blue"], width=3)), row=1, col=1)
-            f.add_trace(go.Bar(x=times, y=posts, marker_color=COL["muted"],
-                               showlegend=False), row=2, col=1)
-            f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
-                            height=270, margin=dict(l=8, r=8, t=36, b=8),
-                            font=dict(color=COL["text"]),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                       xanchor="left", x=0))
-            # ★2026-08-20追加: timeのラベルが"M/D HH:MM"形式(過去24時間窓は暦日を
-            # またぐため日付を含む)になり、"/"と":"を含む文字列をPlotlyが日付型と
-            # 誤認識し得る(14日チャートの日付表記で過去に一度実際に発生した誤認識と
-            # 同型のリスク)。明示的にcategory型にして誤認識・表記崩れを防ぐ。
-            f.update_xaxes(type="category", row=1, col=1)
-            f.update_xaxes(type="category", row=2, col=1)
-            f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
-            f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
-            st.plotly_chart(f, width="stretch")
-        else:
-            st.line_chart({"強気": [p.get("bull_ratio") for p in sent_pts],
-                          "弱気": [p.get("bear_ratio") for p in sent_pts]})
+
+    st.markdown("**本日の価格推移（10分足ローソク足・出来高）**")
+    if not price_pts:
+        st.caption("本日の価格データ蓄積中です。")
+    elif HAS_PLOTLY:
+        # ★2026-08-19: ユーザー依頼「価格推移をローソク足にしてほしい」を受け
+        # Scatter(終値の折れ線)からCandlestickへ変更(14日足チャートと同じ配色)。
+        times = [p.get("time") for p in price_pts]
+        opens = [p.get("price_open") for p in price_pts]
+        closes = [p.get("price_close") for p in price_pts]
+        vols = [p.get("price_volume") for p in price_pts]
+        # ★2026-08-19: ユーザー依頼「価格推移に出来高を足せますか」対応。
+        # 14日チャートと同じ設計(candlestick+volume bar・shared_xaxes・
+        # 陽線/陰線と同じ配色)をイントラデイにも適用。
+        vol_colors = [COL["grey"] if (o is None or c is None) else
+                     (COL["red"] if c >= o else COL["blue"])
+                     for o, c in zip(opens, closes)]
+        f = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                          row_heights=[0.7, 0.3], vertical_spacing=0.04)
+        f.add_trace(go.Candlestick(
+            x=times, open=opens,
+            high=[p.get("price_high") for p in price_pts],
+            low=[p.get("price_low") for p in price_pts],
+            close=closes,
+            increasing_line_color=COL["red"], decreasing_line_color=COL["blue"]),
+            row=1, col=1)
+        f.add_trace(go.Bar(x=times, y=vols, marker_color=vol_colors,
+                           showlegend=False), row=2, col=1)
+        f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
+                        height=270, margin=dict(l=8, r=8, t=8, b=8),
+                        font=dict(color=COL["text"]), xaxis_rangeslider_visible=False,
+                        showlegend=False)
+        # ★2026-08-20: ユーザー指摘「本日の推移のチャートの幅が市場の始まり時に
+        # 広すぎる」対応。categoryarrayだけでは並び順が固定されるだけで、表示範囲
+        # (ズーム)は依然として実際に存在するデータ点数へ自動追従してしまう
+        # (実測: 寄り直後・1点しか無い時にxaxis.rangeが[-0.5,0.5]=1カテゴリぶんに
+        # 自動収縮し、その1本のローソク足がプロット全幅を占めていた)。
+        # autorange=False + 1日分の想定カテゴリ数ぶんの固定range を明示することで、
+        # データが少ない寄り直後から終値時点と同じ幅で描画されるようにする
+        # (右側の空白はデータ蓄積中として自然に残る)。
+        # ★2026-08-20: 固定テンプレ(_TODAY_TIME_BUCKETS)だけでなく実データの
+        # 時刻も和集合した「有効バケット列」を使う(_effective_today_bucketsの
+        # docstring参照・2026-08-20の15:30消失事故の再発防止)。
+        _effective_buckets = _effective_today_buckets(times)
+        _n_buckets = len(_effective_buckets)
+        f.update_xaxes(type="category", categoryorder="array",
+                       categoryarray=_effective_buckets,
+                       autorange=False, range=[-0.5, _n_buckets - 0.5], row=1, col=1)
+        f.update_xaxes(type="category", categoryorder="array",
+                       categoryarray=_effective_buckets,
+                       autorange=False, range=[-0.5, _n_buckets - 0.5], row=2, col=1)
+        f.update_yaxes(gridcolor=COL["border"], tickformat=",", row=1, col=1)
+        f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
+        st.plotly_chart(f, width="stretch")
+    else:
+        st.line_chart({"終値": [p.get("price_close") for p in price_pts]})
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    _board_totals_chart(board_totals_remote)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    # ★2026-08-20変更(ユーザー指示「本日のセンチメント推移は、過去24時間の
+    # 10分毎のセンチメントの推移に」): 見出しも実態に合わせて変更。
+    st.markdown("**過去24時間のセンチメント推移（10分毎・強気/弱気比率・投稿量）**")
+    if not sent_pts:
+        st.caption("センチメントデータ蓄積中です。")
+    elif HAS_PLOTLY:
+        times = [p.get("time") for p in sent_pts]
+        bulls = [p.get("bull_ratio") for p in sent_pts]
+        bears = [p.get("bear_ratio") for p in sent_pts]
+        # ★2026-08-20: ユーザー依頼「センチメント推移のグラフに、投稿量の棒
+        # グラフを足せますか」対応(14日チャートの本日版と同じ2段組design)。
+        posts = [p.get("post_count") for p in sent_pts]
+        f = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                          row_heights=[0.72, 0.28], vertical_spacing=0.04)
+        # ★2026-08-20: ユーザー依頼「線を太く」「凡例が横軸表記にかぶらない
+        # ように」に対応(14日チャートの本日版と同じ設計)。★2026-08-21: ユーザー
+        # 依頼「線の太さを3に」を受け幅3へ統一(従来は5)。
+        f.add_trace(go.Scatter(x=times, y=bulls, name="強気", mode="lines",
+                               line=dict(color=COL["red"], width=3)), row=1, col=1)
+        f.add_trace(go.Scatter(x=times, y=bears, name="弱気", mode="lines",
+                               line=dict(color=COL["blue"], width=3)), row=1, col=1)
+        f.add_trace(go.Bar(x=times, y=posts, marker_color=COL["muted"],
+                           showlegend=False), row=2, col=1)
+        f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
+                        height=270, margin=dict(l=8, r=8, t=36, b=8),
+                        font=dict(color=COL["text"]),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                   xanchor="left", x=0))
+        # ★2026-08-20追加: timeのラベルが"M/D HH:MM"形式(過去24時間窓は暦日を
+        # またぐため日付を含む)になり、"/"と":"を含む文字列をPlotlyが日付型と
+        # 誤認識し得る(14日チャートの日付表記で過去に一度実際に発生した誤認識と
+        # 同型のリスク)。明示的にcategory型にして誤認識・表記崩れを防ぐ。
+        f.update_xaxes(type="category", row=1, col=1)
+        f.update_xaxes(type="category", row=2, col=1)
+        f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
+        f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
+        st.plotly_chart(f, width="stretch")
+    else:
+        st.line_chart({"強気": [p.get("bull_ratio") for p in sent_pts],
+                      "弱気": [p.get("bear_ratio") for p in sent_pts]})
 
 
 # ★2026-08-20追加(ユーザー提案「AI考察の前回比較を視覚的なバッジでも」)。
@@ -710,7 +719,11 @@ def _board_totals_chart(board_totals_remote):
     if not series:
         return   # データ蓄積中(記録拡張の反映前・休場等)は静かに省略
 
-    st.markdown("#### 📊 板の買い・売り総計(成行込み全価格帯・60秒平均)")
+    # ★2026-08-21修正(ユーザー依頼「本日の価格推移と板のグラフを上下に並べる」):
+    # _intraday_today_charts()内(価格推移とセンチメント推移の間)へ配置される
+    # ようになったため、見出しレベルを独立セクション(####)から兄弟要素と同じ
+    # 太字サブ見出しへ揃える。
+    st.markdown("**📊 板の買い・売り総計(成行込み全価格帯・60秒平均)**")
     st.caption("表示10本の気配だけでなく、外側の気配(OVER/UNDER)と成行注文も"
                "含めた板全体の数量合計です。値は直近60秒間の平均。"
                "需給の偏りを直接示す指標ではありません。")
@@ -925,10 +938,10 @@ def main():
                "(Antweiler & Frank, 2004)。")
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    _intraday_today_charts(rec, live_price, sentiment_24h_remote)
-
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    _board_totals_chart(board_totals_remote)
+    # ★2026-08-21修正(ユーザー依頼「本日の価格推移と板のグラフを上下に並べる」):
+    # 板総計チャートは_intraday_today_charts()内部(価格推移とセンチメント推移の
+    # 間)へ移動したため、board_totals_remoteを引数として渡す。単独呼び出しは廃止。
+    _intraday_today_charts(rec, live_price, sentiment_24h_remote, board_totals_remote)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     _price_and_sentiment_charts(rec, live_price)
