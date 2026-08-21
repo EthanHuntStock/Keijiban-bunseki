@@ -461,6 +461,32 @@ def _effective_today_buckets(actual_times):
     return sorted(set(_TODAY_TIME_BUCKETS) | set(actual_times or []))
 
 
+def _today_time_buckets_60s():
+    """★2026-08-21追加(ユーザー依頼「板の買い・売り総計グラフの横軸は、市場が
+    開いている時間としてください」)。_today_time_buckets()の60秒粒度版。
+    board_totals_60s_series()が"HH:MM:SS"形式(60秒バケット)で出すのに合わせ、
+    東証立会時間(前場9:00-11:20・後場12:30-15:30、間の昼休みは除外)ぶんを
+    60秒刻みで固定順生成する。前場終値側の境界(11:20まで)は10分足版と同じ実測
+    根拠(_today_time_buckets()のdocstring参照)を踏襲する。"""
+    labels = []
+    for start_sec, end_sec in ((9 * 3600, 11 * 3600 + 20 * 60),
+                               (12 * 3600 + 30 * 60, 15 * 3600 + 30 * 60)):
+        for s in range(start_sec, end_sec + 1, 60):
+            labels.append(f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}")
+    return labels
+
+
+_TODAY_TIME_BUCKETS_60S = _today_time_buckets_60s()
+_TODAY_TIME_BUCKETS_60S_SET = set(_TODAY_TIME_BUCKETS_60S)   # メンバーシップ判定の高速化用
+
+
+def _effective_board_totals_buckets(actual_times):
+    """★2026-08-21追加。_effective_today_buckets()の60秒粒度版(_TODAY_TIME_BUCKETS_60S
+    との和集合)。同じ理由(固定rangeの外に実データが押し出されて非表示になる事故の
+    再発防止)でテンプレと実データを合成する。"""
+    return sorted(set(_TODAY_TIME_BUCKETS_60S) | set(actual_times or []))
+
+
 # ============================================================================
 # ★2026-08-19追加(ユーザー依頼): 当日の価格推移とセンチメント推移(イントラデイ)
 # ============================================================================
@@ -686,6 +712,13 @@ def _board_totals_chart(board_totals_remote):
     st.caption("表示10本の気配だけでなく、外側の気配(OVER/UNDER)と成行注文も"
                "含めた板全体の数量合計です。値は直近60秒間の平均。"
                "需給の偏りを直接示す指標ではありません。")
+    # ★2026-08-21追加(ユーザー依頼「グラフの横軸は、市場が開いている時間として
+    # ください」)。板CSVは基本的に取引時間中しか記録されないため通常は混入しないが、
+    # 念のため東証立会時間の固定テンプレ(_TODAY_TIME_BUCKETS_60S)に無い時刻の点は
+    # 明示的に除外する(万一の寄り前後データ混入を横軸に含めない)。
+    series = [p for p in series if p.get("time") in _TODAY_TIME_BUCKETS_60S_SET]
+    if not series:
+        return   # 取引時間中の有効な点が無ければ静かに省略
     times = [p.get("time") for p in series]
     buys = [p.get("buy_total") for p in series]
     sells = [p.get("sell_total") for p in series]
@@ -703,7 +736,16 @@ def _board_totals_chart(board_totals_remote):
         # ★"HH:MM:SS"形式の時刻ラベルは":"を含むためPlotlyが日付型と誤認識し得る
         # (14日/24時間チャートの日付表記で過去に一度実際に発生した誤認識と同型の
         # リスク)。明示的にcategory型にして誤認識・表記崩れを防ぐ。
-        f.update_xaxes(type="category")
+        # ★2026-08-21: 横軸を東証立会時間の固定テンプレ(前場9:00-11:20・
+        # 後場12:30-15:30)に揃える(_today_time_buckets()の10分足版と同じ設計)。
+        # 固定categoryarray+autorange=Falseにすることで、データが少ない場中の
+        # 早い時間帯でも1日を通じて幅が一定になり、かつ横軸が常に市場の開場時間
+        # (寄り付き〜大引け)だけを表す。
+        _effective_buckets = _effective_board_totals_buckets(times)
+        _n_buckets = len(_effective_buckets)
+        f.update_xaxes(type="category", categoryorder="array",
+                       categoryarray=_effective_buckets,
+                       autorange=False, range=[-0.5, _n_buckets - 0.5])
         f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s")
         st.plotly_chart(f, width="stretch", key="board_totals_chart")
     else:
