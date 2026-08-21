@@ -635,13 +635,16 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
         st.line_chart({"終値": [p.get("price_close") for p in price_pts]})
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    _board_totals_chart(board_totals_remote)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     # ★2026-08-21追加(ユーザー依頼「過去24時間センチメント推移を『本日の
     # センチメント推移』に変更。本日の価格推移・板の買い・売り総計のグラフと
     # 横軸が合うように」続けて「本日のセンチメント推移の横軸は本日の価格推移の
-    # 市場の空いている時間に合わせる」「上下で見比べることが出来るように」):
-    # 本日ぶんのみ・価格チャートと同じ_effective_buckets(10分カテゴリ=市場が
-    # 開いている時間のみ)を使い横軸を厳密一致させ、かつ本日の価格推移の直下
-    # (板の買い・売り総計より前)に配置して縦に見比べやすくする。
+    # 市場の空いている時間に合わせる」)。★2026-08-21再修正(ユーザー依頼「本日の
+    # センチメント推移と板の買い・売り総計の上下を入れ替えてください」): 価格
+    # 推移→板の買い・売り総計→本日のセンチメント推移→過去24時間のセンチメント
+    # 推移の順へ変更(横軸を揃える設計自体=_effective_buckets共有は無変更)。
     st.markdown("**本日のセンチメント推移（10分毎・強気/弱気比率・投稿量）**")
     if not today_sent_pts:
         st.caption("本日のセンチメントデータ蓄積中です。")
@@ -686,9 +689,6 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
         st.plotly_chart(f, width="stretch")
     else:
         st.line_chart({"強気": [p.get("bull_ratio") for p in today_sent_pts]})
-
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    _board_totals_chart(board_totals_remote)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     # ★2026-08-20変更(ユーザー指示「本日のセンチメント推移は、過去24時間の
