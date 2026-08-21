@@ -441,6 +441,9 @@ def intraday_today_high_low(price_pts):
     return (max(highs) if highs else None, min(lows) if lows else None)
 
 
+_ITAYOSE_RATIO = 15.0   # board_totals_60s_series()の板寄せ検出閾値(docstring参照)
+
+
 def board_totals_60s_series(rows, today=None):
     """★2026-08-21追加(ユーザー依頼「板の買い・売り総計(成行を含めた全価格帯)を
     過去60秒間の平均値・60秒毎更新・折れ線グラフで公開ダッシュボードへ」。
@@ -486,6 +489,19 @@ def board_totals_60s_series(rows, today=None):
     グラフが跳ね上がって見える。_is_trading_hours()が後場を15:30未満(15:30を
     含まない)と定義しているのと同じ境界に合わせ、15:30以降の行はこの指標から
     除外する(価格チャート側は従来どおりこの行を使い続けてよい・totals専用の除外)。
+
+    ★2026-08-21追加(ユーザー依頼「改善提案①=開場直後の板寄せ希薄化リスクに
+    先回りで対応」): 上の15:30除外は「大引け」という時刻境界に依存する対処だが、
+    寄り付き板寄せ(前場9:00・後場12:30の開始直後)にも同種の現象が起きうる
+    (実測: 2026-08-21 09:01:41にbuy1qty=267,100 vs buy2qty=200など、他の価格帯が
+    薄いまま最良気配だけ桁違いに積み上がる)。時刻境界(いつ寄り付き板寄せが記録
+    されるかは記録開始タイミング次第で一定しない)ではなく、板の"形"そのもので
+    itayose行を検出する: buy1qty(またはsell1qty)がbuy2〜10qty(sell2〜10qty)の
+    合計の_ITAYOSE_RATIO倍を超える行は、連続売買中の通常の板とは形が異なる
+    (板寄せで最良気配へ約定数量が集中)とみなしこの指標から除外する。実測では
+    通常時の比率は概ね1〜3倍、板寄せ時は40〜1300倍と桁で分離できるため、
+    15倍という閾値には十分な安全マージンがある。他方の気配(rest計=0)は
+    比較不能なため対象外とする(誤って通常の薄い板を除外しない)。
     """
     today = today or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
     buckets = {}   # bucket_key -> {"buy": [...], "sell": [...]}
@@ -502,8 +518,8 @@ def board_totals_60s_series(rows, today=None):
             # 大引け板寄せ(15:30以降)は連続売買の板状態ではないため除外(上記docstring参照)
             continue
         try:
-            buy_visible = sum(float(r.get(f"buy{i}qty") or 0) for i in range(1, 11))
-            sell_visible = sum(float(r.get(f"sell{i}qty") or 0) for i in range(1, 11))
+            buy_qtys = [float(r.get(f"buy{i}qty") or 0) for i in range(1, 11)]
+            sell_qtys = [float(r.get(f"sell{i}qty") or 0) for i in range(1, 11)]
             under_buy = float(r["under_buy_qty"])
             over_sell = float(r["over_sell_qty"])
             market_buy = float(r["market_buy_qty"])
@@ -512,6 +528,16 @@ def board_totals_60s_series(rows, today=None):
             # 新4列が無い/空/不正な行(拡張前の記録)は「全価格帯」の前提が崩れる
             # ため、この指標からは行ごと除外する(部分合計を捏造しない)。
             continue
+        # ★2026-08-21追加: 板寄せ(itayose)行の検出(上記docstring参照)。最良気配
+        # (buy1qty/sell1qty)が他の価格帯(buy2〜10/sell2〜10の合計)の
+        # _ITAYOSE_RATIO倍を超えて突出している行は除外する。
+        rest_buy = sum(buy_qtys[1:])
+        rest_sell = sum(sell_qtys[1:])
+        if ((rest_buy > 0 and buy_qtys[0] > _ITAYOSE_RATIO * rest_buy) or
+                (rest_sell > 0 and sell_qtys[0] > _ITAYOSE_RATIO * rest_sell)):
+            continue
+        buy_visible = sum(buy_qtys)
+        sell_visible = sum(sell_qtys)
         buy_total = buy_visible + under_buy + market_buy
         sell_total = sell_visible + over_sell + market_sell
 
