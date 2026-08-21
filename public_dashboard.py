@@ -527,6 +527,13 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
     st.markdown("#### 📅 本日の推移（イントラデイ）")
 
     st.markdown("**本日の価格推移（10分足ローソク足・出来高）**")
+    # ★2026-08-21追加(ユーザー依頼「本日の価格推移のところに、最高値、最安値を
+    # 書くようにしましょう」)。price_pts(10分足)のprice_high/price_lowから本日の
+    # 高値/安値を拾って見出し直下に表示する(public_export.intraday_today_high_low・
+    # データが無ければ何も表示しない=捏造しない)。
+    _day_high, _day_low = public_export.intraday_today_high_low(price_pts)
+    if _day_high is not None and _day_low is not None:
+        st.caption(f"本日の高値 {_day_high:,.0f}円 ／ 安値 {_day_low:,.0f}円")
     if not price_pts:
         st.caption("本日の価格データ蓄積中です。")
     elif HAS_PLOTLY:

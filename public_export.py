@@ -430,6 +430,17 @@ def kabu_tick_today_summary(rows, today=None):
     return {"price_pts": price_pts, "day_bar": day_bar, "last": last_price, "last_time": last_time}
 
 
+def intraday_today_high_low(price_pts):
+    """★2026-08-21追加(ユーザー依頼「本日の価格推移のところに、最高値、最安値を
+    書くようにしましょう」)。本日イントラデイの10分足系列(price_pts・各要素に
+    price_high/price_lowを持つ)から、当日の最高値/最安値を1点ずつ拾う純関数。
+    price_high/price_lowがNone/欠損の点は無視する(捏造しない)。有効な点が1つも
+    無ければ(None, None)を返す(fail-soft・呼び手はNoneなら非表示にする)。"""
+    highs = [p.get("price_high") for p in (price_pts or []) if p.get("price_high") is not None]
+    lows = [p.get("price_low") for p in (price_pts or []) if p.get("price_low") is not None]
+    return (max(highs) if highs else None, min(lows) if lows else None)
+
+
 def board_totals_60s_series(rows, today=None):
     """★2026-08-21追加(ユーザー依頼「板の買い・売り総計(成行を含めた全価格帯)を
     過去60秒間の平均値・60秒毎更新・折れ線グラフで公開ダッシュボードへ」。
@@ -463,6 +474,18 @@ def board_totals_60s_series(rows, today=None):
     含めても常に"00"で情報量が無く冗長だった。キー形式を"HH:MM:SS"から
     "HH:MM"へ単純化する(バケット化のロジック自体=分単位でグルーピングする点は
     無変更)。
+
+    ★2026-08-21修正(ユーザー指摘「15:30近辺が跳ね上がっており、計算を間違って
+    いると思われる」): 15:30ちょうど(後場の大引け板寄せ)の板スナップショットは
+    buy1qty/sell1qty(最良気配の数量)が板寄せで約定した数量をそのまま反映するため、
+    通常の連続売買中の「気配に並んでいる残数量」とは意味が異なり桁違いに巨大な値
+    になる(実測: 通常は数百〜数千のところ472,500/474,300等)。この行はRECORD_END=
+    15:31の意図どおり「終値」を捉えるためには必要だが、板の買い/売り圧力を表す
+    このtotals指標にとっては実態と異なるノイズであり、しかもこの瞬間は記録間隔が
+    空いてバケット内で唯一の行になりがちなため平均が丸ごとこの異常値になり
+    グラフが跳ね上がって見える。_is_trading_hours()が後場を15:30未満(15:30を
+    含まない)と定義しているのと同じ境界に合わせ、15:30以降の行はこの指標から
+    除外する(価格チャート側は従来どおりこの行を使い続けてよい・totals専用の除外)。
     """
     today = today or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
     buckets = {}   # bucket_key -> {"buy": [...], "sell": [...]}
@@ -474,6 +497,9 @@ def board_totals_60s_series(rows, today=None):
         try:
             hh, mm = int(t[11:13]), int(t[14:16])
         except (TypeError, ValueError):
+            continue
+        if hh * 60 + mm >= 15 * 60 + 30:
+            # 大引け板寄せ(15:30以降)は連続売買の板状態ではないため除外(上記docstring参照)
             continue
         try:
             buy_visible = sum(float(r.get(f"buy{i}qty") or 0) for i in range(1, 11))

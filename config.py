@@ -92,7 +92,12 @@ FIND_5CH_URL = "https://find.5ch.net/search?q="   # + urlencoded keyword
 BBS_5CH_KEYWORDS = ["キオクシア", "285A"]          # スレ検索キーワード
 BBS_5CH_TITLE_FILTER = ["キオクシア", "285A", "KIOXIA", "Kioxia", "kioxia"]
 BBS_5CH_MAX_THREADS = 4             # 1実行で取りに行くスレ数(負荷配慮)
-BBS_5CH_MAX_POSTS_PER_THREAD = 80   # スレあたり取得レス上限
+BBS_5CH_MAX_POSTS_PER_THREAD = 1000  # スレあたり取得レス上限(=5ch自体の1スレ上限)。
+                                      # 旧80は活況スレ×長時間停止の組合せで末尾80件の外側が
+                                      # 構造的に永久欠落するリスクがあった(2026-08-21おにや発見)。
+                                      # read.cgiは元々スレ全体のHTMLを一括取得しておりページング
+                                      # 不要・重複はseen_ids側で排除されるため上限を実質無効化
+                                      # しても再取得コストは増えない。
 
 # ---- ソース3: Reddit(公開JSON・認証不要/IP制限あり) ----------------------
 REDDIT_SEARCH_URL = "https://www.reddit.com/search.json?q=Kioxia&sort=new&limit=25"
