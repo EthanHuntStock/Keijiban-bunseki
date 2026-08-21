@@ -1158,6 +1158,50 @@ def sentiment_today_from_last_24h(sent_pts_24h, today=None):
     return out
 
 
+def detect_series_outliers(pts, key, window=5, ratio=5.0, min_median=1.0):
+    """★2026-08-21追加(ユーザー依頼「改善提案②=異常値の自動検出」・ユーザー
+    指摘「データの異常性のチェックはしてないのですか」への恒久対応)。
+
+    投稿量(post_count)や板の買い/売り総計のような「件数・数量」系の時系列
+    (pts=[{"time":..., key: value}, ...])から、前後の値と比べて突出した点を
+    検出する汎用の純関数。今回の一連の調査(板寄せ混入・収集の一括キャッチ
+    アップ)はいずれも「都度ユーザーからの指摘を受けて手動でログを掘る」形に
+    なっていたが、既知のパターンをコードで個別に塞ぐ(board_totals_60s_seriesの
+    itayose検出等)だけでなく、**未知の異常も自動的に目立たせる**汎用の安全網
+    として追加する。
+
+    判定方法: 各点について、前後window点(自分を除く・末端は片側のみ)の
+    中央値(median)を基準にし、値がmedianのratio倍を超えていれば外れ値と
+    みなす。中央値方式は平均より少数の極端値に引きずられにくい(1点の異常が
+    自分自身の判定基準を歪めない)。medianがmin_median未満(値がほぼ0近辺の
+    閑散区間)の場合は分母が小さすぎて僅かな変動でも比率が跳ね上がり誤検知
+    しやすいため判定を見送る(fail-soft・過検知しない)。
+
+    ★値は一切書き換えない・除外もしない(検出のみ)。捏造しない設計原則どおり、
+    データそのものは手を加えず、呼び手(ダッシュボード側)が「⚠️N点の異常値を
+    自動検出」等の注記を添えて透明性を保ったまま表示する用途を想定する。
+
+    戻り値: 外れ値と判定された点の"time"のリスト(時系列順)。"""
+    values = [p.get(key) for p in (pts or [])]
+    n = len(values)
+    flagged = []
+    for i in range(n):
+        v = values[i]
+        if v is None:
+            continue
+        neighbors = [values[j] for j in range(max(0, i - window), min(n, i + window + 1))
+                    if j != i and values[j] is not None]
+        if len(neighbors) < 3:
+            continue
+        neighbors_sorted = sorted(neighbors)
+        median = neighbors_sorted[len(neighbors_sorted) // 2]
+        if median < min_median:
+            continue
+        if v > ratio * median:
+            flagged.append(pts[i].get("time"))
+    return flagged
+
+
 def previous_snapshot_for_ai_commentary(previous_record):
     """★2026-08-19追加(ユーザー依頼「AI考察は前回からの変化に対する考察も入れる」)。
     直前に書き出し済みの公開レコード(load_public_latest()の戻り値、つまり"今回の更新

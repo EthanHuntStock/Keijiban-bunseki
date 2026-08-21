@@ -285,6 +285,21 @@ def _mmdd(d):
     return f"{int(parts[1])}/{int(parts[2])}"
 
 
+def _outlier_caption(times, values, label="投稿量"):
+    """★2026-08-21追加(ユーザー依頼「改善提案②=異常値の自動検出」)。件数・
+    数量系のグラフ(投稿量・板の買い/売り総計等)の直下に、
+    public_export.detect_series_outliers()が検出した外れ値があれば小さな
+    注記を出す。値そのものは書き換えない(検出のみ・透明性を保つ=捏造しない
+    設計原則どおり)。外れ値が無ければ何も表示しない(平常時は静か)。"""
+    pts = [{"time": t, "v": v} for t, v in zip(times or [], values or [])]
+    flagged = public_export.detect_series_outliers(pts, "v")
+    if flagged:
+        shown = "、".join(flagged[:5])
+        more = f" ほか{len(flagged) - 5}件" if len(flagged) > 5 else ""
+        st.caption(f"⚠️ {label}に自動検出された外れ値: {shown}{more}"
+                  "(収集の一括キャッチアップ等が原因の可能性・値は捏造/削除せずそのまま表示しています)")
+
+
 # ============================================================================
 # (e)(f) 価格チャート + センチメント推移(price_sentiment_series由来)
 # ============================================================================
@@ -412,6 +427,7 @@ def _price_and_sentiment_charts(rec, live_price=None):
         f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
         f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
         st.plotly_chart(f, width="stretch")
+        _outlier_caption(date_labels, posts)
     else:
         st.line_chart({"強気": bulls, "弱気": bears})
 
@@ -687,6 +703,7 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
         f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
         f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
         st.plotly_chart(f, width="stretch")
+        _outlier_caption(_t_times, _t_posts)
     else:
         st.line_chart({"強気": [p.get("bull_ratio") for p in today_sent_pts]})
 
@@ -737,6 +754,7 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
         f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
         f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
         st.plotly_chart(f, width="stretch")
+        _outlier_caption(times, posts)
     else:
         st.line_chart({"強気": [p.get("bull_ratio") for p in sent_pts],
                       "弱気": [p.get("bear_ratio") for p in sent_pts]})
@@ -885,6 +903,8 @@ def _board_totals_chart(board_totals_remote):
                        ticktext=_TODAY_TIME_BUCKETS)
         f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s")
         st.plotly_chart(f, width="stretch", key="board_totals_chart")
+        _outlier_caption(times, buys, "買い総計")
+        _outlier_caption(times, sells, "売り総計")
     else:
         st.line_chart({"買い総計": buys, "売り総計": sells})
 
