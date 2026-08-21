@@ -514,17 +514,21 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
     # ★2026-08-21追加(ユーザー依頼「過去24時間センチメント推移を『本日の
     # センチメント推移』に変更。本日の価格推移・板の買い・売り総計のグラフと
     # 横軸が合うように」続けて「その下に、過去24時間センチメント推移を残して
-    # ください」): 上のsent_pts(過去24時間・下に残す方)とは別に、本日ぶんのみ
-    # (intraday_today['sentiment'])を価格チャートと同じ10分バケットへリサンプル
-    # した系列を用意する(public_export.intraday_today_sentiment_10min)。
-    today_sent_pts = public_export.intraday_today_sentiment_10min(
-        intraday.get("sentiment") or [])
+    # ください」)。★2026-08-21同日中に是正(ユーザー指摘「投稿量は取得時刻でなく
+    # 投稿時刻でならすことにしたはずです」): 上のsent_pts(過去24時間ぶん・
+    # sentiment_last_24h_10min()が投稿自身のtsでバケット化済み)から本日ぶんだけを
+    # 抜き出す(public_export.sentiment_today_from_last_24h)。初回実装は
+    # intraday_today['sentiment'](snapshot実行=取得時刻基準)をリサンプルする方式
+    # だったが、収集側の一括バックログ取得(実例=本日12:37のYahoo 19,801件一括
+    # 取得)で投稿量が1バケットへ跳ね上がる、2026-08-20に一度是正済みだったのと
+    # 同種の不具合を再導入していたため、既に投稿時刻ベースで正しく計算済みの
+    # sent_pts を再利用する設計へ変更した。
+    today_sent_pts = public_export.sentiment_today_from_last_24h(sent_pts)
     # ★2026-08-21修正(ユーザー指摘「横軸は市場が開いている時間＆昼休みは抜く。
-    # 本日の価格推移の市場の空いている時間に合わせる、と書いたでしょ」): snapshot
-    # (センチメント算出の元)は取引時間外(寄り前・昼休み・引け後)にも実行されるため、
-    # リサンプルしただけでは昼休み(11:30-12:30等)や取引時間外のバケットが混入し
-    # 得る。板総計チャート(_board_totals_chart)と同じ設計で、東証立会時間の固定
-    # テンプレ(_TODAY_TIME_BUCKETS)に無い時刻の点は明示的に除外する。
+    # 本日の価格推移の市場の空いている時間に合わせる、と書いたでしょ」): sent_pts
+    # は暦日24時間ぶん(取引時間外も含む)のため、板総計チャート(_board_totals_chart)
+    # と同じ設計で、東証立会時間の固定テンプレ(_TODAY_TIME_BUCKETS)に無い時刻の
+    # 点は明示的に除外する。
     today_sent_pts = [p for p in today_sent_pts if p.get("time") in _TODAY_TIME_BUCKETS_SET]
     # ★2026-08-20追加(ユーザー指示「本日の推移の株価も60秒毎に最新値に」)。
     # live_price(kabuティックから60秒毎に生成)に本日の10分足系列があれば、

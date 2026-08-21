@@ -957,7 +957,20 @@ def intraday_today_series(snapshot_rows, price_intraday, today=None, adr_pts=Non
 def intraday_today_sentiment_10min(sent_pts):
     """★2026-08-21追加(ユーザー依頼「過去24時間センチメント推移を『本日の
     センチメント推移』に変更。本日の価格推移・板の買い・売り総計のグラフと
-    横軸が合うように」)。intraday_today_series()が返すsentiment(各snapshot実行
+    横軸が合うように」)。
+
+    ★2026-08-21同日中に非推奨化(ユーザー指摘「投稿量は取得時刻でなく投稿時刻で
+    ならすことにしたはずです」): 本関数はsnapshots.jsonl(=巡回/取得実行のたびの
+    時刻)基準でバケット化するため、収集側の一括バックログ取得(実例=本日12:37の
+    Yahoo 19,801件一括取得)が起きると投稿量が1バケットへ跳ね上がる、
+    2026-08-20に一度是正済みだったのと同種の不具合を再導入してしまっていた。
+    「本日のセンチメント推移」チャートは現在sentiment_today_from_last_24h()
+    (投稿自身のtsでバケット化済みのsentiment_last_24h_10min()から本日ぶんを
+    抜き出すだけ)を使う設計へ切り替え済み。本関数自体は既存selftestの対象の
+    ため削除しないが、新規の呼び出し元を増やさないこと。
+
+    (以下は元の設計メモ・現在は上記の理由で非推奨)
+    intraday_today_series()が返すsentiment(各snapshot実行
     時刻そのままの不揃いな間隔・catchup=10分毎/フル実行=毎時)を、price_ptsと
     同じ「10分刻み(分を10で切り捨て)」バケットへリサンプルする純関数。これにより
     x軸のカテゴリ(HH:MM)が価格チャートの_effective_today_buckets()と厳密に一致し、
@@ -1083,6 +1096,40 @@ def sentiment_last_24h_10min(raw_rows, analyzed_rows, now=None):
             "post_count": post_counts.get(bkey, 0),
         })
     return result
+
+
+def sentiment_today_from_last_24h(sent_pts_24h, today=None):
+    """★2026-08-21追加(ユーザー指摘「投稿量は、取得時刻ではなく、投稿時刻で
+    ならすことにしたはずです」)。「本日のセンチメント推移」チャートの初回実装
+    (intraday_today_sentiment_10min())はsnapshots.jsonl(=巡回/取得実行のたびの
+    時刻)基準でバケット化しており、これは2026-08-20に一度発見・是正済みだった
+    「収集側にバックログが溜まって一度に大量取得すると、実際は広い時間帯に
+    わたって投稿されたはずの分が1バケットへまるごと計上される」不具合
+    (sentiment_last_24h_10min()のdocstring参照)を、自分が知らずに再導入して
+    いた回帰バグだった。実測でも本日12:30に投稿量3,979の跳ね上がりとして再現
+    していた(原因はYahoo収集が12:37に19,801件を一括取得したため)。
+
+    正しい直し方は「投稿時刻(ts)でバケット化」であり、それは既に
+    sentiment_last_24h_10min()が実装済み(raw_comments.jsonl/analyzed.jsonlの各行
+    自身のtsでバケット化・過去24時間ぶん)。本関数はその戻り値(sent_pts_24h・
+    "M/D HH:MM"形式)から本日ぶんだけを抜き出し、日付部分を落として"HH:MM"形式
+    へ変換する純関数。新たに再集計は行わない(=snapshots.jsonl由来の
+    intraday_today_sentiment_10min()は今後この用途では使わない・ただし既存
+    selftestの対象になっているため関数自体は削除しない)。
+
+    today(省略時はJST今日)のyyyy-mm-dd文字列から月/日を取り出し、
+    sent_pts_24hの"time"先頭の"M/D"(ゼロ埋め無し・sentiment_last_24h_10min()の
+    出力形式と同じ構築方法)と一致する行だけを残す。"""
+    today = today or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    y, m, d = today.split("-")
+    prefix = f"{int(m)}/{int(d)} "
+    out = []
+    for p in sent_pts_24h or []:
+        t = (p.get("time") or "")
+        if not t.startswith(prefix):
+            continue
+        out.append({**p, "time": t[len(prefix):]})
+    return out
 
 
 def previous_snapshot_for_ai_commentary(previous_record):
