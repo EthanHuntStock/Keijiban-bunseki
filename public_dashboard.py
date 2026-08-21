@@ -324,94 +324,96 @@ def _price_and_sentiment_charts(rec, live_price=None):
     neutrals = [None if (b is None or r is None) else max(0.0, 1.0 - b - r)
                for b, r in zip(bulls, bears)]
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**過去14日間の価格推移（日足ローソク足・出来高）**")
-        if HAS_PLOTLY:
-            # ★2026-08-19: ユーザー依頼「価格推移をローソク足にしてほしい」を受け
-            # Scatter(終値の折れ線)からCandlestickへ変更。色は日本の相場慣行
-            # (上昇=赤・下降=青)に合わせる(ユーザー指定・ヘッダーの騰落率表示と同じ配色)。
-            opens = [p.get("price_open") for p in pss]
-            highs = [p.get("price_high") for p in pss]
-            lows = [p.get("price_low") for p in pss]
-            vols = [p.get("price_volume") for p in pss]
-            # ★2026-08-19: ユーザー依頼「価格推移に出来高を足せますか」対応。
-            # ローソク足の下に出来高バーを別行(サブプロット)として追加。x軸を共有
-            # (shared_xaxes)し、当日の陽線/陰線と同じ配色(上昇=赤・下降=青)で
-            # バーを塗ることで、ローソク足と出来高の対応が視覚的に分かるようにする。
-            vol_colors = [COL["grey"] if (o is None or c is None) else
-                         (COL["red"] if c >= o else COL["blue"])
-                         for o, c in zip(opens, closes)]
-            f = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                              row_heights=[0.72, 0.28], vertical_spacing=0.03)
-            f.add_trace(go.Candlestick(
-                x=date_labels, open=opens, high=highs, low=lows, close=closes,
-                increasing_line_color=COL["red"], decreasing_line_color=COL["blue"]),
-                row=1, col=1)
-            f.add_trace(go.Bar(x=date_labels, y=vols, marker_color=vol_colors,
-                               showlegend=False), row=2, col=1)
-            f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
-                            height=310, margin=dict(l=8, r=8, t=8, b=8),
-                            font=dict(color=COL["text"]), xaxis_rangeslider_visible=False,
-                            showlegend=False)
-            # ★2026-08-19: ユーザー依頼「非営業日は非表示にして、表示を
-            # 詰めて、営業日14日間を表示」対応。datesは既に営業日のみ
-            # (前段のtrading-day-onlyフィルタで非営業日は除外済)だが、
-            # xaxisを日付型のままにするとPlotlyが暦日ベースで間隔を
-            # 取り、除外した週末/祝日の分だけ視覚的な空白が残る。
-            # type="category"にして14個の日付ラベルを隙間なく詰める(両サブプロット共通)。
-            f.update_xaxes(type="category", row=1, col=1)
-            f.update_xaxes(type="category", row=2, col=1)
-            f.update_yaxes(gridcolor=COL["border"], tickformat=",", row=1, col=1)
-            f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
-            st.plotly_chart(f, width="stretch")
-        else:
-            st.line_chart({"終値": closes})
-    with col2:
-        st.markdown("**過去14日間のセンチメント推移（強気/弱気/中立比率・投稿量）**")
-        if HAS_PLOTLY:
-            # ★2026-08-20: ユーザー依頼「センチメント推移のグラフに、投稿量の棒
-            # グラフを足せますか」対応。価格チャート(ローソク足+出来高)と同じ設計
-            # (make_subplotsで2段・shared_xaxes)で、下段に投稿量の棒グラフを追加する。
-            posts = [p.get("post_count") for p in pss]
-            f = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                              row_heights=[0.72, 0.28], vertical_spacing=0.03)
-            # ★2026-08-20: ユーザー依頼「グラフの線を太く」「凡例が横軸表記に
-            # かぶらないように」を受け、線幅を太くし、凡例をプロット領域の"上"に
-            # 明示配置(yanchor="bottom", y=1.02)して横軸ラベルとの重なりを避ける。
-            # 上部余白(margin.t)もその分広げる。★2026-08-21: ユーザー依頼「線の
-            # 太さを3に」を受け全トレース幅3へ統一(従来は強気/弱気5・中立4)。
-            # ★2026-08-21追加(ユーザー指摘「投稿量はあるのにグラフが切れている」):
-            # bull_ratio/bear_ratioはmeaningful(AI分析済み)行のみを対象に計算する
-            # ため、投稿(post_count)自体は届いていてもAI分析が追いついていない
-            # バケットはNoneになりうる(analyze.pyは1サイクルあたり240秒の予算制で
-            # 残りを次回runへ持ち越す設計・システム停止でなくても正常に起こりうる)。
-            # connectgaps=Trueで、そうした一時的な欠測点をまたいで前後の実測値
-            # 同士を線で結ぶ(値を捏造するのではなく、単に描画上ギャップを飛び越える
-            # だけ・該当点はNoneのまま=ホバー等では値が無いことがわかる)。
-            f.add_trace(go.Scatter(x=date_labels, y=bulls, name="強気", mode="lines",
-                                   connectgaps=True,
-                                   line=dict(color=COL["red"], width=3)), row=1, col=1)
-            f.add_trace(go.Scatter(x=date_labels, y=bears, name="弱気", mode="lines",
-                                   connectgaps=True,
-                                   line=dict(color=COL["blue"], width=3)), row=1, col=1)
-            f.add_trace(go.Scatter(x=date_labels, y=neutrals, name="中立", mode="lines",
-                                   connectgaps=True,
-                                   line=dict(color=COL["grey"], width=3, dash="dot")), row=1, col=1)
-            f.add_trace(go.Bar(x=date_labels, y=posts, marker_color=COL["muted"],
-                               showlegend=False), row=2, col=1)
-            f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
-                            height=310, margin=dict(l=8, r=8, t=36, b=8),
-                            font=dict(color=COL["text"]),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                       xanchor="left", x=0))
-            f.update_xaxes(type="category", row=1, col=1)
-            f.update_xaxes(type="category", row=2, col=1)
-            f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
-            f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
-            st.plotly_chart(f, width="stretch")
-        else:
-            st.line_chart({"強気": bulls, "弱気": bears})
+    # ★2026-08-21修正(ユーザー依頼「過去14日間の推移の二つのグラフも、上下に
+    # 並べましょう」): 従来はcol1(価格推移)/col2(センチメント推移)の左右2列
+    # だったが、「本日の推移」セクションと同じ縦一列(全幅)へ揃える。
+    st.markdown("**過去14日間の価格推移（日足ローソク足・出来高）**")
+    if HAS_PLOTLY:
+        # ★2026-08-19: ユーザー依頼「価格推移をローソク足にしてほしい」を受け
+        # Scatter(終値の折れ線)からCandlestickへ変更。色は日本の相場慣行
+        # (上昇=赤・下降=青)に合わせる(ユーザー指定・ヘッダーの騰落率表示と同じ配色)。
+        opens = [p.get("price_open") for p in pss]
+        highs = [p.get("price_high") for p in pss]
+        lows = [p.get("price_low") for p in pss]
+        vols = [p.get("price_volume") for p in pss]
+        # ★2026-08-19: ユーザー依頼「価格推移に出来高を足せますか」対応。
+        # ローソク足の下に出来高バーを別行(サブプロット)として追加。x軸を共有
+        # (shared_xaxes)し、当日の陽線/陰線と同じ配色(上昇=赤・下降=青)で
+        # バーを塗ることで、ローソク足と出来高の対応が視覚的に分かるようにする。
+        vol_colors = [COL["grey"] if (o is None or c is None) else
+                     (COL["red"] if c >= o else COL["blue"])
+                     for o, c in zip(opens, closes)]
+        f = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                          row_heights=[0.72, 0.28], vertical_spacing=0.03)
+        f.add_trace(go.Candlestick(
+            x=date_labels, open=opens, high=highs, low=lows, close=closes,
+            increasing_line_color=COL["red"], decreasing_line_color=COL["blue"]),
+            row=1, col=1)
+        f.add_trace(go.Bar(x=date_labels, y=vols, marker_color=vol_colors,
+                           showlegend=False), row=2, col=1)
+        f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
+                        height=270, margin=dict(l=8, r=8, t=8, b=8),
+                        font=dict(color=COL["text"]), xaxis_rangeslider_visible=False,
+                        showlegend=False)
+        # ★2026-08-19: ユーザー依頼「非営業日は非表示にして、表示を
+        # 詰めて、営業日14日間を表示」対応。datesは既に営業日のみ
+        # (前段のtrading-day-onlyフィルタで非営業日は除外済)だが、
+        # xaxisを日付型のままにするとPlotlyが暦日ベースで間隔を
+        # 取り、除外した週末/祝日の分だけ視覚的な空白が残る。
+        # type="category"にして14個の日付ラベルを隙間なく詰める(両サブプロット共通)。
+        f.update_xaxes(type="category", row=1, col=1)
+        f.update_xaxes(type="category", row=2, col=1)
+        f.update_yaxes(gridcolor=COL["border"], tickformat=",", row=1, col=1)
+        f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
+        st.plotly_chart(f, width="stretch")
+    else:
+        st.line_chart({"終値": closes})
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    st.markdown("**過去14日間のセンチメント推移（強気/弱気/中立比率・投稿量）**")
+    if HAS_PLOTLY:
+        # ★2026-08-20: ユーザー依頼「センチメント推移のグラフに、投稿量の棒
+        # グラフを足せますか」対応。価格チャート(ローソク足+出来高)と同じ設計
+        # (make_subplotsで2段・shared_xaxes)で、下段に投稿量の棒グラフを追加する。
+        posts = [p.get("post_count") for p in pss]
+        f = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                          row_heights=[0.72, 0.28], vertical_spacing=0.03)
+        # ★2026-08-20: ユーザー依頼「グラフの線を太く」「凡例が横軸表記に
+        # かぶらないように」を受け、線幅を太くし、凡例をプロット領域の"上"に
+        # 明示配置(yanchor="bottom", y=1.02)して横軸ラベルとの重なりを避ける。
+        # 上部余白(margin.t)もその分広げる。★2026-08-21: ユーザー依頼「線の
+        # 太さを3に」を受け全トレース幅3へ統一(従来は強気/弱気5・中立4)。
+        # ★2026-08-21追加(ユーザー指摘「投稿量はあるのにグラフが切れている」):
+        # bull_ratio/bear_ratioはmeaningful(AI分析済み)行のみを対象に計算する
+        # ため、投稿(post_count)自体は届いていてもAI分析が追いついていない
+        # バケットはNoneになりうる(analyze.pyは1サイクルあたり240秒の予算制で
+        # 残りを次回runへ持ち越す設計・システム停止でなくても正常に起こりうる)。
+        # connectgaps=Trueで、そうした一時的な欠測点をまたいで前後の実測値
+        # 同士を線で結ぶ(値を捏造するのではなく、単に描画上ギャップを飛び越える
+        # だけ・該当点はNoneのまま=ホバー等では値が無いことがわかる)。
+        f.add_trace(go.Scatter(x=date_labels, y=bulls, name="強気", mode="lines",
+                               connectgaps=True,
+                               line=dict(color=COL["red"], width=3)), row=1, col=1)
+        f.add_trace(go.Scatter(x=date_labels, y=bears, name="弱気", mode="lines",
+                               connectgaps=True,
+                               line=dict(color=COL["blue"], width=3)), row=1, col=1)
+        f.add_trace(go.Scatter(x=date_labels, y=neutrals, name="中立", mode="lines",
+                               connectgaps=True,
+                               line=dict(color=COL["grey"], width=3, dash="dot")), row=1, col=1)
+        f.add_trace(go.Bar(x=date_labels, y=posts, marker_color=COL["muted"],
+                           showlegend=False), row=2, col=1)
+        f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
+                        height=270, margin=dict(l=8, r=8, t=36, b=8),
+                        font=dict(color=COL["text"]),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                   xanchor="left", x=0))
+        f.update_xaxes(type="category", row=1, col=1)
+        f.update_xaxes(type="category", row=2, col=1)
+        f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
+        f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
+        st.plotly_chart(f, width="stretch")
+    else:
+        st.line_chart({"強気": bulls, "弱気": bears})
 
 
 def _today_time_buckets():
