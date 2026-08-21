@@ -430,6 +430,73 @@ def kabu_tick_today_summary(rows, today=None):
     return {"price_pts": price_pts, "day_bar": day_bar, "last": last_price, "last_time": last_time}
 
 
+def board_totals_60s_series(rows, today=None):
+    """★2026-08-21追加(ユーザー依頼「板の買い・売り総計(成行を含めた全価格帯)を
+    過去60秒間の平均値・60秒毎更新・折れ線グラフで公開ダッシュボードへ」。
+    おにや10:42投稿で仕様確定・トレPJ10:47投稿で記録側に4列追加=
+    over_sell_qty/under_buy_qty/market_sell_qty/market_buy_qty)。
+
+    株取引API_プロト1が既に自己収集している板CSV(board_285A_YYYY-MM-DD.csv・
+    time="YYYY-MM-DD HH:MM:SS.mmm"・buy1px..buy10px/buy1qty..buy10qty・
+    sell1px..sell10px/sell1qty..sell10qty・[2026-08-21 11:30以降追加]
+    over_sell_qty/under_buy_qty/market_sell_qty/market_buy_qty)をcsv.DictReaderで
+    読み込んだ行のリストを受け取る純関数(ファイル読込自体は呼び手
+    [board_totals_bridge.py]が行う)。
+
+    ①各行の買い総計=buy1qty+...+buy10qty(表示10本)+under_buy_qty(表示外側の
+    買い累計・OVER/UNDERは需給圧力比ではなく外側累計=[[reference-tse-preopen-mechanics]]
+    参照)+market_buy_qty(成行買い)。売り総計も対称に計算。
+    ②新4列(over_sell_qty等)が無い/不正な行(2026-08-21 11:30より前の記録・
+    トレPJの記録拡張前)は、この4列だけを欠いたまま「表示10本のみの部分合計」を
+    出すと『全価格帯』という前提と食い違い誤解を招くため、その行自体をこの指標
+    からは除外する(捏造しない・fail-soft)。
+    ③60秒バケット(時刻の秒を60で切り捨て)ごとに、バケット内の全行の買い/売り
+    総計の単純平均を取る(intraday_today_series等と同じ「10分足→60秒足」の
+    バケット平均パターン)。バケット内に有効な行が1件も無ければそのバケット自体を
+    出力しない(0を捏造しない)。
+
+    本日(today、省略時はJST今日)以外の行は無視する。戻り値は時刻昇順のリスト
+    [{"time": "HH:MM:SS", "buy_total": float, "sell_total": float}, ...]。
+    """
+    today = today or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    buckets = {}   # bucket_key -> {"buy": [...], "sell": [...]}
+
+    for r in rows or []:
+        t = (r.get("time") or "").strip()
+        if len(t) < 19 or not t.startswith(today):
+            continue
+        try:
+            hh, mm, ss = int(t[11:13]), int(t[14:16]), int(t[17:19])
+        except (TypeError, ValueError):
+            continue
+        try:
+            buy_visible = sum(float(r.get(f"buy{i}qty") or 0) for i in range(1, 11))
+            sell_visible = sum(float(r.get(f"sell{i}qty") or 0) for i in range(1, 11))
+            under_buy = float(r["under_buy_qty"])
+            over_sell = float(r["over_sell_qty"])
+            market_buy = float(r["market_buy_qty"])
+            market_sell = float(r["market_sell_qty"])
+        except (TypeError, ValueError, KeyError):
+            # 新4列が無い/空/不正な行(拡張前の記録)は「全価格帯」の前提が崩れる
+            # ため、この指標からは行ごと除外する(部分合計を捏造しない)。
+            continue
+        buy_total = buy_visible + under_buy + market_buy
+        sell_total = sell_visible + over_sell + market_sell
+
+        bucket_sec = (ss // 60) * 60   # 60秒バケット(常に:00へ切り捨て)
+        key = f"{hh:02d}:{mm:02d}:{bucket_sec:02d}"
+        b = buckets.setdefault(key, {"buy": [], "sell": []})
+        b["buy"].append(buy_total)
+        b["sell"].append(sell_total)
+
+    return [
+        {"time": k,
+         "buy_total": round(sum(buckets[k]["buy"]) / len(buckets[k]["buy"]), 1),
+         "sell_total": round(sum(buckets[k]["sell"]) / len(buckets[k]["sell"]), 1)}
+        for k in sorted(buckets)
+    ]
+
+
 def board_score_daily_series(history_rows, days=14, today=None):
     """★2026-08-20追加(ユーザー提案「灼熱/阿鼻叫喚メーターに推移スパークラインを」)。
     history.jsonl相当の行リスト(古い→新しい順の想定・append-onlyなので実際そうなる)
@@ -612,6 +679,22 @@ def load_live_price_from_url(url, timeout=None):
     load_public_latest_from_url()と全く同じCSVブリッジパターン(_parse_public_json_csv
     に委譲)の別インスタンス。fail-soft: 失敗時はNone(呼び手は次のフォールバック
     [直接Yahoo取得→Sheets由来のrec['price']]へ進めばよい)。"""
+    import requests
+    try:
+        r = requests.get(url, timeout=timeout or 8)
+        if r.status_code != 200:
+            return None
+        return _parse_public_json_csv(r.text)
+    except Exception:
+        return None
+
+
+def load_board_totals_from_url(url, timeout=None):
+    """★2026-08-21追加。board_totals_bridge.pyが書いたboard_totalsタブ(「ウェブに
+    公開」CSV書き出し・A1セルにJSON文字列=board_totals_60s_series()の当日ぶん)を
+    公開ダッシュボード自身から読む。load_live_price_from_url()と全く同じCSV
+    ブリッジパターン。fail-soft: 失敗時はNone(呼び手はこのチャート自体を表示しない
+    フォールバックへ進む・他フィールドの表示には影響しない)。"""
     import requests
     try:
         r = requests.get(url, timeout=timeout or 8)

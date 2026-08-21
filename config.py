@@ -543,6 +543,21 @@ KABU_PROTO1_285A_TICKS_DIR = os.environ.get(
 # 使わず、フォールバック(Yahoo直接取得→Sheets由来のrec['price'])へ順に落ちる。
 PUBLIC_LIVE_PRICE_SOURCE_URL = os.environ.get("BBS_LIVE_PRICE_URL")
 
+# ---- 板総計ブリッジ(board_totals_bridge.py) — プロト1の板CSV(読み取り専用) ----
+#   ★2026-08-21追加(ユーザー依頼「板の買い・売り総計(成行含む全価格帯)の推移を
+#   折れ線グラフで」。おにや10:42投稿で仕様確定・トレPJ10:47投稿で記録側に
+#   over_sell_qty/under_buy_qty/market_sell_qty/market_buy_qtyの4列を追加・
+#   反映は2026-08-21 11:30(昼休み・record_all.py再起動)以降)。live_price_bridge.py
+#   と同じ設計(プロト1のファイル・コードには一切書き込まない・読み取り専用)。
+KABU_PROTO1_285A_BOARD_DIR = os.environ.get(
+    "KABU_PROTO1_285A_BOARD_DIR",
+    r"C:\Users\ryuta\OneDrive\AI用フォルダ\株取引API_プロト1\_board")
+
+# クラウド公開ダッシュボード側がboard_totalsタブ(board_totals_bridge.pyが1分毎に
+# 書く60秒足の買い/売り総計系列)を読むための「ウェブに公開」CSV URL。未設定なら
+# このチャート自体を表示しない(fail-soft・他フィールドの表示には影響しない)。
+PUBLIC_BOARD_TOTALS_SOURCE_URL = os.environ.get("BBS_BOARD_TOTALS_URL")
+
 # ★2026-08-20緊急追加(ユーザー報告「過去24時間のセンチメント推移が表示されない」
 # への対応): sentiment_last_24h(過去24時間・10分毎)はjson_blobへ含めると
 # Google Sheetsの1セル上限(50,000字)を超過するため、専用タブ(sentiment_24h)へ

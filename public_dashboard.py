@@ -669,6 +669,48 @@ def _extended_hours_card(rec):
 
 
 # ============================================================================
+# ★2026-08-21追加(ユーザー依頼「板の買い・売り総計(成行を含めた全価格帯)の推移を
+# 折れ線グラフで」。おにや10:42投稿で仕様確定・トレPJ10:47投稿で記録側に
+# over_sell_qty/under_buy_qty/market_sell_qty/market_buy_qtyの4列を追加・
+# 2026-08-21 11:30以降反映)。board_totals_bridge.py(1分毎の独立プロセス)が
+# public_export.board_totals_60s_series()で組み立てた60秒足系列を、
+# board_totalsタブ経由で読む。データ未取得/空(記録拡張の反映前等)は
+# チャート自体を静かに省略する(fail-soft)。
+# ============================================================================
+def _board_totals_chart(board_totals_remote):
+    series = (board_totals_remote or {}).get("board_totals_60s") or []
+    if not series:
+        return   # データ蓄積中(記録拡張の反映前・休場等)は静かに省略
+
+    st.markdown("#### 📊 板の買い・売り総計(成行込み全価格帯・60秒平均)")
+    st.caption("表示10本の気配だけでなく、外側の気配(OVER/UNDER)と成行注文も"
+               "含めた板全体の数量合計です。値は直近60秒間の平均。"
+               "需給の偏りを直接示す指標ではありません。")
+    times = [p.get("time") for p in series]
+    buys = [p.get("buy_total") for p in series]
+    sells = [p.get("sell_total") for p in series]
+    if HAS_PLOTLY:
+        f = go.Figure()
+        f.add_trace(go.Scatter(x=times, y=buys, name="買い総計", mode="lines",
+                               line=dict(color=COL["red"], width=3)))
+        f.add_trace(go.Scatter(x=times, y=sells, name="売り総計", mode="lines",
+                               line=dict(color=COL["blue"], width=3)))
+        f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
+                        height=270, margin=dict(l=8, r=8, t=36, b=8),
+                        font=dict(color=COL["text"]),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                   xanchor="left", x=0))
+        # ★"HH:MM:SS"形式の時刻ラベルは":"を含むためPlotlyが日付型と誤認識し得る
+        # (14日/24時間チャートの日付表記で過去に一度実際に発生した誤認識と同型の
+        # リスク)。明示的にcategory型にして誤認識・表記崩れを防ぐ。
+        f.update_xaxes(type="category")
+        f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s")
+        st.plotly_chart(f, width="stretch", key="board_totals_chart")
+    else:
+        st.line_chart({"買い総計": buys, "売り総計": sells})
+
+
+# ============================================================================
 # ★2026-08-20追加(ユーザー提案「初見者向けの読み方ガイド」)。YouTube等からの
 # 流入者が専門用語(灼熱メーター・BVP・9指標等)で迷わないよう、ページ冒頭に
 # 折りたたみ式の全体像ガイドを置く(各指標個別の説明キャプションは既存だが、
@@ -791,6 +833,14 @@ def main():
         sentiment_24h_remote = public_export.load_sentiment_24h_from_url(
             config.PUBLIC_SENTIMENT_24H_SOURCE_URL)
 
+    # ★2026-08-21追加(ユーザー依頼「板の買い・売り総計(成行込み全価格帯)の推移を
+    # 折れ線グラフで」)。board_totals_bridge.pyが1分毎に書くboard_totalsタブを
+    # live_price/sentiment_24hと同じCSVブリッジパターンで取得。
+    board_totals_remote = None
+    if config.PUBLIC_BOARD_TOTALS_SOURCE_URL:
+        board_totals_remote = public_export.load_board_totals_from_url(
+            config.PUBLIC_BOARD_TOTALS_SOURCE_URL)
+
     _header(rec, live_price)
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -832,6 +882,9 @@ def main():
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     _intraday_today_charts(rec, live_price, sentiment_24h_remote)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    _board_totals_chart(board_totals_remote)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     _price_and_sentiment_charts(rec, live_price)
