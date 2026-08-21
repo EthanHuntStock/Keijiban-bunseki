@@ -446,6 +446,7 @@ def _today_time_buckets():
 
 
 _TODAY_TIME_BUCKETS = _today_time_buckets()
+_TODAY_TIME_BUCKETS_SET = set(_TODAY_TIME_BUCKETS)   # メンバーシップ判定の高速化用
 
 
 def _effective_today_buckets(actual_times):
@@ -518,6 +519,13 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
     # した系列を用意する(public_export.intraday_today_sentiment_10min)。
     today_sent_pts = public_export.intraday_today_sentiment_10min(
         intraday.get("sentiment") or [])
+    # ★2026-08-21修正(ユーザー指摘「横軸は市場が開いている時間＆昼休みは抜く。
+    # 本日の価格推移の市場の空いている時間に合わせる、と書いたでしょ」): snapshot
+    # (センチメント算出の元)は取引時間外(寄り前・昼休み・引け後)にも実行されるため、
+    # リサンプルしただけでは昼休み(11:30-12:30等)や取引時間外のバケットが混入し
+    # 得る。板総計チャート(_board_totals_chart)と同じ設計で、東証立会時間の固定
+    # テンプレ(_TODAY_TIME_BUCKETS)に無い時刻の点は明示的に除外する。
+    today_sent_pts = [p for p in today_sent_pts if p.get("time") in _TODAY_TIME_BUCKETS_SET]
     # ★2026-08-20追加(ユーザー指示「本日の推移の株価も60秒毎に最新値に」)。
     # live_price(kabuティックから60秒毎に生成)に本日の10分足系列があれば、
     # Sheets由来(最大10分古い)のものより優先して丸ごと差し替える。センチメント
@@ -528,12 +536,15 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
         return   # データ蓄積中(場が始まったばかり等)は静かに省略・エラーにしない
 
     # ★2026-08-21: 価格チャートと「本日のセンチメント推移」チャートの横軸を
-    # 厳密に揃えるため、_effective_today_buckets()を両者共通で1回だけ計算する
-    # (価格の実データ時刻・本日センチメントの実データ時刻の両方を和集合に含める・
-    # _effective_today_bucketsのdocstring=固定rangeの外に実データが押し出されて
-    # 非表示になる事故の再発防止、という設計思想を両チャートに揃って適用する)。
+    # 厳密に揃えるため、_effective_today_buckets()を両者共通で1回だけ計算する。
+    # 和集合の対象は価格の実データ時刻のみ(price_ptsは元々取引時間中しか存在
+    # しないため安全に和集合できる・_effective_today_bucketsのdocstring=固定
+    # rangeの外に実データが押し出されて非表示になる事故の再発防止)。
+    # today_sent_ptsは含めない——上でTODAY_TIME_BUCKETS_SETへ既に絞り込み済み
+    # なのでテンプレの範囲内に収まっているが、万一の取引時間外データ混入で
+    # 横軸(昼休み等)が広がってしまうリスクを断つため、あえて和集合の対象にしない。
     _effective_buckets = _effective_today_buckets(
-        [p.get("time") for p in price_pts] + [p.get("time") for p in today_sent_pts])
+        [p.get("time") for p in price_pts])
     _n_buckets = len(_effective_buckets)
 
     # ★2026-08-21修正(ユーザー依頼「本日の価格推移と板のグラフを上下に並べる
