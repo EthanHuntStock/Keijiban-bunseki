@@ -463,16 +463,18 @@ def _effective_today_buckets(actual_times):
 
 def _today_time_buckets_60s():
     """★2026-08-21追加(ユーザー依頼「板の買い・売り総計グラフの横軸は、市場が
-    開いている時間としてください」)。_today_time_buckets()の60秒粒度版。
-    board_totals_60s_series()が"HH:MM:SS"形式(60秒バケット)で出すのに合わせ、
-    東証立会時間(前場9:00-11:20・後場12:30-15:30、間の昼休みは除外)ぶんを
-    60秒刻みで固定順生成する。前場終値側の境界(11:20まで)は10分足版と同じ実測
-    根拠(_today_time_buckets()のdocstring参照)を踏襲する。"""
+    開いている時間としてください」)。_today_time_buckets()の1分粒度版。
+    board_totals_60s_series()が"HH:MM"形式(60秒平均・分単位バケット)で出すのに
+    合わせ、東証立会時間(前場9:00-11:20・後場12:30-15:30、間の昼休みは除外)ぶんを
+    1分刻みで固定順生成する。前場終値側の境界(11:20まで)は10分足版と同じ実測
+    根拠(_today_time_buckets()のdocstring参照)を踏襲する。
+    ★2026-08-21修正(ユーザー指摘「横軸の秒の単位は不要」): ラベル形式を
+    "HH:MM:SS"から"HH:MM"へ単純化(60秒バケットは分の境界へ切り捨てる設計のため
+    秒の桁は常に"00"で情報量が無かった)。"""
     labels = []
-    for start_sec, end_sec in ((9 * 3600, 11 * 3600 + 20 * 60),
-                               (12 * 3600 + 30 * 60, 15 * 3600 + 30 * 60)):
-        for s in range(start_sec, end_sec + 1, 60):
-            labels.append(f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}")
+    for start_min, end_min in ((9 * 60, 11 * 60 + 20), (12 * 60 + 30, 15 * 60 + 30)):
+        for m in range(start_min, end_min + 1, 1):
+            labels.append(f"{m // 60:02d}:{m % 60:02d}")
     return labels
 
 
@@ -733,7 +735,7 @@ def _board_totals_chart(board_totals_remote):
                         font=dict(color=COL["text"]),
                         legend=dict(orientation="h", yanchor="bottom", y=1.02,
                                    xanchor="left", x=0))
-        # ★"HH:MM:SS"形式の時刻ラベルは":"を含むためPlotlyが日付型と誤認識し得る
+        # ★"HH:MM"形式の時刻ラベルは":"を含むためPlotlyが日付型と誤認識し得る
         # (14日/24時間チャートの日付表記で過去に一度実際に発生した誤認識と同型の
         # リスク)。明示的にcategory型にして誤認識・表記崩れを防ぐ。
         # ★2026-08-21: 横軸を東証立会時間の固定テンプレ(前場9:00-11:20・

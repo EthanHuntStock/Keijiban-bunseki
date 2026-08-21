@@ -456,7 +456,13 @@ def board_totals_60s_series(rows, today=None):
     出力しない(0を捏造しない)。
 
     本日(today、省略時はJST今日)以外の行は無視する。戻り値は時刻昇順のリスト
-    [{"time": "HH:MM:SS", "buy_total": float, "sell_total": float}, ...]。
+    [{"time": "HH:MM", "buy_total": float, "sell_total": float}, ...]。
+
+    ★2026-08-21修正(ユーザー指摘「グラフの横軸の秒の単位は不要」): 60秒
+    バケットは分の境界(常に:00)へ切り捨てる設計のため、バケットキーに秒の桁を
+    含めても常に"00"で情報量が無く冗長だった。キー形式を"HH:MM:SS"から
+    "HH:MM"へ単純化する(バケット化のロジック自体=分単位でグルーピングする点は
+    無変更)。
     """
     today = today or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
     buckets = {}   # bucket_key -> {"buy": [...], "sell": [...]}
@@ -466,7 +472,7 @@ def board_totals_60s_series(rows, today=None):
         if len(t) < 19 or not t.startswith(today):
             continue
         try:
-            hh, mm, ss = int(t[11:13]), int(t[14:16]), int(t[17:19])
+            hh, mm = int(t[11:13]), int(t[14:16])
         except (TypeError, ValueError):
             continue
         try:
@@ -483,8 +489,7 @@ def board_totals_60s_series(rows, today=None):
         buy_total = buy_visible + under_buy + market_buy
         sell_total = sell_visible + over_sell + market_sell
 
-        bucket_sec = (ss // 60) * 60   # 60秒バケット(常に:00へ切り捨て)
-        key = f"{hh:02d}:{mm:02d}:{bucket_sec:02d}"
+        key = f"{hh:02d}:{mm:02d}"   # 分単位バケット(60秒平均・秒の桁は表示しない)
         b = buckets.setdefault(key, {"buy": [], "sell": []})
         b["buy"].append(buy_total)
         b["sell"].append(sell_total)
