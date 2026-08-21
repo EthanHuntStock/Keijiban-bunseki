@@ -954,6 +954,51 @@ def intraday_today_series(snapshot_rows, price_intraday, today=None, adr_pts=Non
     return {"price": price_pts, "sentiment": sent_pts}
 
 
+def intraday_today_sentiment_10min(sent_pts):
+    """★2026-08-21追加(ユーザー依頼「過去24時間センチメント推移を『本日の
+    センチメント推移』に変更。本日の価格推移・板の買い・売り総計のグラフと
+    横軸が合うように」)。intraday_today_series()が返すsentiment(各snapshot実行
+    時刻そのままの不揃いな間隔・catchup=10分毎/フル実行=毎時)を、price_ptsと
+    同じ「10分刻み(分を10で切り捨て)」バケットへリサンプルする純関数。これにより
+    x軸のカテゴリ(HH:MM)が価格チャートの_effective_today_buckets()と厳密に一致し、
+    型が同じtype="category"グラフとして縦に並べた時に横軸が視覚的に揃う。
+
+    ①bull_ratio/bear_ratio: 各snapshotは「そのrunまでの累積比率」という状態値
+    (price_open/closeのような区間内平均ではない)のため、バケット内では時系列
+    最後(最新)の値を採用する(=そのバケット終了時点の状態)。intraday_today_series
+    の入力は既にsnapshot_rowsの出現順(時系列昇順)を保つ前提。
+    ②post_count: 各snapshotの時点で「直前snapshotからの新規投稿数」という区間
+    差分値のため、バケット内では単純合計する(Noneはこの合計では0扱い・ただし
+    バケット内が全件Noneならバケット自体もNoneのまま=捏造しない)。
+    ③時刻文字列が短い/不正な点はスキップする(fail-soft)。有効な点が無ければ
+    空リストを返す。"""
+    buckets = {}   # "HH:M0" -> {"bull": last, "bear": last, "post_sum": float, "post_seen": bool}
+    for p in sent_pts or []:
+        t = (p.get("time") or "").strip()
+        if len(t) < 4:
+            continue
+        try:
+            hh, mm = int(t[0:2]), int(t[3:5])
+        except (TypeError, ValueError):
+            continue
+        key = f"{hh:02d}:{(mm // 10) * 10:02d}"
+        b = buckets.setdefault(key, {"bull": None, "bear": None, "post_sum": 0.0, "post_seen": False})
+        if p.get("bull_ratio") is not None:
+            b["bull"] = p["bull_ratio"]
+        if p.get("bear_ratio") is not None:
+            b["bear"] = p["bear_ratio"]
+        pc = p.get("post_count")
+        if pc is not None:
+            b["post_sum"] += pc
+            b["post_seen"] = True
+
+    return [
+        {"time": k, "bull_ratio": buckets[k]["bull"], "bear_ratio": buckets[k]["bear"],
+         "post_count": buckets[k]["post_sum"] if buckets[k]["post_seen"] else None}
+        for k in sorted(buckets)
+    ]
+
+
 def sentiment_last_24h_10min(raw_rows, analyzed_rows, now=None):
     """★2026-08-20追加・同日中に再設計(ユーザー指示「本日のセンチメント推移は、
     過去24時間の10分毎のセンチメントの推移にしましょう」→ユーザー指摘「(収集が

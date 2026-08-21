@@ -510,14 +510,31 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
         sent_pts = sentiment_24h_remote["sentiment_last_24h"]
     else:
         sent_pts = rec.get("sentiment_last_24h") or []
+    # ★2026-08-21追加(ユーザー依頼「過去24時間センチメント推移を『本日の
+    # センチメント推移』に変更。本日の価格推移・板の買い・売り総計のグラフと
+    # 横軸が合うように」続けて「その下に、過去24時間センチメント推移を残して
+    # ください」): 上のsent_pts(過去24時間・下に残す方)とは別に、本日ぶんのみ
+    # (intraday_today['sentiment'])を価格チャートと同じ10分バケットへリサンプル
+    # した系列を用意する(public_export.intraday_today_sentiment_10min)。
+    today_sent_pts = public_export.intraday_today_sentiment_10min(
+        intraday.get("sentiment") or [])
     # ★2026-08-20追加(ユーザー指示「本日の推移の株価も60秒毎に最新値に」)。
     # live_price(kabuティックから60秒毎に生成)に本日の10分足系列があれば、
     # Sheets由来(最大10分古い)のものより優先して丸ごと差し替える。センチメント
     # 系列はkabu側に無いのでrec由来のまま(価格だけを新鮮に保つ)。
     if live_price and live_price.get("intraday_today_price"):
         price_pts = live_price["intraday_today_price"]
-    if not price_pts and not sent_pts:
+    if not price_pts and not sent_pts and not today_sent_pts:
         return   # データ蓄積中(場が始まったばかり等)は静かに省略・エラーにしない
+
+    # ★2026-08-21: 価格チャートと「本日のセンチメント推移」チャートの横軸を
+    # 厳密に揃えるため、_effective_today_buckets()を両者共通で1回だけ計算する
+    # (価格の実データ時刻・本日センチメントの実データ時刻の両方を和集合に含める・
+    # _effective_today_bucketsのdocstring=固定rangeの外に実データが押し出されて
+    # 非表示になる事故の再発防止、という設計思想を両チャートに揃って適用する)。
+    _effective_buckets = _effective_today_buckets(
+        [p.get("time") for p in price_pts] + [p.get("time") for p in today_sent_pts])
+    _n_buckets = len(_effective_buckets)
 
     # ★2026-08-21修正(ユーザー依頼「本日の価格推移と板のグラフを上下に並べる
     # ようにしてください」続けて「センチメントはその下に」): 従来はcol1(価格推移)/
@@ -574,9 +591,9 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
         # (右側の空白はデータ蓄積中として自然に残る)。
         # ★2026-08-20: 固定テンプレ(_TODAY_TIME_BUCKETS)だけでなく実データの
         # 時刻も和集合した「有効バケット列」を使う(_effective_today_bucketsの
-        # docstring参照・2026-08-20の15:30消失事故の再発防止)。
-        _effective_buckets = _effective_today_buckets(times)
-        _n_buckets = len(_effective_buckets)
+        # docstring参照・2026-08-20の15:30消失事故の再発防止)。★2026-08-21:
+        # _effective_buckets/_n_bucketsは関数冒頭で共通計算済み(本日センチメント
+        # チャートと横軸を揃えるため)のためここでは再計算しない。
         f.update_xaxes(type="category", categoryorder="array",
                        categoryarray=_effective_buckets,
                        autorange=False, range=[-0.5, _n_buckets - 0.5], row=1, col=1)
@@ -593,8 +610,52 @@ def _intraday_today_charts(rec, live_price=None, sentiment_24h_remote=None,
     _board_totals_chart(board_totals_remote)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    # ★2026-08-21追加(ユーザー依頼「過去24時間センチメント推移を『本日の
+    # センチメント推移』に変更。本日の価格推移・板の買い・売り総計のグラフと
+    # 横軸が合うように」): 本日ぶんのみ・価格チャートと同じ_effective_buckets
+    # (10分カテゴリ)を使い、上2つのチャートと横軸が揃う。
+    st.markdown("**本日のセンチメント推移（10分毎・強気/弱気比率・投稿量）**")
+    if not today_sent_pts:
+        st.caption("本日のセンチメントデータ蓄積中です。")
+    elif HAS_PLOTLY:
+        _t_times = [p.get("time") for p in today_sent_pts]
+        _t_bulls = [p.get("bull_ratio") for p in today_sent_pts]
+        _t_bears = [p.get("bear_ratio") for p in today_sent_pts]
+        _t_posts = [p.get("post_count") for p in today_sent_pts]
+        f = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                          row_heights=[0.72, 0.28], vertical_spacing=0.04)
+        f.add_trace(go.Scatter(x=_t_times, y=_t_bulls, name="強気", mode="lines",
+                               line=dict(color=COL["red"], width=3)), row=1, col=1)
+        f.add_trace(go.Scatter(x=_t_times, y=_t_bears, name="弱気", mode="lines",
+                               line=dict(color=COL["blue"], width=3)), row=1, col=1)
+        f.add_trace(go.Bar(x=_t_times, y=_t_posts, marker_color=COL["muted"],
+                           showlegend=False), row=2, col=1)
+        f.update_layout(paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
+                        height=270, margin=dict(l=8, r=8, t=36, b=8),
+                        font=dict(color=COL["text"]),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                   xanchor="left", x=0))
+        # ★価格チャートと厳密に同じcategoryarray/rangeを使い横軸を揃える
+        # (関数冒頭で共通計算した_effective_buckets/_n_buckets。ユーザー依頼
+        # 「本日の価格推移・板の総計のグラフと横軸が合うように」)。
+        f.update_xaxes(type="category", categoryorder="array",
+                       categoryarray=_effective_buckets,
+                       autorange=False, range=[-0.5, _n_buckets - 0.5], row=1, col=1)
+        f.update_xaxes(type="category", categoryorder="array",
+                       categoryarray=_effective_buckets,
+                       autorange=False, range=[-0.5, _n_buckets - 0.5], row=2, col=1)
+        f.update_yaxes(tickformat=".0%", gridcolor=COL["border"], row=1, col=1)
+        f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s", row=2, col=1)
+        st.plotly_chart(f, width="stretch")
+    else:
+        st.line_chart({"強気": [p.get("bull_ratio") for p in today_sent_pts]})
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     # ★2026-08-20変更(ユーザー指示「本日のセンチメント推移は、過去24時間の
-    # 10分毎のセンチメントの推移に」): 見出しも実態に合わせて変更。
+    # 10分毎のセンチメントの推移に」)。★2026-08-21追加(ユーザー指示「その下に、
+    # 過去24時間センチメント推移を残してください」): 上の「本日の」チャート
+    # (価格/板と横軸を揃えた版)とは別に、従来どおりのローリング24時間窓の
+    # チャートもこの下に残す(削除ではなく追加・置換ではない)。
     st.markdown("**過去24時間のセンチメント推移（10分毎・強気/弱気比率・投稿量）**")
     if not sent_pts:
         st.caption("センチメントデータ蓄積中です。")
