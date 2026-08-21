@@ -291,6 +291,12 @@ def dedupe_new(rows, seen_ids):
 
 # ---- I/O ヘルパ --------------------------------------------------------------
 def load_seen_ids(path=None):
+    """★2026-08-21修正(おにや20:59投稿・改善提案①): 従来は`except Exception:
+    return set()`で例外を握りつぶしており、seen_ids.jsonの読込破損(並行書込み
+    競合等)が起きても一切ログに残らないサイレント障害だった(過去1ヶ月で
+    YAHOO_MAX_PAGES到達=大量再取得が10回発生、全て`seen_max=-1`=空集合読込と
+    一致していたのに原因特定できなかった実例)。破損時はWARNログを残した上で
+    従来どおり空集合へfail-softする(挙動自体は変えない・原因追跡だけ可能にする)。"""
     path = path or config.SEEN_IDS_PATH
     if not os.path.exists(path):
         return set()
@@ -298,13 +304,22 @@ def load_seen_ids(path=None):
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return set(data.get("ids", []) if isinstance(data, dict) else data)
-    except Exception:
+    except Exception as e:
+        _log(f"WARN load_seen_ids failed ({path}): {e!r} - treating as empty set (fail-soft)")
         return set()
 
 
 def save_seen_ids(ids, path=None):
+    """★2026-08-21修正(おにや20:59投稿・改善提案②): tmpファイル名が固定
+    (`path + ".tmp"`)だったため、collect_yahoo/collect_5ch/collect_intlが
+    ロック無しで並行実行された場合、複数プロセスが同じtmpパスへ同時に
+    書き込み/os.replaceし合い、互いのtmpを壊す競合状態になり得た
+    (raw_comments.jsonlで214,615行の重複が実測された根本原因の一つ)。
+    プロセスPIDを含めた一意なtmpパスにすることで、この特定の競合パターンを
+    解消する(collect側の排他ロック[_acquire_collect_lock]と合わせて二重の
+    対策とする)。"""
     path = path or config.SEEN_IDS_PATH
-    tmp = path + ".tmp"
+    tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"ids": sorted(ids)}, f, ensure_ascii=False)
     os.replace(tmp, path)
@@ -401,6 +416,17 @@ def collect_via_api():
 
     seen = load_seen_ids()
     seen_max = _numeric_seen_max(seen)
+    # ★2026-08-21追加(おにや20:59投稿・改善提案④): seen_max=-1(既読集合が空)
+    # なのにmax_mid(この掲示板の現在の最大投稿ID)が通常水準(実測では常に
+    # 100万超)であれば、本来何十万件もあるはずの既読情報が消えている異常な
+    # 状態であり、これがそのままYAHOO_MAX_PAGES到達=大量重複再取得に直結する
+    # (おにや調査で過去1ヶ月に少なくとも10回発生・全て`seen_max=-1`で一致)。
+    # collect_lock(_acquire_collect_lock)導入後もタイミング次第で起こり得る
+    # ため、早期発見用のWARNログを残す(fail-softのまま・挙動は変えない)。
+    if seen_max < 0 and max_mid and max_mid > 1000:
+        _log(f"WARN seen_max=-1 but max_mid={max_mid} (looks non-empty) - "
+            "seen_ids.json may have been read as empty due to a race "
+            "(collect_lock should prevent this going forward)")
     cursor = max_mid + 1     # 最新も含める
     all_rows, pages = [], 0
     refreshed = False
