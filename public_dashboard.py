@@ -840,9 +840,17 @@ def _board_totals_chart(board_totals_remote):
         # (寄り付き〜大引け)だけを表す。
         _effective_buckets = _effective_board_totals_buckets(times)
         _n_buckets = len(_effective_buckets)
+        # ★2026-08-21追加(ユーザー指摘「板の買い・売り総計の横軸の時刻表記は、
+        # 本日のセンチメント推移と合わせましょう」): データ自体は60秒刻み
+        # (_effective_buckets=322カテゴリ)のまま変えないが、目盛りラベルは
+        # 価格推移・本日のセンチメント推移と同じ10分刻み(_TODAY_TIME_BUCKETS)
+        # だけを明示指定する。10分の各ラベルは60秒テンプレの部分集合として
+        # 必ず存在するため、tickvalsに渡すだけでラベル位置は正しく揃う。
         f.update_xaxes(type="category", categoryorder="array",
                        categoryarray=_effective_buckets,
-                       autorange=False, range=[-0.5, _n_buckets - 0.5])
+                       autorange=False, range=[-0.5, _n_buckets - 0.5],
+                       tickmode="array", tickvals=_TODAY_TIME_BUCKETS,
+                       ticktext=_TODAY_TIME_BUCKETS)
         f.update_yaxes(gridcolor=COL["border"], tickformat=",.2s")
         st.plotly_chart(f, width="stretch", key="board_totals_chart")
     else:
