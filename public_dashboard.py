@@ -246,11 +246,42 @@ def _signal_changes_note(rec):
     st.info(f"📌 前回の取引日({changes[0].get('compared_date', '')})からの状態変化: {lines}")
 
 
+def _signal_sparkline(history_14d, card_name, line_color):
+    """★2026-08-25追加(ユーザー指摘「公開用ダッシュボード(streamlit版)は直ってないのでは」
+    =画像版のみに実装していたシグナル発火状況(9指標)の推移ミニグラフをstreamlit版にも
+    追加する)。_meter_sparkline()と同じ描画パターン(plotly折れ線・軸ラベル最小限)を、
+    固定2キーでなくcard_name(9指標それぞれの名前)で汎用化したもの。データ源は
+    rec['signal_cards_history_14d'](public_export.signal_cards_daily_series()が
+    組み立て済み・board_history_14dと同じくlatest.json経由でcloud側も受け取れる)。"""
+    pts = [p for p in (history_14d or []) if p.get(card_name) is not None]
+    if len(pts) < 2:
+        st.caption("推移データ蓄積中です。")
+        return
+    date_labels = [_mmdd(p.get("date")) for p in pts]
+    values = [p.get(card_name) for p in pts]
+    if HAS_PLOTLY:
+        f = go.Figure(go.Scatter(x=date_labels, y=values, mode="lines+markers",
+                                 line=dict(color=line_color, width=2),
+                                 marker=dict(size=3)))
+        f.update_layout(height=54, margin=dict(l=2, r=2, t=2, b=14),
+                        paper_bgcolor=COL["panel"], plot_bgcolor=COL["panel"],
+                        xaxis=dict(type="category", showgrid=False,
+                                  tickfont=dict(size=7, color=COL["muted"])),
+                        yaxis=dict(showgrid=False, showticklabels=False))
+        # ★_meter_sparkline()と同じ理由: 1画面内でcard_name違いで9回呼ばれるため、
+        # card_nameから導出した安定キーを明示する(ウィジェット同一性の取り違え防止)。
+        st.plotly_chart(f, width="stretch", config={"displayModeBar": False},
+                        key=f"signal_sparkline_{card_name}")
+    else:
+        st.line_chart({card_name: values})
+
+
 def _signal_list(rec):
     cards = rec.get("signal_cards") or []
     if not cards:
         st.caption("シグナルデータ蓄積中です。")
         return
+    history_14d = rec.get("signal_cards_history_14d") or []
     for c in cards:
         state = c.get("state", "OK")
         color = _STATE_COLOR.get(state, COL["grey"])
@@ -261,15 +292,23 @@ def _signal_list(rec):
         chip_html = chip(chip_text, color)
         name = c.get("name", "")
         desc = _SIGNAL_DESC.get(name, "")
-        st.markdown(
-            f"<div style='display:flex;justify-content:space-between;align-items:center;"
-            f"border-bottom:1px solid {COL['border']};padding:6px 2px'>"
-            f"<span style='color:{COL['text']}'>{name}"
-            f"<br><span style='color:{COL['muted']};font-size:.8em;font-weight:normal'>{desc}</span>"
-            f"</span>"
-            f"<span style='color:{COL['muted']};font-size:.88em'>{c.get('note', '')}</span>"
-            f"<span>{chip_html}</span>"
-            f"</div>", unsafe_allow_html=True)
+        # ★2026-08-25追加: 元は1本のflex divでname/note/badgeを横並びにしていたが、
+        # ここへスパークラインを足す先として、st.columns(ページレベルのレイアウト・
+        # 狭幅では自動的に縦積みになりテキスト長による崩れが起きない)を使う。
+        # 既存のname/note/badge表示(HTML文字列)自体は変更しない。
+        col_text, col_spark = st.columns([5, 1.4])
+        with col_text:
+            st.markdown(
+                f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                f"border-bottom:1px solid {COL['border']};padding:6px 2px;flex-wrap:wrap;gap:6px'>"
+                f"<span style='color:{COL['text']}'>{name}"
+                f"<br><span style='color:{COL['muted']};font-size:.8em;font-weight:normal'>{desc}</span>"
+                f"</span>"
+                f"<span style='color:{COL['muted']};font-size:.88em'>{c.get('note', '')}</span>"
+                f"<span>{chip_html}</span>"
+                f"</div>", unsafe_allow_html=True)
+        with col_spark:
+            _signal_sparkline(history_14d, name, color)
 
 
 # ★2026-08-20: 「YYYY-MM-DD」→「M/D」表記への変換(ユーザー依頼「グラフの日付は

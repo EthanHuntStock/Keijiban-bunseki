@@ -582,6 +582,47 @@ def board_score_daily_series(history_rows, days=14, today=None):
     return ordered[-days:] if days else ordered
 
 
+def signal_cards_daily_series(history_rows, days=14, today=None):
+    """★2026-08-25追加(ユーザー指摘「公開用ダッシュボード(streamlit版)は直ってないのでは」
+    =画像版のみに実装していたシグナル推移スパークラインをstreamlit版にも追加する際、
+    board_score_daily_series()と同じ「読み取り専用モジュールへ集約する」設計に揃えた)。
+
+    history.jsonl相当の行リスト(各行はrec相当のdictで"signal_cards"キーに
+    [{name, value, threshold, state, note}, ...]を持つ)から、9指標それぞれの
+    name毎に「日付ごとにその日最後に記録されたvalue」を1点だけ拾い、直近days日ぶんを
+    日付昇順で返す純関数。board_score_daily_series()と全く同じ日次集約パターン
+    (1日1スナップショット・today以降の行は除外=呼び手が今日ぶんの現在値を別途1点
+    追加する設計)を、固定2キー(overheat_score/capitulation_score)ではなく
+    signal_cardsに含まれる可変個のnameへ一般化したもの。
+
+    戻り値: [{"date": "YYYY-MM-DD", "<指標名1>": value1, "<指標名2>": value2, ...}, ...]
+    (board_score_daily_seriesと同型の「1行=1日・複数キー」形式)。
+    signal_cards自体が無い行(機能追加以前の古いhistory行等)はスキップする
+    (fail-soft・捏造しない)。データ蓄積が浅くdays日に満たない場合はある分だけを返す。
+    """
+    today = today or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                      + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    by_date = {}
+    for row in history_rows or []:
+        gen_at = (row or {}).get("generated_at")
+        if not gen_at:
+            continue
+        date = str(gen_at)[:10]
+        if date >= today:
+            continue
+        cards = (row or {}).get("signal_cards") or []
+        if not cards:
+            continue
+        entry = {"date": date}
+        for c in cards:
+            name = (c or {}).get("name")
+            if name:
+                entry[name] = c.get("value")
+        by_date[date] = entry
+    ordered = [by_date[d] for d in sorted(by_date)]
+    return ordered[-days:] if days else ordered
+
+
 def signal_state_changes(current_cards, history_rows, today=None):
     """★2026-08-20追加(ユーザー提案「9指標の状態変化が分かるように」)。
     現在の9指標カード(current_cards・signals.compute_signals()のS['cards']相当、
@@ -1292,7 +1333,7 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                         ai_commentary=None, regime=None, intraday_today=None,
                         previous=None, extended_hours=None,
                         board_history_14d=None, signal_changes=None,
-                        sentiment_last_24h=None):
+                        sentiment_last_24h=None, signal_cards_history_14d=None):
     """
     既存の集計結果から公開用レコードを組み立てる純関数。個別投稿情報は一切参照しない
     (引数として生コメントのリストを受け取らない設計=構造的に混入を防ぐ)。
@@ -1345,6 +1386,12 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                    sentiment_last_24h_10min() が返す [{time, bull_ratio, bear_ratio,
                    post_count}, ...] のリスト、または None。None(既定)なら出力
                    レコードにキー自体を含めない。
+      signal_cards_history_14d - ★2026-08-25追加(ユーザー指摘「公開用ダッシュボード
+                   (streamlit版)は直ってないのでは」。当初は画像版のみにシグナル
+                   推移スパークラインを実装していたが、streamlit版にも同じ推移を
+                   出すため追加)。signal_cards_daily_series() が返す
+                   [{date, <指標名>: value, ...}, ...] のリスト、または None。
+                   None(既定)なら出力レコードにキー自体を含めない。
     """
     S = S or {}
     ratios = S.get("ratios") or {}
@@ -1424,6 +1471,8 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
         rec["signal_state_changes"] = list(signal_changes)
     if sentiment_last_24h is not None:
         rec["sentiment_last_24h"] = list(sentiment_last_24h)
+    if signal_cards_history_14d is not None:
+        rec["signal_cards_history_14d"] = list(signal_cards_history_14d)
     return rec
 
 
@@ -1771,6 +1820,15 @@ def _build_from_live_data(with_commentary=False):
         "capitulation_score": gauges.get("capitulation"),
     }]
     signal_changes = signal_state_changes(S.get("cards") or [], history_rows)
+    # ★2026-08-25追加(ユーザー指摘「公開用ダッシュボード(streamlit版)は直ってないのでは」)。
+    # board_history_14dと全く同じ組み立て順序(過去日ぶんはhistory.jsonlから・今日ぶんは
+    # 今回計算済みの現在値S['cards']を1点追加)。
+    today_signal_entry = {"date": today_jst}
+    for _c in (S.get("cards") or []):
+        _name = (_c or {}).get("name")
+        if _name:
+            today_signal_entry[_name] = _c.get("value")
+    signal_cards_history_14d = signal_cards_daily_series(history_rows) + [today_signal_entry]
 
     # ★2026-08-20追加・同日中に再設計(ユーザー指示「本日のセンチメント推移は、過去
     # 24時間の10分毎のセンチメントの推移に」→ユーザー指摘「投稿量は投稿時刻で
@@ -1789,7 +1847,8 @@ def _build_from_live_data(with_commentary=False):
                                      previous=previous, extended_hours=extended_hours,
                                      board_history_14d=board_history_14d,
                                      signal_changes=signal_changes,
-                                     sentiment_last_24h=sentiment_last_24h)
+                                     sentiment_last_24h=sentiment_last_24h,
+                                     signal_cards_history_14d=signal_cards_history_14d)
         errs = validate_no_leak(prelim)
         if errs:
             _log(f"ERROR leak detected before commentary generation, skip: {errs}")
@@ -1812,7 +1871,8 @@ def _build_from_live_data(with_commentary=False):
                                extended_hours=extended_hours,
                                board_history_14d=board_history_14d,
                                signal_changes=signal_changes,
-                               sentiment_last_24h=sentiment_last_24h)
+                               sentiment_last_24h=sentiment_last_24h,
+                               signal_cards_history_14d=signal_cards_history_14d)
 
 
 def _load_regime_readonly():
