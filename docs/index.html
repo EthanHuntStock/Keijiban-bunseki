@@ -45,7 +45,7 @@
       border-left:4px solid var(--orange); border-radius:8px; padding:9px 13px;
       font-size:.9em; margin:.3rem 0; }
     footer { text-align:center; color:var(--muted); font-size:.78em; margin-top:2rem; }
-    </style><script>setTimeout(function(){location.href = location.pathname + '?_=' + Date.now();}, 60000);</script></head><body>
+    </style><script>(function(){if(location.search.indexOf('_=')===-1){location.replace(location.pathname + '?_=' + Date.now());}else{setTimeout(function(){location.href = location.pathname + '?_=' + Date.now();}, 60000);}})();</script></head><body>
     <div class="wrap">
       <h1>📊 掲示板投稿の詳細分析による投資情報（静的版）</h1>
       
@@ -167,7 +167,7 @@
 
       <hr style="border:none;border-top:1px solid var(--border);margin:2rem 0 1rem">
       <p class="caption">⚠️ 本情報は掲示板投稿を統計的に集計したものであり、投資助言ではありません。個別の投稿内容は含まれていません。研究・エンタメ用途です。</p>
-      <footer>生成: generate_static_dashboard.py（2026-08-24T22:35:26） /
+      <footer>生成: generate_static_dashboard.py（2026-08-24T22:36:21） /
       画像バックエンド: plotly+kaleido</footer>
     </div>
     </body></html>
