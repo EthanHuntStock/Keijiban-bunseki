@@ -1,4 +1,4 @@
-<!doctype html><html lang='ja'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>285A 掲示板投稿の詳細分析による投資情報（静的版）</title><style>
+<!doctype html><html lang='ja'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><meta http-equiv='refresh' content='60'><title>285A 掲示板投稿の詳細分析による投資情報（静的版）</title><style>
     :root {
       --bg:#F4F6F9; --panel:#FFFFFF; --border:#D5DBE5; --muted:#55606F;
       --text:#1B2333; --orange:#C2570B; --red:#C81E1E; --green:#15803D;
@@ -41,6 +41,9 @@
     .metric-label { font-size:.78rem; color:var(--muted); }
     .metric-value { font-variant-numeric:tabular-nums; font-weight:700; font-size:1.3rem; }
     .metric-delta { font-size:.85rem; color:var(--muted); }
+    .calib { background:#FBF3E0; color:var(--text); border:1px solid #F0E4C8;
+      border-left:4px solid var(--orange); border-radius:8px; padding:9px 13px;
+      font-size:.9em; margin:.3rem 0; }
     footer { text-align:center; color:var(--muted); font-size:.78em; margin-top:2rem; }
     </style></head><body>
     <div class="wrap">
@@ -49,21 +52,30 @@
     <details class="panel">
       <summary style="cursor:pointer;font-weight:600">📖 このダッシュボードの読み方（初めての方向け）</summary>
       <div style="margin-top:10px;font-size:.92em;line-height:1.7">
-        <p><b>① 株価ヘッダー</b> — 現在値・騰落率と最終更新時刻です。このページは
-        <b>手動生成された静的なスナップショット</b>であり、Streamlit版と異なりリアルタイムには
-        自動更新されません（最新化するには生成スクリプトを再実行します）。</p>
+        <p><b>① 株価ヘッダー</b> — 現在値・騰落率と最終更新時刻です。裏側のデータは
+        1分間隔のタスクで自動生成され、このページ自体も60秒毎に
+        ブラウザが自動的に再読み込みして最新のスナップショットを表示します（手動更新は不要です）。
+        取引時間中に更新が止まっている可能性がある場合は「⚠️データの更新が…」という注意書きが
+        表示されます。</p>
         <p><b>② 🔥灼熱メーター／😱阿鼻叫喚メーター</b> — 掲示板の投稿内容から算出した
         「過熱度」「セリングクライマックス度」の合成指標です。売買のシグナルではありません。</p>
-        <p><b>③ ボラ・レジーム帯</b> — 現在の値動きの荒さが「平穏〜急変」のどの水準にあるかの目安です。</p>
+        <p><b>③ ボラ・レジーム帯</b> — 現在の値動きの荒さが「平穏〜急変」のどの水準にあるかの目安です。
+        データ蓄積初期は「較正中」と表示され、これは異常ではなく閾値を学習している途中であることを
+        示します。</p>
         <p><b>④ シグナル発火状況（9指標）</b> — 投稿の偏り・語彙・投稿量などを9つの観点で統計的に
         チェックした一覧です。🟢OK=平常範囲内／🟠警戒=やや偏りが大きい／🔴発火=閾値超過、を示す
         記述的なラベルであり、売買の推奨ではありません。</p>
         <p><b>⑤ 本日の推移</b> — 価格推移(10分足)・板の買い/売り総計(60秒平均)・本日のセンチメント推移を
-        東証立会時間の同じ横軸で並べています。</p>
+        東証立会時間の同じ横軸で並べています。価格推移の見出し下には本日の高値・安値も表示します。</p>
         <p><b>⑥ 過去14日間の推移</b> — 直近14営業日ぶんの日足価格とセンチメント推移です。</p>
         <p><b>⑦ 過去24時間のセンチメント推移</b> — 暦日をまたいだ直近24時間ぶんのローリング窓です。</p>
-        <p><b>⑧ AI考察</b> — 上記の集計値のみをもとにAIが生成した文章です。個別の投稿内容や
+        <p><b>⑧ PTS・米国ADR（表示される場合のみ）</b> — 東証の取引時間外の値動きです。
+        PTS=私設取引システムでの夜間取引、ADR=米国預託証券(円換算)。あくまで翌営業日の値動きを
+        見る上での参考情報であり、それ自体が値上がり/値下がりを予測するものではありません。</p>
+        <p><b>⑨ 🤖AI考察</b> — 上記の集計値のみをもとにAIが生成した文章です。個別の投稿内容や
         ユーザー名は一切含まれません。</p>
+        <p>件数・数量系のグラフ(投稿量・板の買い/売り総計等)に統計的な外れ値が自動検出された場合は、
+        グラフ直下に「⚠️自動検出された外れ値」として注記が表示されます(値そのものは書き換えません)。</p>
         <p>本ダッシュボードは研究・エンタメ用途の情報提供であり、投資助言ではありません。</p>
       </div>
     </details>
@@ -74,7 +86,10 @@
         <span class="price">50,930円</span>
         <span class="chg" style="color:#1D4ED8">-6.24%</span>
       </div>
-      <p class="caption">更新時刻: 2026-08-24T21:49:32（このページは1分間隔で自動生成される静的スナップショットです）</p>
+      <p class="caption">更新時刻: 2026-08-24T21:49:32（データは1分間隔で自動生成され、このページも
+      60秒毎に自動再読み込みされます）</p>
+      
+      
 
       <h2>🔥😱 2大メーター・ボラレジーム</h2>
       <div class="grid3">
@@ -89,7 +104,7 @@
         <div class="panel">
           <h3>ボラ・レジーム帯</h3>
           <figure><img src='images/regime_band.png' alt='ボラ・レジーム帯' loading='lazy'></figure>
-          <p class="caption">現在レジーム: 較正中</p>
+          <p class='caption'>現在レジーム: 較正中　(BVP=0.366)</p>
           <div class='metric-row'><div class='metric-card'><div class='metric-label'>PTS（08/24 21:39）</div><div class='metric-value'>50,320円</div><div class='metric-delta' style='color:#1D4ED8'>-1.20%</div></div></div><p class='caption'>PTS=東証取引時間外の私設取引システム／ADR=米国預託証券。翌営業日の値動きの参考情報です(それ自体が売買シグナルではありません)。</p>
         </div>
       </div>
@@ -112,21 +127,27 @@
 
       <h2>📅 本日の推移（イントラデイ）</h2>
       <h3>本日の価格推移（10分足ローソク足・出来高）</h3>
+      <p class='caption'>本日の高値 55,040円 ／ 安値 50,310円</p>
       <div class="panel"><figure><img src='images/today_price.png' alt='本日の価格推移' loading='lazy'></figure></div>
       <h3>板の買い・売り総計（成行込み全価格帯・60秒平均）</h3>
       <p class="caption">表示10本の気配だけでなく、外側の気配(OVER/UNDER)と成行注文も含めた板全体の数量合計です。
       値は直近60秒間の平均。需給の偏りを直接示す指標ではありません。</p>
       <div class="panel"><figure><img src='images/board_totals.png' alt='板の買い・売り総計' loading='lazy'></figure></div>
+      
+      
       <h3>本日のセンチメント推移（10分毎・強気/弱気比率・投稿量）</h3>
       <div class="panel"><figure><img src='images/today_sentiment.png' alt='本日のセンチメント推移' loading='lazy'></figure></div>
+      
       <h3>過去24時間のセンチメント推移（10分毎・強気/弱気比率・投稿量）</h3>
       <div class="panel"><figure><img src='images/sentiment_24h.png' alt='過去24時間のセンチメント推移' loading='lazy'></figure></div>
+      
 
       <h2>📈 過去14日間の推移</h2>
       <h3>過去14日間の価格推移（日足ローソク足・出来高）</h3>
       <div class="panel"><figure><img src='images/trend14_price.png' alt='過去14日間の価格推移' loading='lazy'></figure></div>
       <h3>過去14日間のセンチメント推移（強気/弱気/中立比率・投稿量）</h3>
       <div class="panel"><figure><img src='images/trend14_sentiment.png' alt='過去14日間のセンチメント推移' loading='lazy'></figure></div>
+      
 
       <h2>🤖 AI考察</h2>
       <div class='metric-row'><div class='metric-card'><div class='metric-label'>株価</div><div class='metric-value'>50,930円</div><div class='metric-delta'>+0円</div></div><div class='metric-card'><div class='metric-label'>強気比率</div><div class='metric-value'>33.8%</div><div class='metric-delta'>+0.0pt</div></div><div class='metric-card'><div class='metric-label'>弱気比率</div><div class='metric-value'>57.1%</div><div class='metric-delta'>+0.0pt</div></div></div><p class='caption'>前回集計(2026-08-24T21:39:37)との比較</p>
@@ -144,7 +165,7 @@
 
       <hr style="border:none;border-top:1px solid var(--border);margin:2rem 0 1rem">
       <p class="caption">⚠️ 本情報は掲示板投稿を統計的に集計したものであり、投資助言ではありません。個別の投稿内容は含まれていません。研究・エンタメ用途です。</p>
-      <footer>生成: generate_static_dashboard.py（2026-08-24T21:55:23） /
+      <footer>生成: generate_static_dashboard.py（2026-08-24T21:58:18） /
       画像バックエンド: plotly+kaleido</footer>
     </div>
     </body></html>
