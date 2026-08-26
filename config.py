@@ -639,6 +639,15 @@ AI_COMMENTARY_FAILURE_STATE_PATH = os.path.join(DATA_DIR, "ai_commentary_failure
 AI_COMMENTARY_FAILURE_WARN_THRESHOLD = int(
     os.environ.get("BBS_AI_COMMENTARY_FAILURE_THRESHOLD", "3"))
 
+# ★2026-08-27追加(ユーザー依頼「24時間以内のキオクシアに関係しそうなニュースの要約を
+# 公開ダッシュボードに」「検索頻度は10分毎・新ニュースが出たら更新とリンクを」)。
+# news_fetch.py(Google News RSS・APIキー不要)の設定。NEWS_SEEN_STATE_PATHは前回時点の
+# 直近24h窓内リンク一覧+前回の要約を保持する状態ファイル(collect_news()参照)。
+NEWS_SEARCH_QUERY = os.environ.get("BBS_NEWS_SEARCH_QUERY", "キオクシア OR 285A")
+NEWS_SEEN_STATE_PATH = os.path.join(DATA_DIR, "news_seen_state.json")
+NEWS_FETCH_TIMEOUT_SEC = int(os.environ.get("BBS_NEWS_FETCH_TIMEOUT_SEC", "8"))
+NEWS_SUMMARY_MAX_TOKENS = int(os.environ.get("BBS_NEWS_SUMMARY_MAX_TOKENS", "400"))
+
 # ★2026-08-21追加(おにや提案・連携ログ01:38投稿=エンジニアの深堀質問③への回答で発覚)。
 # analyze_lock/export_lockの取得失敗(busy)は従来WARN単発ログのみで、連続回数・累積占有を
 # 追跡する仕組みが無く「手動の実データ再検証でしか気づけない」状態だった(2026-08-19に

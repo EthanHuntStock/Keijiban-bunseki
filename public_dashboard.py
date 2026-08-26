@@ -29,6 +29,7 @@ what-ifしきい値調整UI・板(L2)詳細 -- いずれもこのページのデ
 起動: streamlit run public_dashboard.py
 """
 import datetime as dt
+import html
 
 import streamlit as st
 
@@ -309,6 +310,58 @@ def _signal_list(rec):
                 f"</div>", unsafe_allow_html=True)
         with col_spark:
             _signal_sparkline(history_14d, name, color)
+
+
+# ============================================================================
+# 関連ニュース(★2026-08-27追加・ユーザー依頼「24時間以内のキオクシアに関係し
+# そうなニュースの要約を公開ダッシュボードに」「検索頻度は10分毎・新ニュースが
+# 出たら更新とリンクを」)。データ源はrec['news']
+# (news_fetch.collect_news()→public_export.build_public_record()が組み立て済み・
+# 10分毎のcatchupサイクルに相乗りして自動更新される)。
+# ============================================================================
+def _fmt_news_published(utc_iso):
+    """純関数寄り(streamlit非依存): news_fetch内部表現(UTC・'YYYY-MM-DDTHH:MM:SS')を
+    JST表示('M/D HH:MM')へ変換する。パース不能/Noneなら空文字(fail-soft・
+    時刻不明の記事でも一覧自体は表示する)。"""
+    if not utc_iso:
+        return ""
+    try:
+        t = dt.datetime.strptime(utc_iso, "%Y-%m-%dT%H:%M:%S") + dt.timedelta(hours=9)
+        # ★Windows実行環境ではstrftimeの"%-m"(ゼロ埋め無し月)非対応のため、
+        # 手動でM/D形式を組み立てる(generate_static_dashboard.pyの_mmdd()と同型)。
+        return f"{t.month}/{t.day} {t.strftime('%H:%M')}"
+    except (ValueError, TypeError):
+        return ""
+
+
+def _news_summary(rec):
+    """rec['news']自体が無い(RSS取得失敗・機能追加前のhistory等)場合はセクションを
+    丸ごと省く(fail-soft・存在しない情報を捏造しない)。"""
+    news = rec.get("news")
+    if not news:
+        return
+    items = news.get("items") or []
+    summary_text = news.get("summary_text")
+    if not items:
+        st.caption("直近24時間以内の関連ニュースは見つかりませんでした。")
+        return
+    if summary_text:
+        st.markdown(html.escape(summary_text))
+    for it in items[:10]:
+        title = html.escape(it.get("title") or "")
+        link = html.escape(it.get("article_link") or "", quote=True)
+        source = html.escape(it.get("source") or "出所不明")
+        time_label = _fmt_news_published(it.get("published"))
+        time_part = f"・{time_label}" if time_label else ""
+        st.markdown(
+            f"<div style='padding:3px 0;font-size:.92em'>"
+            f"<a href='{link}' target='_blank' rel='noopener noreferrer' "
+            f"style='color:{COL['text']}'>{title}</a>"
+            f"<span style='color:{COL['muted']};font-size:.85em'>"
+            f"（{source}{time_part}）</span></div>",
+            unsafe_allow_html=True)
+    st.caption("※ニュース見出しの要約であり、投資助言ではありません。"
+              "各見出しから元記事(Google News経由)へ移動できます。")
 
 
 # ★2026-08-20: 「YYYY-MM-DD」→「M/D」表記への変換(ユーザー依頼「グラフの日付は
@@ -1123,6 +1176,9 @@ def main():
         # public_export側でも同じキー名に揃えてあるためそのまま渡せる。
         regime_band(regime)
         _extended_hours_card(rec)
+
+    st.markdown("#### 📰 関連ニュース（直近24時間）")
+    _news_summary(rec)
 
     st.markdown("#### 🎯 シグナル発火状況（9指標）")
     # ★2026-08-19追加(ユーザー依頼): 「発火」が何を意味するか一目でわかるよう説明を追加。

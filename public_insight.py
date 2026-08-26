@@ -596,6 +596,144 @@ def generate_public_insight(public_record, *, model=None, max_tokens=None, clien
 
 
 # ============================================================================
+# ニュース見出し要約(★2026-08-27追加・news_fetch.collect_news()から呼ばれる)。
+# ユーザー依頼「24時間以内のキオクシアに関係しそうなニュースの要約を公開ダッシュ
+# ボードに」。入力はnews_fetch.pyが取得した見出し(タイトル・発行元・時刻)のみ
+# ―― 記事本文は一切扱わない(著作権/利用規約への配慮。individual-post-leak防止と
+# 同じ「渡せる情報の種類を構造的に絞る」設計思想)。
+# ============================================================================
+_NEWS_SUMMARY_SYS = (
+    "あなたは日本株のニュース見出しを要約する客観的なアナリストです。与えられた"
+    "ニュース見出し一覧(タイトル・発行元・発行時刻)だけを根拠に、直近の動向を"
+    "簡潔にまとめます。次を絶対に守ります。\n"
+    "(1) 個々の見出しを順番に言い換えるだけでなく、全体として何が起きているかを"
+    "まとめる。\n"
+    "(2) 『買い時/売り時/上がる/下がる』等、断定的な将来予測や煽り表現、"
+    "売買の推奨・指示は一切書かない。\n"
+    "(3) 見出しに書かれていない情報を推測・憶測で付け足さない(捏造しない)。\n"
+    "(4) 日本語で150〜250字程度、簡潔にまとめる。\n"
+    "(5) 本文の末尾で、これが『ニュース見出しの要約であり、投資助言ではない』"
+    "旨を明示する。"
+)
+
+
+def build_news_summary_context(items):
+    """純関数: news_fetch.collect_news()が返すitems(直近24h分の見出しリスト)から、
+    プロンプト用のホワイトリスト済みコンテキストを組み立てる。
+    build_public_insight_context()と同じ思想(dictをそのまま右から左へ流さず、
+    title/source/publishedだけを明示的に抜き出す)。titleが無い項目は捨てる。"""
+    return [
+        {"title": (it or {}).get("title"), "source": (it or {}).get("source"),
+         "published": (it or {}).get("published")}
+        for it in (items or []) if isinstance(it, dict) and it.get("title")
+    ]
+
+
+def render_news_summary_prompt(context):
+    """build_news_summary_context()の出力 -> ユーザープロンプト文字列(純関数)。"""
+    L = []
+    L.append("以下は、ある銘柄に関連して直近24時間以内に配信されたニュース見出しの"
+             "一覧です(本文は含まれていません・見出しのみ)。これらの見出しだけを"
+             "根拠に、簡潔な要約文を書いてください。")
+    L.append("")
+    for it in context or []:
+        title = it.get("title") or ""
+        source = it.get("source") or "出所不明"
+        L.append(f"・{title}({source})")
+    L.append("")
+    L.append("■ 出力の指示(厳守)")
+    L.append("  ・日本語で150〜250字程度でまとめる。")
+    L.append("  ・個々の見出しを順番に言い換えるのでなく、全体としての動向をまとめる。")
+    L.append("  ・見出しに書かれていない情報を推測で付け足さない(捏造しない)。")
+    L.append("  ・断定的な将来予測(上がる/下がる等)や売買の推奨・煽り表現をしない。")
+    L.append("  ・末尾に『ニュース見出しの要約であり、投資助言ではない』旨を明示する。")
+    return "\n".join(L)
+
+
+def _call_lmstudio_news_summary(prompt, model=None, post_fn=None):
+    """ニュース要約専用のlmstudio呼び出し(_call_lmstudio_insight()と同じ規約・
+    システムプロンプトだけ_NEWS_SUMMARY_SYSへ差し替え・max_tokensも専用値)。"""
+    import requests
+    poster = post_fn or requests.post
+    endpoint = config.LOCAL_LLM_ENDPOINTS["lmstudio"]
+    use_model = model or endpoint["model"]
+    resp = poster(
+        f"{endpoint['base_url']}/chat/completions",
+        json={
+            "model": use_model,
+            "messages": [
+                {"role": "system", "content": _NEWS_SUMMARY_SYS},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "temperature": 0.3,
+            "max_tokens": config.NEWS_SUMMARY_MAX_TOKENS,
+        },
+        timeout=config.LMSTUDIO_TIMEOUT_SEC,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    text = (data["choices"][0]["message"]["content"] or "").strip()
+    usage_raw = data.get("usage") or {}
+    usage = {"input_tokens": usage_raw.get("prompt_tokens", 0) or 0,
+             "output_tokens": usage_raw.get("completion_tokens", 0) or 0}
+    return text, usage, use_model
+
+
+def generate_news_summary(items, *, model=None, max_tokens=None, client=None,
+                          backend=None, post_fn=None):
+    """ニュース見出し要約文を生成する(news_fetch.collect_news()から呼ばれる)。
+    generate_public_insight()と同じbackend切替(既定config.PUBLIC_INSIGHT_BACKEND)・
+    fail-soft(例外/空文字は None)設計を踏襲する。itemsが空(見出しが1件も無い)場合は
+    LLMを呼ばずNoneを返す(=無駄な呼び出しをしない・呼び手側の「ニュース無し」表示に
+    委ねる)。
+
+    戻り値(成功時): {text, model, usage, generated_at, backend}。失敗時: None。
+    """
+    try:
+        context = build_news_summary_context(items)
+        if not context:
+            return None
+        prompt = render_news_summary_prompt(context)
+        use_backend = backend or config.PUBLIC_INSIGHT_BACKEND
+
+        if use_backend == "lmstudio":
+            text, usage, use_model = _call_lmstudio_news_summary(
+                prompt, model=model, post_fn=post_fn)
+            if not text:
+                _log("WARN empty text from LLM (lmstudio news summary); "
+                     "returning None (fail-soft)")
+                return None
+            generated_at = dt.datetime.now().isoformat(timespec="seconds")
+            _log(f"news_summary generated chars={len(text)} model={use_model} "
+                 f"backend=lmstudio")
+            return {"text": text, "model": use_model, "usage": usage,
+                   "generated_at": generated_at, "backend": "lmstudio"}
+
+        use_model = model or PUBLIC_INSIGHT_MODEL
+        use_max_tokens = max_tokens or config.NEWS_SUMMARY_MAX_TOKENS
+        if client is None:
+            from analyze import _get_client
+            client = _get_client()
+        resp = client.messages.create(
+            model=use_model, max_tokens=use_max_tokens, system=_NEWS_SUMMARY_SYS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = "".join(getattr(b, "text", "") for b in resp.content).strip()
+        usage = _usage_dict(getattr(resp, "usage", None))
+        if not text:
+            _log("WARN empty text from LLM (news summary); returning None (fail-soft)")
+            return None
+        generated_at = dt.datetime.now().isoformat(timespec="seconds")
+        _log(f"news_summary generated chars={len(text)} model={use_model}")
+        return {"text": text, "model": use_model, "usage": usage,
+               "generated_at": generated_at, "backend": "claude"}
+    except Exception as e:
+        _log(f"WARN generate_news_summary failed (fail-soft None): {e!r}")
+        return None
+
+
+# ============================================================================
 # 純関数テスト(ネット/LLM 非依存 = どの環境でも緑・実課金しない=モック)
 # ============================================================================
 class _FakeBlock:
@@ -933,6 +1071,68 @@ def _run_selftests():
         return _R()
     out_lm_blank = generate_public_insight(rec, backend="lmstudio", post_fn=_blank_post)
     check("generate(lmstudio): blank text -> None (fail-soft)", out_lm_blank is None)
+
+    # ---- ニュース見出し要約(★2026-08-27追加) ----
+    news_items = [
+        {"title": "キオクシア、決算を発表", "source": "日本経済新聞",
+         "published": "2026-08-27T01:00:00",
+         "leaked_field": "SECRET_SHOULD_NOT_APPEAR"},  # ホワイトリスト検証用
+        {"title": "半導体市況が回復基調", "source": "Reuters",
+         "published": "2026-08-27T03:00:00"},
+        {"title": None, "source": "無視されるはず(タイトル無し)"},
+    ]
+    news_ctx = build_news_summary_context(news_items)
+    check("news: whitelist keeps only title/source/published",
+          set(news_ctx[0]) == {"title", "source", "published"})
+    check("news: leaked_field dropped", "leaked_field" not in news_ctx[0]
+          and "SECRET_SHOULD_NOT_APPEAR" not in __import__("json").dumps(news_ctx, ensure_ascii=False))
+    check("news: item without title is dropped", len(news_ctx) == 2)
+
+    news_prompt = render_news_summary_prompt(news_ctx)
+    check("news prompt: has both headlines", "キオクシア、決算を発表" in news_prompt
+          and "半導体市況が回復基調" in news_prompt)
+    check("news prompt: has sources", "日本経済新聞" in news_prompt and "Reuters" in news_prompt)
+    check("news prompt: has discipline instructions",
+          "投資助言ではない" in news_prompt and "捏造" in news_prompt)
+
+    # empty items -> None without calling the LLM at all
+    check("generate_news_summary: empty items -> None (no LLM call)",
+          generate_news_summary([], backend="claude", client=_FakeClient(sample_text)) is None)
+
+    news_fc = _FakeClient("半導体市況の回復とキオクシアの決算発表が報じられました。"
+                          "※本要約はニュース見出しに基づくものであり、投資助言ではありません。")
+    news_out = generate_news_summary(news_items, client=news_fc, backend="claude")
+    check("generate_news_summary(claude): returns dict on success", news_out is not None)
+    check("generate_news_summary(claude): system prompt is the news variant",
+          news_fc.calls[0]["system"] == _NEWS_SUMMARY_SYS)
+    check("generate_news_summary(claude): backend echoed back", news_out.get("backend") == "claude")
+
+    news_lm_calls = []
+
+    def _fake_news_lmstudio_post(url, json=None, timeout=None):
+        news_lm_calls.append(json)
+
+        class _R:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"choices": [{"message": {"content": sample_text}}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 60}}
+        return _R()
+
+    news_out_lm = generate_news_summary(news_items, backend="lmstudio",
+                                        post_fn=_fake_news_lmstudio_post)
+    check("generate_news_summary(lmstudio): returns dict on success", news_out_lm is not None)
+    check("generate_news_summary(lmstudio): system prompt is the news variant",
+          news_lm_calls[0]["messages"][0]["content"] == _NEWS_SUMMARY_SYS)
+    check("generate_news_summary(lmstudio): max_tokens uses config.NEWS_SUMMARY_MAX_TOKENS",
+          news_lm_calls[0]["max_tokens"] == config.NEWS_SUMMARY_MAX_TOKENS)
+
+    news_out_fail = generate_news_summary(news_items, client=_RaisingClient(), backend="claude")
+    check("generate_news_summary: fail-soft returns None on exception", news_out_fail is None)
 
     config.LOG_PATH = _saved_log
     print(f"\n{'PASS' if not fails else 'FAIL'}: {len(fails)} failure(s)")

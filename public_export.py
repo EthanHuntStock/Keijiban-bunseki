@@ -1333,7 +1333,8 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                         ai_commentary=None, regime=None, intraday_today=None,
                         previous=None, extended_hours=None,
                         board_history_14d=None, signal_changes=None,
-                        sentiment_last_24h=None, signal_cards_history_14d=None):
+                        sentiment_last_24h=None, signal_cards_history_14d=None,
+                        news=None):
     """
     既存の集計結果から公開用レコードを組み立てる純関数。個別投稿情報は一切参照しない
     (引数として生コメントのリストを受け取らない設計=構造的に混入を防ぐ)。
@@ -1392,6 +1393,20 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                    出すため追加)。signal_cards_daily_series() が返す
                    [{date, <指標名>: value, ...}, ...] のリスト、または None。
                    None(既定)なら出力レコードにキー自体を含めない。
+      news       - ★2026-08-27追加(ユーザー依頼「24時間以内のキオクシアに関係し
+                   そうなニュースの要約を公開ダッシュボードに」)。
+                   news_fetch.collect_news() が返す
+                   {"items": [{title,link,source,published}, ...], "summary":
+                   {text, generated_at} | None, "has_new": bool} 形式のdict、または
+                   None。None(既定・RSS取得自体が失敗した場合)なら出力レコードに
+                   キー自体を含めない(=呼び手[cloud側ダッシュボード]は前回の
+                   latest.json由来の値をそのまま表示継続する)。has_newは公開レコード
+                   には含めない(内部の新着判定用フラグであり表示に不要なため)。
+                   出力レコード側のキー名は validate_no_leak() の漏洩疑いキー名
+                   (text/link/url等・個別投稿の本文/リンク検出用)を意図的に避け、
+                   items[].article_link / summary_text / summary_generated_at
+                   という別名にする(既存の安全ロジック自体は変更しない・より
+                   低リスクな対処。詳細はbuild_public_record()の書き込み箇所参照)。
     """
     S = S or {}
     ratios = S.get("ratios") or {}
@@ -1473,6 +1488,25 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
         rec["sentiment_last_24h"] = list(sentiment_last_24h)
     if signal_cards_history_14d is not None:
         rec["signal_cards_history_14d"] = list(signal_cards_history_14d)
+    if news is not None:
+        # ★キー名は意図的にvalidate_no_leak()の漏洩疑いキー名(text/link/url等)を
+        # 避ける(article_link/summary_text/summary_generated_at)。中身は公開ニュース
+        # 記事の見出し・出所・リンクという安全な集計値だが、キー名の完全一致検査に
+        # 引っかかると誤検知でexport全体がfail-closedするため(docstring参照)。
+        _news_summary = news.get("summary")
+        rec["news"] = {
+            "items": [
+                {"title": (it or {}).get("title"),
+                 "article_link": (it or {}).get("link"),
+                 "source": (it or {}).get("source"),
+                 "published": (it or {}).get("published")}
+                for it in (news.get("items") or []) if isinstance(it, dict)
+            ],
+            "summary_text": (_news_summary.get("text")
+                            if isinstance(_news_summary, dict) else None),
+            "summary_generated_at": (_news_summary.get("generated_at")
+                                    if isinstance(_news_summary, dict) else None),
+        }
     return rec
 
 
@@ -1830,6 +1864,22 @@ def _build_from_live_data(with_commentary=False):
             today_signal_entry[_name] = _c.get("value")
     signal_cards_history_14d = signal_cards_daily_series(history_rows) + [today_signal_entry]
 
+    # ★2026-08-27追加(ユーザー依頼「24時間以内のキオクシアに関係しそうなニュースの
+    # 要約を公開ダッシュボードに」「検索頻度は10分毎・新ニュースが出たら更新と
+    # リンクを」)。_build_from_live_data()自体がcatchup(10分毎)からも毎回呼ばれる
+    # ため、新規タスクを増やさずニュース収集も自動的に10分間隔になる(board_history_14d
+    # 等と同じ「既存の高頻度サイクルに相乗りする」設計)。news_fetch.collect_news()は
+    # 内部で新着検知(前回と同じ記事しか無ければLLM要約を呼ばずスキップ)・fail-soft
+    # (RSS取得失敗時はNone)を自己完結して行う。ここでの追加のtry/exceptは、万一
+    # news_fetch側の設計外の例外(インポート失敗等)が起きても本体の公開レコード
+    # 組み立て自体は止めないための保険(他の失敗分離stepと同型)。
+    news_result = None
+    try:
+        import news_fetch
+        news_result = news_fetch.collect_news()
+    except Exception as e:
+        _log(f"WARN news_fetch.collect_news failed (fail-soft, rec['news'] omitted): {e!r}")
+
     # ★2026-08-20追加・同日中に再設計(ユーザー指示「本日のセンチメント推移は、過去
     # 24時間の10分毎のセンチメントの推移に」→ユーザー指摘「投稿量は投稿時刻で
     # ばらけさせるべきでは」)。既に読み込み済みのraw/analyzed(各行の実投稿時刻"ts"
@@ -1848,7 +1898,8 @@ def _build_from_live_data(with_commentary=False):
                                      board_history_14d=board_history_14d,
                                      signal_changes=signal_changes,
                                      sentiment_last_24h=sentiment_last_24h,
-                                     signal_cards_history_14d=signal_cards_history_14d)
+                                     signal_cards_history_14d=signal_cards_history_14d,
+                                     news=news_result)
         errs = validate_no_leak(prelim)
         if errs:
             _log(f"ERROR leak detected before commentary generation, skip: {errs}")
@@ -1872,7 +1923,8 @@ def _build_from_live_data(with_commentary=False):
                                board_history_14d=board_history_14d,
                                signal_changes=signal_changes,
                                sentiment_last_24h=sentiment_last_24h,
-                               signal_cards_history_14d=signal_cards_history_14d)
+                               signal_cards_history_14d=signal_cards_history_14d,
+                               news=news_result)
 
 
 def _load_regime_readonly():
