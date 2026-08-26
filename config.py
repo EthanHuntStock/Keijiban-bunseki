@@ -643,7 +643,29 @@ AI_COMMENTARY_FAILURE_WARN_THRESHOLD = int(
 # 公開ダッシュボードに」「検索頻度は10分毎・新ニュースが出たら更新とリンクを」)。
 # news_fetch.py(Google News RSS・APIキー不要)の設定。NEWS_SEEN_STATE_PATHは前回時点の
 # 直近24h窓内リンク一覧+前回の要約を保持する状態ファイル(collect_news()参照)。
-NEWS_SEARCH_QUERY = os.environ.get("BBS_NEWS_SEARCH_QUERY", "キオクシア OR 285A")
+# ★2026-08-27追記(ユーザー依頼「エヌビディアやサンディスクとかも、キオクシアに影響
+# するニュースになります。キーワードを拡張して取り込むように」): NAND市場の主要な
+# 顧客(エヌビディア=NAND/HBMを大量調達するAI半導体大手)・競合(サンディスク=
+# 旧WDのフラッシュメモリ事業・キオクシアと直接競合)のニュースもキオクシア株価に
+# 影響しうるため検索クエリへ追加。
+NEWS_SEARCH_QUERY = os.environ.get(
+    "BBS_NEWS_SEARCH_QUERY",
+    "キオクシア OR 285A OR エヌビディア OR NVIDIA OR サンディスク OR SanDisk")
+# ★2026-08-27追記(同上のキーワード拡張後、実データ検証で発覚): NVIDIA決算日等、
+# 関連企業側に大型ニュースが出ると同一内容の配信社違いだけの記事(ワイヤー配信の
+# 転載)が数十件単位で並び、直近24h窓がほぼ関連企業ニュースだけで埋まりキオクシア
+# 自身の記事が一覧から押し出される実害を実機確認(80件中19件が「米エヌビディア
+# 四半期最高益更新」等の実質同一見出し)。対策として、見出しをキーワードで
+# トピック分類し(NEWS_PRIMARY_KEYWORDS=対象銘柄自体・NEWS_RELATED_KEYWORD_GROUPS=
+# 顧客/競合企業ごと)、対象銘柄自体の記事は上限なく残しつつ、関連企業ごとの記事は
+# NEWS_MAX_PER_RELATED_GROUP件までに抑える(news_fetch.balance_items_by_topic()
+# 参照)。
+NEWS_PRIMARY_KEYWORDS = ["キオクシア", "285A", "Kioxia"]
+NEWS_RELATED_KEYWORD_GROUPS = {
+    "エヌビディア": ["エヌビディア", "NVIDIA", "Nvidia", "NVDA"],
+    "サンディスク": ["サンディスク", "SanDisk"],
+}
+NEWS_MAX_PER_RELATED_GROUP = int(os.environ.get("BBS_NEWS_MAX_PER_RELATED_GROUP", "3"))
 NEWS_SEEN_STATE_PATH = os.path.join(DATA_DIR, "news_seen_state.json")
 NEWS_FETCH_TIMEOUT_SEC = int(os.environ.get("BBS_NEWS_FETCH_TIMEOUT_SEC", "8"))
 NEWS_SUMMARY_MAX_TOKENS = int(os.environ.get("BBS_NEWS_SUMMARY_MAX_TOKENS", "400"))
