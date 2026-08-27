@@ -1104,6 +1104,22 @@ def main():
     if HAS_AUTOREFRESH:
         st_autorefresh(interval=PUBLIC_DASHBOARD_AUTOREFRESH_SEC * 1000, key="public_dash_auto")
 
+    # ★2026-08-27追加(ユーザー依頼「ダッシュボードの一番上に、YouTubeのリンクと
+    # アバターのイラストを入れて」)。アバター画像はEthan HuntStock2.jpg(透かし除去
+    # 済み・[[reference-avatar-photo-has-grok-watermark]]参照)を`assets/avatar.jpg`
+    # としてリポジトリへ同梱(Streamlit Cloudはリポジトリを丸ごとクローンするため、
+    # スクリプトからの相対パスで読める)。
+    col_avatar, col_link = st.columns([1, 15])
+    with col_avatar:
+        st.image("assets/avatar.jpg", width=40)
+    with col_link:
+        st.markdown(
+            "<div style='display:flex;align-items:center;height:40px'>"
+            "<a href='https://www.youtube.com/@EthanHuntStock' target='_blank' "
+            "rel='noopener noreferrer' style='text-decoration:none'>"
+            "📺 YouTube: @EthanHuntStock</a></div>",
+            unsafe_allow_html=True)
+
     # ★2026-08-19追加(ユーザー依頼「タイトルを最上部に書く」): ブラウザタブの
     # page_titleとは別に、ページ本文の最上部にも見出しとして明示する。
     st.markdown("### 📊 掲示板投稿の詳細分析による投資情報")
