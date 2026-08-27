@@ -146,6 +146,41 @@ def _header(rec, live_price=None):
     if stale_warning:
         st.caption(stale_warning)
     _visit_counter_badge()
+    _like_button()
+
+
+# ============================================================================
+# ★2026-08-27追加(ユーザー依頼「ダッシュボードに、いいねボタンを足せますか」)。
+# 閲覧数カウンター(_visit_counter_badge・直下)と同じGoogle Apps Script Web App
+# (apps_script_visit_counter.gs)を流用する。新しいシートタブ(like_counter)へ
+# 1加算するaction=like_hit・加算せず現在値だけ読むaction=like_readを追加した
+# ので、新しい第三者サービスへの接続や新しいSecretsは一切不要(同じURLを使う)。
+# st.session_stateで1ブラウザセッションにつき1回だけ押せるようにし(押した後は
+# ボタンをdisabledにして見た目でも分かるようにする)、連打による多重加算を防ぐ。
+# URL未設定・通信失敗時はボタン自体を表示しない(fail-soft、閲覧数カウンターと同型)。
+# ============================================================================
+def _like_button():
+    url = config.PUBLIC_VISIT_COUNTER_URL
+    if not url:
+        return
+    if "_like_count" not in st.session_state:
+        st.session_state["_like_count"] = public_export.record_visit(url, action="like_read")
+    already = st.session_state.get("_liked", False)
+    col_btn, col_label = st.columns([1, 12])
+    with col_btn:
+        clicked = st.button("✅" if already else "👍", key="_like_btn", disabled=already,
+                            help="役に立ったら押してください")
+    if clicked and not already:
+        new_count = public_export.record_visit(url, action="like_hit")
+        if new_count is not None:
+            st.session_state["_like_count"] = new_count
+        st.session_state["_liked"] = True
+        already = True
+    count = st.session_state.get("_like_count")
+    count_text = f"（累計 {count:,} いいね）" if count is not None else ""
+    with col_label:
+        st.caption(("いいねしました！" if already else "このダッシュボードが役に立ったら押してください")
+                  + count_text)
 
 
 # ============================================================================

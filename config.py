@@ -531,6 +531,9 @@ PUBLIC_JSON_SOURCE_URL = os.environ.get("BBS_PUBLIC_JSON_URL")
 # Google Sheets連携基盤を流用し、Google Apps Script Web App(doGet・visit_counter
 # タブへ1加算/読取)のURLをここで受ける。未設定なら公開ダッシュボード側で
 # バッジ自体を表示しない(fail-soft・新しい第三者サービスへは接続しない設計)。
+# ★2026-08-27追加: 同じWeb App・同じURLを、いいねボタン(like_counterタブへの
+# action=like_hit/like_read)にも流用する(新しいSecretsの追加は不要。
+# apps_script_visit_counter.gs側の再デプロイのみで両方が有効になる)。
 PUBLIC_VISIT_COUNTER_URL = os.environ.get("BBS_VISIT_COUNTER_URL")
 
 # ---- ライブ価格ブリッジ(live_price_bridge.py) — プロト1のkabuティックCSV(読み取り専用) ----
