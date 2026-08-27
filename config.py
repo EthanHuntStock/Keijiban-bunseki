@@ -719,3 +719,62 @@ MOOMOO_MARKET_PREFIX = "JP"
 MOOMOO_TICKS_PATH = os.path.join(DATA_DIR, "moomoo_ticks_285A.jsonl")
 MOOMOO_BOOK_PATH  = os.path.join(DATA_DIR, "moomoo_book_285A.jsonl")
 MOOMOO_CAPITAL_PATH = os.path.join(DATA_DIR, "moomoo_capital_285A.jsonl")  # 資金分布(大口/小口フロー)
+
+
+# ============================================================================
+# reversal_signals.py — デイトレ「折り返し極値」自動検出(板総計×RSI6/MACD×センチメント)
+# ============================================================================
+# ★2026-08-27追加(ユーザー依頼: 2026-08-27 15:39投稿でおにやが自己申告した
+#   「検出はできたがトレPJへのハンドオフ[連携ログ投稿]を都度実行できていなかった」
+#   という運用の抜けをコード化して機械的に埋める)。本日の実例=①09:06-09:07
+#   高値53,450円(RSI6=94・超大口利確売り集中)②10:12-10:15安値50,590円
+#   (RSI6=22-32)③13:00頃押し目52,090-52,100円、の3件はいずれも
+#   「板総計(買い/売り比)が本日ローリング極値を更新」+「RSI6が過熱/売られ過ぎ」
+#   という条件で機械的に検出可能だったと事後分析で判明した。
+#
+# 規律(既存モジュールと同型):
+#   - read-only。record_all.py/signals.py本体・board_read.py・既存の凍結台帳には
+#     一切書き込まない/変更しない(参照するだけ)。板CSV/ティックCSVはプロト1の
+#     既存記録をそのまま読む(パスは既存の KABU_PROTO1_285A_BOARD_DIR /
+#     KABU_PROTO1_285A_TICKS_DIR を流用)。
+#   - 全シグナルは研究用・未検証(signals.py冒頭の免責と同型)。閾値は初期案であり
+#     後で調整可能なようconfig側に集約する。
+#   - 連携ログ(claudecode-ap/_handoff/CROSS_PROJECT_LOG.md)への実書き込みは
+#     REVERSAL_LOG_POST_ENABLE が既定OFF('0')の間はdry-run(検出結果を返すのみ・
+#     ファイルは一切変更しない)。おにやが実データでの検出結果を確認し、本番投稿の
+#     判断をした上でこの値を'1'にするまでは自動投稿しない
+#     (feedback-strategy-eval-harness と同型=新機能は既定OFF+比較評価してから昇格)。
+REVERSAL_DETECT_ENABLE = os.environ.get("BBS_REVERSAL_DETECT_ENABLE", "1") == "1"
+REVERSAL_LOG_POST_ENABLE = os.environ.get("BBS_REVERSAL_LOG_POST_ENABLE", "0") == "1"
+
+# 板総計(買い/売り比)のローリング極値判定窓[分]。board_totals_60s_seriesは1分1点
+# なので「直近N点」= 直近N分に相当する。
+REVERSAL_ROLLING_WINDOW_MIN = int(os.environ.get("BBS_REVERSAL_ROLLING_WINDOW_MIN", "30"))
+
+# RSI(6分足)の期間・過熱/売られ過ぎ閾値。ユーザー実例(RSI6=94で高値反転・
+# RSI6=22-32で安値反転)を包含する形で初期値を設定(後で調整可能)。
+REVERSAL_RSI_PERIOD = int(os.environ.get("BBS_REVERSAL_RSI_PERIOD", "6"))
+REVERSAL_RSI_OVERBOUGHT = float(os.environ.get("BBS_REVERSAL_RSI_OVERBOUGHT", "80"))
+REVERSAL_RSI_OVERSOLD = float(os.environ.get("BBS_REVERSAL_RSI_OVERSOLD", "25"))
+
+# 板総計比のローリング極値許容帯(百分位)。実データ検証(2026-08-27・09:07高値/
+# 10:13安値)で、板圧力の極値は価格の天井/底に対し数分〜20分程度先行/後行し、
+# 反転のその瞬間ちょうどには「直近window内の厳密な新記録」を更新していない
+# ケースが多いと判明したため、「直近window内で下位/上位この割合以内」という
+# 許容帯(percentile band)で判定する(reversal_signals.rolling_percentile_rank
+# のdocstring参照)。0.20=下位/上位20%以内。実データ(2026-08-27 10:13安値・
+# RSI6=22.42)で0.20が実際に検出できる最小値だったため既定値とした(0.15では
+# window内順位が僅かに足りず不検出だった)。後で調整可能。
+REVERSAL_NEAR_EXTREME_PCT = float(os.environ.get("BBS_REVERSAL_NEAR_EXTREME_PCT", "0.20"))
+
+# 重複投稿抑制: 同種極値の再検出をこの分数内は抑制する。
+REVERSAL_DEDUP_WINDOW_MIN = int(os.environ.get("BBS_REVERSAL_DEDUP_WINDOW_MIN", "30"))
+
+REVERSAL_STATE_PATH = os.path.join(DATA_DIR, "reversal_signals_state.json")
+
+# 連携ログ(claudecode-ap/_handoff配下)への参照パス。__file__からの相対導出
+# (config.py既存方針を踏襲・固有パスを書かない)。envで上書き可。
+CROSS_PROJECT_LOG_PATH = os.environ.get(
+    "BBS_CROSS_PROJECT_LOG_PATH",
+    os.path.normpath(os.path.join(BASE_DIR, "..", "claudecode-ap", "_handoff",
+                                   "CROSS_PROJECT_LOG.md")))
