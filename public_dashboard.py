@@ -1155,6 +1155,16 @@ def main():
             "📺 YouTube: @EthanHuntStock</a></div>",
             unsafe_allow_html=True)
 
+    # ★2026-09-06追加(ユーザー依頼「モニターとダッシュボードの相互リンクを入れて」):
+    # 姉妹プロジェクト「AIセクター ワールドモニター」(ai_sector_monitor・キオクシア285A
+    # 売買判断支援)の公開静的サイトへの相互リンク。あちら側にも本ダッシュボードへの
+    # 逆リンクを追加済み(ai_sector_monitor/templates/index.html・static_export.py)。
+    st.markdown(
+        "<a href='https://ethanhuntstock.github.io/ai-sector-monitor/' target='_blank' "
+        "rel='noopener noreferrer' style='text-decoration:none;font-size:0.85em'>"
+        "🔗 姉妹サイト: AIセクター ワールドモニター（キオクシア285A売買判断支援）</a>",
+        unsafe_allow_html=True)
+
     # ★2026-08-19追加(ユーザー依頼「タイトルを最上部に書く」): ブラウザタブの
     # page_titleとは別に、ページ本文の最上部にも見出しとして明示する。
     st.markdown("### 📊 掲示板投稿の詳細分析による投資情報")
