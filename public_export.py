@@ -1595,6 +1595,47 @@ def ml_regime_snapshot(rows, symbol="285A", baseline_window=20):
     return {"date": latest.get("date"), "vr_regime": vr, "width_class": width_class}
 
 
+# ============================================================================
+# 掲示板センチメント×株価 統計評価テーブル(★2026-09-08追加)
+# ============================================================================
+def comprehensive_stats_summary(path=None):
+    """掲示板センチメント5指標×3ホライズンの統計評価行(正本=
+    research/comprehensive_stats.py が書き出す research/_ledger/
+    comprehensive_stats_latest.csv)を読み取り専用でdictのリストへ変換する純関数
+    寄りI/O。r/diff_pt/t列はfloatへ変換する(generate_static_dashboard.py/
+    dashboard.pyの_comprehensive_stats_rows()と同じ変換ロジック)。
+
+    ★2026-09-08追加(経緯)。おにや22:05依頼でこのテーブルをpublic_dashboard.pyへ
+    実装した際、当初は他のパネル(support_levels等)と異なりrec経由でなく
+    config.RESEARCH_DIR配下のCSVを直接ファイルパスで読む設計にしてしまい、
+    家PC1のローカルパイプラインとしてしか動かないStreamlit Cloud環境で
+    無言のfail-softにより表示されない実害を実機確認で発見した。他の
+    peer_snapshot_summary()/read_execution_cost_bp()/ml_regime_snapshot()と
+    同じく、このモジュール(クラウドへ届くbuild_public_record()のrec)経由で
+    値そのものを渡す設計へ是正するために新設。
+
+    戻り値: [{metric_key, metric_name, horizon_days, horizon_name, n, r,
+    high_n, low_n, diff_pt, t, data_period, calc_date}, ...] のリスト。
+    ファイル無し/空/壊れていれば空リスト(fail-soft)。
+    """
+    path = path or os.path.join(config.RESEARCH_DIR, "comprehensive_stats_latest.csv")
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        import csv as _csv
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            rows = list(_csv.DictReader(f))
+    except Exception:
+        return []
+    for r in rows:
+        for k in ("r", "diff_pt", "t"):
+            try:
+                r[k] = float(r.get(k))
+            except (TypeError, ValueError):
+                r[k] = None
+    return rows
+
+
 def peer_snapshot_summary(rows, jp_symbol="285A", us_key="sandisk"):
     """_load_peer_propagation_rows()が返す行群から、jp_symbol×us_keyに一致する
     行のうち date_d0 が最新の1件を取り出す純関数(ネットワーク/ファイルI/Oなし)。
@@ -1637,7 +1678,7 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                         execution_cost=None, ml_regime=None,
                         board_history_14d=None, signal_changes=None,
                         sentiment_last_24h=None, signal_cards_history_14d=None,
-                        news=None):
+                        news=None, comprehensive_stats=None):
     """
     既存の集計結果から公開用レコードを組み立てる純関数。個別投稿情報は一切参照しない
     (引数として生コメントのリストを受け取らない設計=構造的に混入を防ぐ)。
@@ -1729,6 +1770,16 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                    items[].article_link / summary_text / summary_generated_at
                    という別名にする(既存の安全ロジック自体は変更しない・より
                    低リスクな対処。詳細はbuild_public_record()の書き込み箇所参照)。
+      comprehensive_stats - ★2026-09-08追加。comprehensive_stats_summary()が返す
+                   掲示板センチメント5指標×3ホライズンの統計評価行(リスト)、または
+                   None。None(既定)なら出力レコードにキー自体を含めない。
+                   generate_static_dashboard.py/dashboard.pyは家PC1のローカル
+                   パイプラインとして正本CSVを直接ファイルパスで読めるが、
+                   public_dashboard.py(Streamlit Cloud版)はクラウド環境でローカル
+                   ファイルシステムに触れられないため、他のpeer/execution_cost/
+                   ml_regimeと同じくこの引数経由でrecへ格納しSheets json_blob
+                   同期でクラウドへ届ける(直接ファイル読みのままだった実装が
+                   クラウド上で無言で非表示になっていたことが発覚し是正)。
     """
     S = S or {}
     ratios = S.get("ratios") or {}
@@ -1854,6 +1905,11 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
             "summary_generated_at": (_news_summary.get("generated_at")
                                     if isinstance(_news_summary, dict) else None),
         }
+    if comprehensive_stats is not None:
+        # ★2026-09-08追加。comprehensive_stats_summary()が返す行をそのまま格納
+        # (metric_key/metric_name/horizon_days/horizon_name/n/r/high_n/low_n/
+        # diff_pt/t/data_period/calc_dateのみ・個別投稿は一切含まない集計値)。
+        rec["comprehensive_stats"] = list(comprehensive_stats)
     return rec
 
 
@@ -2202,6 +2258,15 @@ def _build_from_live_data(with_commentary=False):
         ml_regime = ml_regime_snapshot(_load_ml_regime_rows())
     except Exception as e:
         _log(f"WARN ml_regime_snapshot failed (fail-soft, rec['ml_regime'] omitted): {e!r}")
+    # ★2026-09-08追加: 詳細はcomprehensive_stats_summary()のdocstring参照。
+    # public_dashboard.py(Streamlit Cloud版)がローカルファイルシステムに触れられず
+    # 表示されなかった実害の是正(rec経由でクラウドへ届ける設計へ変更)。
+    comprehensive_stats = None
+    try:
+        comprehensive_stats = comprehensive_stats_summary()
+    except Exception as e:
+        _log(f"WARN comprehensive_stats_summary failed "
+            f"(fail-soft, rec['comprehensive_stats'] omitted): {e!r}")
     # ★2026-08-19追加(ユーザー依頼「AI考察は前回からの変化に対する考察も入れる」)。
     # 今回の書き出しで latest.json が上書きされる"前"の状態を読んでおく(=前回分の
     # 公開レコード)。読み取り専用(load_public_latest())・今回のrec組み立てより前に
@@ -2270,7 +2335,8 @@ def _build_from_live_data(with_commentary=False):
                                      signal_changes=signal_changes,
                                      sentiment_last_24h=sentiment_last_24h,
                                      signal_cards_history_14d=signal_cards_history_14d,
-                                     news=news_result)
+                                     news=news_result,
+                                     comprehensive_stats=comprehensive_stats)
         errs = validate_no_leak(prelim)
         if errs:
             _log(f"ERROR leak detected before commentary generation, skip: {errs}")
@@ -2296,7 +2362,7 @@ def _build_from_live_data(with_commentary=False):
                                signal_changes=signal_changes,
                                sentiment_last_24h=sentiment_last_24h,
                                signal_cards_history_14d=signal_cards_history_14d,
-                               news=news_result)
+                               news=news_result, comprehensive_stats=comprehensive_stats)
 
 
 def _load_regime_readonly():

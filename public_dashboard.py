@@ -37,7 +37,7 @@ import config
 import public_export
 from dashboard import (
     COL, REGIME_BANDS, HAS_PLOTLY, chip, inject_css, _gauge, regime_band, _rgba,
-    _comprehensive_stats_panel,
+    _render_comprehensive_stats_table,
 )
 
 try:
@@ -1403,16 +1403,15 @@ def main():
 
     # ★2026-09-07追加(おにや22:05依頼「掲示板センチメント5指標×3ホライズンの
     # 統計評価テーブル」・ユーザー指示で一般公開Streamlit版にも実装)。
-    # データ源は正本(research/comprehensive_stats.py)が書き出す
-    # comprehensive_stats_latest.csvで、上の3パネル(support_levels等)と違い
-    # rec(=latest.json)経由ではなく直接読む——これはdashboard.py(内部版)・
-    # generate_static_dashboard.py(画像版)と全く同じ関数を再利用しており
-    # (新規コピーを作らない・共有ロジックの独立コピー化を避ける)、両者は
-    # 既にこの直接読み込み方式で実装・検証済み。値は既に集計済みの統計量のみ
-    # (個別投稿・著者情報等は一切含まない)で、22:05依頼で全項目の公開を
-    # ユーザー承認済み。
+    # ★2026-09-08是正: 当初はconfig.RESEARCH_DIR配下のCSVを直接ファイルパスで
+    # 読む実装にしていたが、Streamlit Cloud環境はローカルファイルシステムに
+    # 触れられないため実機で無言の非表示を確認・是正した。他の3パネル
+    # (support_levels等)と同じくrec(=latest.json経由でクラウドに届く)から
+    # 読む設計に変更(正本=public_export.comprehensive_stats_summary()が
+    # build_public_record()のrec['comprehensive_stats']へ格納)。描画自体は
+    # dashboard.py(内部版)と同じ関数を再利用(新規コピーを作らない)。
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    _comprehensive_stats_panel(config.RESEARCH_DIR)
+    _render_comprehensive_stats_table(rec.get("comprehensive_stats"))
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     _ai_commentary(rec)

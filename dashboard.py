@@ -1860,11 +1860,26 @@ def _comprehensive_stats_rows(path):
 
 
 def _comprehensive_stats_panel(res_dir):
-    """掲示板センチメント5指標(売り煽り度/買い煽り度/悲鳴・投げ売り度/強気比率/投稿数)
-    ×3ホライズン(翌1/3/5日)の相関r・中央値分割の高群-低群差(pt)・t値マトリクス。
-    正本(research/comprehensive_stats.py)が書き出すCSVを読むだけ・再計算しない。
-    CSVが無ければ無言でセクション省略。"""
+    """(内部ダッシュボード専用)正本(research/comprehensive_stats.py)が書き出す
+    CSVをres_dirから直接読み、_render_comprehensive_stats_table()へ渡す。
+    家PC1のローカルパイプラインとして実行される内部ダッシュボードはローカル
+    ファイルシステムへ直接アクセスできるため、この経路でよい。
+
+    ★2026-09-08追記: public_dashboard.py(Streamlit Cloud版)はこの経路が
+    使えない(クラウド環境はローカルファイルシステムに触れられない)ため、
+    build_public_record()のrec['comprehensive_stats']経由(正本=
+    public_export.comprehensive_stats_summary())で受け取ったrowsを
+    _render_comprehensive_stats_table()へ直接渡す(このファイルを再利用・
+    新規コピーを作らない)。"""
     rows = _comprehensive_stats_rows(os.path.join(res_dir, "comprehensive_stats_latest.csv"))
+    _render_comprehensive_stats_table(rows)
+
+
+def _render_comprehensive_stats_table(rows):
+    """掲示板センチメント5指標(売り煽り度/買い煽り度/悲鳴・投げ売り度/強気比率/投稿数)
+    ×3ホライズン(翌1/3/5日)の相関r・中央値分割の高群-低群差(pt)・t値マトリクスを
+    描画する(データソースは問わない・rowsを受け取るだけ)。rows空ならセクション
+    自体を無言で省略。"""
     if not rows:
         return
     st.markdown("##### 📊 掲示板センチメント×株価 統計評価 (研究)")
@@ -1912,7 +1927,8 @@ def _comprehensive_stats_panel(res_dir):
     st.markdown(table_html, unsafe_allow_html=True)
     period = rows[0].get("data_period", "—")
     calc = rows[0].get("calc_date", "—")
-    st.caption(f"データ期間: {period} / 算出日: {calc}。|t|≥2程度を目安にオレンジ太字で"
+    st.caption(f"データ期間: {period} / 算出日: {calc}。色は相関係数rの符号"
+               "(高群ほど翌日リターンが高い=緑・低い=赤)、|t|≥2程度を目安に太字で"
                "強調していますが、統計的に確定した優位性ではありません。"
                "正本の計算ロジック: research/comprehensive_stats.py。")
 

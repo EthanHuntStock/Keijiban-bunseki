@@ -1830,6 +1830,22 @@ def test_public_export_build_record():
           and "baseline_median" not in rec_mlr["ml_regime"])
     check("pe: ml_regime record has no leak", PE.validate_no_leak(rec_mlr) == [])
 
+    # ★2026-09-08追加(Streamlit Cloud版がローカルファイルに触れられず
+    # comprehensive_statsパネルが無言で非表示になっていた実害の是正)。
+    rec_cs = PE.build_public_record(
+        S, None, trend,
+        comprehensive_stats=[{"metric_key": "bear_bait_pct", "metric_name": "売り煽り度",
+                             "horizon_days": 1, "horizon_name": "翌1日", "n": 41,
+                             "r": -0.03, "high_n": 21, "low_n": 20, "diff_pt": -5.42,
+                             "t": -2.17, "data_period": "2026-03-12~2026-09-04",
+                             "calc_date": "2026-09-07"}])
+    check("pe: comprehensive_stats included when given",
+          rec_cs["comprehensive_stats"][0]["metric_name"] == "売り煽り度"
+          and rec_cs["comprehensive_stats"][0]["t"] == -2.17)
+    check("pe: comprehensive_stats omitted when not given",
+          "comprehensive_stats" not in rec_mlr)
+    check("pe: comprehensive_stats record has no leak", PE.validate_no_leak(rec_cs) == [])
+
 
 def test_public_export_peer_snapshot_summary():
     """★2026-09-06追加。モニタのus_jp_semis_propagation.pyが書き出す観測台帳
@@ -2008,6 +2024,44 @@ def test_public_export_ml_regime_snapshot():
               PE.ml_regime_snapshot(loaded, "285A")["vr_regime"] == "trending")
     finally:
         os.remove(tmp_csv2)
+
+
+def test_public_export_comprehensive_stats_summary():
+    """★2026-09-08追加。comprehensive_stats_summary()(掲示板センチメント5指標×
+    3ホライズンの統計評価テーブル・正本=research/comprehensive_stats.pyが書き出す
+    CSV)を検証する。Streamlit Cloud版(public_dashboard.py)がローカルファイルに
+    触れられずパネルが無言で非表示になっていた実害を、rec経由で渡す設計へ是正
+    した際に追加(dashboard.py/generate_static_dashboard.pyの
+    _comprehensive_stats_rows()と同じ変換ロジックをこちらにも実装)。"""
+    check("comprehensive_stats_summary: missing file -> [] (fail-soft)",
+          PE.comprehensive_stats_summary(r"C:\does_not_exist_2026-09-08\nope.csv") == [])
+
+    import tempfile as _tf4
+    tmp_csv3 = _tf4.mktemp(suffix=".csv")
+    with open(tmp_csv3, "w", encoding="utf-8", newline="") as f:
+        f.write("metric_key,metric_name,horizon_days,horizon_name,n,r,high_n,low_n,"
+                "diff_pt,t,data_period,calc_date\n")
+        f.write("bear_bait_pct,売り煽り度,1,翌1日,41,-0.0342,21,20,-5.42,-2.17,"
+                "2026-03-12~2026-09-04,2026-09-07\n")
+        f.write("bull_bait_pct,買い煽り度,1,翌1日,41,0.27,21,20,3.49,1.34,,\n")
+    try:
+        rows = PE.comprehensive_stats_summary(tmp_csv3)
+        check("comprehensive_stats_summary: reads real CSV as list of dicts",
+              len(rows) == 2 and rows[0]["metric_name"] == "売り煽り度")
+        check("comprehensive_stats_summary: r/diff_pt/t are converted to float",
+              isinstance(rows[0]["r"], float) and rows[0]["r"] == -0.0342
+              and rows[0]["t"] == -2.17)
+    finally:
+        os.remove(tmp_csv3)
+
+    with open(tmp_csv3, "w", encoding="utf-8", newline="") as f:
+        f.write("not,a,valid,csv,header\n1,2,3,4,5\n")
+    try:
+        rows_garbage = PE.comprehensive_stats_summary(tmp_csv3)
+        check("comprehensive_stats_summary: unexpected column layout does not raise",
+              isinstance(rows_garbage, list))
+    finally:
+        os.remove(tmp_csv3)
 
 
 def test_public_export_load_regime_readonly():
@@ -4579,6 +4633,7 @@ def _main_body():
                test_public_export_peer_snapshot_summary,
                test_public_export_read_execution_cost_bp,
                test_public_export_ml_regime_snapshot,
+               test_public_export_comprehensive_stats_summary,
                test_public_export_price_sentiment_series,
                test_public_export_intraday_today_series,
                test_public_export_adr_pts_price_fallback,
