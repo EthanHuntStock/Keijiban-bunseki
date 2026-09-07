@@ -1061,6 +1061,24 @@ def test_jsonl_window():
         check("jsonl_window: isolated reversed rows tolerated (no data loss)",
               recent_noisy == expected)
         os.remove(tmp2)
+
+        # ★2026-09-06追加(2026-08-21 sentiment_24h_bridge.py重大障害の回帰防止)。
+        # 実際の障害では逆行/重複ブロックが1クラスタで20,104行に達し、旧既定値
+        # stop_after_old=500(「逆行ブロックは最大71行程度」という前提で設定)を
+        # 大きく超え、直近ウィンドウの読み込みが正常なのに誤って早期打ち切りされ
+        # 投稿量が軒並み0になる実害を起こした。この規模(20,000行超)の連続した
+        # 古い行の塊があっても、直近ウィンドウ内の行は一切失われないことを確認する。
+        big_old_block = [{"id": f"bigold{i}", "ts": "2020-01-01T00:00:00", "v": -1}
+                         for i in range(21000)]
+        noisy_rows_big = rows[:250] + big_old_block + rows[250:]
+        tmp3 = tempfile.mktemp(suffix=".jsonl")
+        with open(tmp3, "w", encoding="utf-8") as f:
+            for r in noisy_rows_big:
+                f.write(_json.dumps(r, ensure_ascii=False) + "\n")
+        recent_big = JW.read_jsonl_recent(tmp3, days=5, now=now)  # 既定stop_after_old
+        check("jsonl_window: 21,000-row old block (2026-08-21実障害規模) does not truncate recent window",
+              recent_big == expected)
+        os.remove(tmp3)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -1769,6 +1787,227 @@ def test_public_export_build_record():
           and rec3["ai_commentary"]["generated_at"] == "2026-08-10T15:05:00")
     # ai_commentary.text は意図的な例外パスなので漏洩検出されない
     check("pe: ai_commentary.text does not trigger leak", PE.validate_no_leak(rec3) == [])
+
+    # ★2026-09-06追加(CROSS_PROJECT_LOG 2026-09-06 18:13/18:52/18:55参照)。
+    # peer 未指定時はキー自体を含めない・指定時は4フィールドのみホワイトリスト方式
+    # (相関係数・判定・損益等が紛れ込んでいても通さない)。
+    check("pe: peer omitted when None", "peer" not in rec)
+    rec_peer = PE.build_public_record(
+        S, None, trend,
+        peer={"us_key": "sandisk", "us_ticker": "SNDK", "us_d0_pct": 11.9,
+             "date_d0": "2026-09-04", "correlation_ic": 0.6136, "verdict": "GO"})
+    check("pe: peer included when given",
+          rec_peer["peer"] == {"us_key": "sandisk", "us_ticker": "SNDK",
+                               "us_d0_pct": 11.9, "date_d0": "2026-09-04"})
+    check("pe: peer whitelist drops unknown fields (correlation_ic/verdict)",
+          "correlation_ic" not in rec_peer["peer"] and "verdict" not in rec_peer["peer"])
+    check("pe: peer record has no leak", PE.validate_no_leak(rec_peer) == [])
+
+    # ★2026-09-06追加(コーデ17:53/18:14投稿・往復実効費用比較)。execution_cost 未指定時は
+    # キー自体を含めない・指定時は3フィールドのみホワイトリスト方式。
+    check("pe: execution_cost omitted when None", "execution_cost" not in rec)
+    rec_ec = PE.build_public_record(
+        S, None, trend,
+        execution_cost={"cost_bp": 2.76, "days": 37, "src": "板ウォーク実測", "verdict": "GO"})
+    check("pe: execution_cost included when given",
+          rec_ec["execution_cost"] == {"cost_bp": 2.76, "days": 37, "src": "板ウォーク実測"})
+    check("pe: execution_cost whitelist drops unknown fields (verdict)",
+          "verdict" not in rec_ec["execution_cost"])
+    check("pe: execution_cost record has no leak", PE.validate_no_leak(rec_ec) == [])
+
+    # ★2026-09-06追加(ML19:35投稿・vr_regime/disp_q90_q50)。ml_regime 未指定時は
+    # キー自体を含めない・指定時は3フィールドのみホワイトリスト方式。
+    check("pe: ml_regime omitted when None", "ml_regime" not in rec)
+    rec_mlr = PE.build_public_record(
+        S, None, trend,
+        ml_regime={"date": "2026-09-04", "vr_regime": "trending", "width_class": "wide",
+                  "disp_q90_q50": 0.00034, "baseline_median": 0.0002})
+    check("pe: ml_regime included when given",
+          rec_mlr["ml_regime"] == {"date": "2026-09-04", "vr_regime": "trending",
+                                   "width_class": "wide"})
+    check("pe: ml_regime whitelist drops unknown fields (disp_q90_q50/baseline_median)",
+          "disp_q90_q50" not in rec_mlr["ml_regime"]
+          and "baseline_median" not in rec_mlr["ml_regime"])
+    check("pe: ml_regime record has no leak", PE.validate_no_leak(rec_mlr) == [])
+
+
+def test_public_export_peer_snapshot_summary():
+    """★2026-09-06追加。モニタのus_jp_semis_propagation.pyが書き出す観測台帳
+    (us_jp_propagation.csv)相当の行群から、米国半導体ピアの前日終値変化率(%)を
+    読み取るpeer_snapshot_summary()/_load_peer_propagation_rows()を検証する。
+    詳細はCROSS_PROJECT_LOG 2026-09-06 18:13/18:52/18:55・
+    public_export.peer_snapshot_summary()のdocstring参照。"""
+    rows = [
+        {"date_d0": "2026-09-02", "us_key": "sandisk", "us_ticker": "SNDK",
+         "us_d0_pct": "1.23", "jp_symbol": "285A"},
+        {"date_d0": "2026-09-04", "us_key": "sandisk", "us_ticker": "SNDK",
+         "us_d0_pct": "11.9", "jp_symbol": "285A"},
+        {"date_d0": "2026-09-03", "us_key": "sandisk", "us_ticker": "SNDK",
+         "us_d0_pct": "2.5", "jp_symbol": "285A"},
+        # 別の日本銘柄・別の米国ピア(混在していても対象外として無視されること)
+        {"date_d0": "2026-09-05", "us_key": "sandisk", "us_ticker": "SNDK",
+         "us_d0_pct": "99.9", "jp_symbol": "6857"},
+        {"date_d0": "2026-09-05", "us_key": "micron", "us_ticker": "MU",
+         "us_d0_pct": "3.3", "jp_symbol": "285A"},
+    ]
+    best = PE.peer_snapshot_summary(rows, jp_symbol="285A", us_key="sandisk")
+    check("peer_snapshot: picks the latest date_d0 among matching rows",
+          best == {"us_key": "sandisk", "us_ticker": "SNDK", "us_d0_pct": 11.9,
+                   "date_d0": "2026-09-04"})
+    check("peer_snapshot: value is float, not the raw CSV string",
+          isinstance(best["us_d0_pct"], float))
+    check("peer_snapshot: different us_key selects a different row (micron)",
+          PE.peer_snapshot_summary(rows, jp_symbol="285A", us_key="micron")["us_ticker"] == "MU")
+    check("peer_snapshot: no matching jp_symbol -> None",
+          PE.peer_snapshot_summary(rows, jp_symbol="9999", us_key="sandisk") is None)
+    check("peer_snapshot: empty rows -> None", PE.peer_snapshot_summary([], "285A", "sandisk") is None)
+    check("peer_snapshot: None rows -> None (fail-soft)",
+          PE.peer_snapshot_summary(None, "285A", "sandisk") is None)
+    # us_d0_pct が空/欠損/数値変換不能な行は無視して、その次に新しい有効な行を拾う
+    rows_gap = rows + [{"date_d0": "2026-09-06", "us_key": "sandisk", "us_ticker": "SNDK",
+                       "us_d0_pct": "", "jp_symbol": "285A"}]
+    check("peer_snapshot: rows with empty us_d0_pct are skipped (fail-soft)",
+          PE.peer_snapshot_summary(rows_gap, "285A", "sandisk")["date_d0"] == "2026-09-04")
+    rows_bad = rows + [{"date_d0": "2026-09-06", "us_key": "sandisk", "us_ticker": "SNDK",
+                       "us_d0_pct": "not_a_number", "jp_symbol": "285A"}]
+    check("peer_snapshot: rows with non-numeric us_d0_pct are skipped (fail-soft)",
+          PE.peer_snapshot_summary(rows_bad, "285A", "sandisk")["date_d0"] == "2026-09-04")
+
+    # ---- _load_peer_propagation_rows: ファイル未生成/壊れている場合のfail-soft ----
+    check("_load_peer_propagation_rows: missing file -> []",
+          PE._load_peer_propagation_rows(r"C:\does_not_exist_2026-09-06\nope.csv") == [])
+    import tempfile as _tf
+    tmp_csv = _tf.mktemp(suffix=".csv")
+    with open(tmp_csv, "w", encoding="utf-8", newline="") as f:
+        f.write("date_d0,us_key,us_ticker,us_d0_pct,jp_symbol\n")
+        f.write("2026-09-04,sandisk,SNDK,11.9,285A\n")
+    try:
+        loaded = PE._load_peer_propagation_rows(tmp_csv)
+        check("_load_peer_propagation_rows: reads real CSV as list of dicts",
+              len(loaded) == 1 and loaded[0]["us_ticker"] == "SNDK")
+        check("_load_peer_propagation_rows: combined with peer_snapshot_summary end-to-end",
+              PE.peer_snapshot_summary(loaded, "285A", "sandisk")["us_d0_pct"] == 11.9)
+    finally:
+        os.remove(tmp_csv)
+
+
+def test_public_export_read_execution_cost_bp():
+    """★2026-09-06追加。コーデ2026-09-06 17:53/18:14投稿の提案「本日の値動きは
+    往復実効費用の何倍だったか」用に、モニタ実装済みのexecution_cost.py(A-6)と
+    同じデータ源(claudecode-ap\\entry_exit_decomp\\_out\\board_gross.json・
+    cost_table)を読むread_execution_cost_bp()を検証する。
+    詳細はCROSS_PROJECT_LOG 2026-09-06 17:53/18:14・public_export.py
+    read_execution_cost_bp()のdocstring参照。"""
+    import json as _json2
+    import tempfile as _tf2
+    tmp_json = _tf2.mktemp(suffix=".json")
+    payload = {
+        "cost_table": {
+            "285A": {"bp": 2.76, "src": "板ウォーク実測", "days": 37},
+            "6146": {"bp": 4.0, "src": "★概算（板ウォーク未実施）", "days": 38},
+        }
+    }
+    with open(tmp_json, "w", encoding="utf-8") as f:
+        _json2.dump(payload, f, ensure_ascii=False)
+    try:
+        row = PE.read_execution_cost_bp(symbol="285A", path=tmp_json)
+        check("read_execution_cost_bp: reads matching symbol",
+              row == {"cost_bp": 2.76, "days": 37, "src": "板ウォーク実測"})
+        check("read_execution_cost_bp: value is float (not the raw JSON number type ambiguity)",
+              isinstance(row["cost_bp"], float))
+        row2 = PE.read_execution_cost_bp(symbol="6146", path=tmp_json)
+        check("read_execution_cost_bp: different symbol selects a different row",
+              row2["cost_bp"] == 4.0)
+        check("read_execution_cost_bp: unknown symbol -> None",
+              PE.read_execution_cost_bp(symbol="9999", path=tmp_json) is None)
+    finally:
+        os.remove(tmp_json)
+    check("read_execution_cost_bp: missing file -> None (fail-soft)",
+          PE.read_execution_cost_bp(symbol="285A",
+                                    path=r"C:\does_not_exist_2026-09-06\nope.json") is None)
+    tmp_bad = _tf2.mktemp(suffix=".json")
+    with open(tmp_bad, "w", encoding="utf-8") as f:
+        f.write("{not valid json")
+    try:
+        check("read_execution_cost_bp: broken JSON -> None (fail-soft)",
+              PE.read_execution_cost_bp(symbol="285A", path=tmp_bad) is None)
+    finally:
+        os.remove(tmp_bad)
+    tmp_empty = _tf2.mktemp(suffix=".json")
+    with open(tmp_empty, "w", encoding="utf-8") as f:
+        _json2.dump({}, f)
+    try:
+        check("read_execution_cost_bp: cost_table key absent -> None (fail-soft)",
+              PE.read_execution_cost_bp(symbol="285A", path=tmp_empty) is None)
+    finally:
+        os.remove(tmp_empty)
+
+
+def test_public_export_ml_regime_snapshot():
+    """★2026-09-06追加。MLが2026-09-06 19:35投稿で実装した`ml_regime_285A.csv`
+    (列: date,symbol,cutoff,vr_regime,disp_q90_q50)相当の行群から、最新日の
+    vr_regime・直近の実測値と比較したwidth_classを取り出すml_regime_snapshot()/
+    _load_ml_regime_rows()を検証する。詳細はCROSS_PROJECT_LOG
+    2026-09-06 18:13/19:20/19:35・public_export.ml_regime_snapshot()のdocstring参照。"""
+    # 直近20日ぶんのdisp_q90_q50はおよそ0.0002前後で推移していると仮定し、
+    # 最新日だけ大きく広い(wide)・別シナリオでは狭い(narrow)値を混ぜる。
+    base_rows = [
+        {"date": f"2026-08-{d:02d}", "symbol": "285A", "cutoff": "13:00:00",
+         "vr_regime": "reverting", "disp_q90_q50": "0.0002"}
+        for d in range(1, 21)
+    ]
+    rows_wide = base_rows + [
+        {"date": "2026-09-04", "symbol": "285A", "cutoff": "13:00:00",
+         "vr_regime": "trending", "disp_q90_q50": "0.0006"},  # 0.0006/0.0002=3.0倍→wide
+    ]
+    snap = PE.ml_regime_snapshot(rows_wide, symbol="285A")
+    check("ml_regime_snapshot: picks the latest date's vr_regime",
+          snap["date"] == "2026-09-04" and snap["vr_regime"] == "trending")
+    check("ml_regime_snapshot: ratio>=1.3 over baseline median -> wide",
+          snap["width_class"] == "wide")
+
+    rows_narrow = base_rows + [
+        {"date": "2026-09-04", "symbol": "285A", "cutoff": "13:00:00",
+         "vr_regime": "efficient", "disp_q90_q50": "0.0001"},  # 0.0001/0.0002=0.5倍→narrow
+    ]
+    check("ml_regime_snapshot: ratio<=0.77 over baseline median -> narrow",
+          PE.ml_regime_snapshot(rows_narrow, symbol="285A")["width_class"] == "narrow")
+
+    rows_typical = base_rows + [
+        {"date": "2026-09-04", "symbol": "285A", "cutoff": "13:00:00",
+         "vr_regime": "reverting", "disp_q90_q50": "0.00021"},  # ほぼ同水準→typical
+    ]
+    check("ml_regime_snapshot: ratio near 1.0 -> typical",
+          PE.ml_regime_snapshot(rows_typical, symbol="285A")["width_class"] == "typical")
+
+    check("ml_regime_snapshot: different symbol has no matching rows -> None",
+          PE.ml_regime_snapshot(rows_wide, symbol="6857") is None)
+    check("ml_regime_snapshot: empty rows -> None", PE.ml_regime_snapshot([], "285A") is None)
+    check("ml_regime_snapshot: None rows -> None (fail-soft)",
+          PE.ml_regime_snapshot(None, "285A") is None)
+    # 履歴が無い(初回1件のみ)場合はwidth_classを計算できないがvr_regimeだけは返す
+    single_row = [{"date": "2026-09-04", "symbol": "285A", "cutoff": "13:00:00",
+                  "vr_regime": "trending", "disp_q90_q50": "0.0006"}]
+    snap_single = PE.ml_regime_snapshot(single_row, symbol="285A")
+    check("ml_regime_snapshot: single row -> vr_regime present, width_class None (fail-soft)",
+          snap_single["vr_regime"] == "trending" and snap_single["width_class"] is None)
+
+    # ---- _load_ml_regime_rows: ファイル未生成/壊れている場合のfail-soft ----
+    check("_load_ml_regime_rows: missing file -> []",
+          PE._load_ml_regime_rows(r"C:\does_not_exist_2026-09-06\nope.csv") == [])
+    import tempfile as _tf3
+    tmp_csv2 = _tf3.mktemp(suffix=".csv")
+    with open(tmp_csv2, "w", encoding="utf-8", newline="") as f:
+        f.write("date,symbol,cutoff,vr_regime,disp_q90_q50\n")
+        f.write("2026-09-04,285A,13:00:00,trending,0.00034168123192820693\n")
+    try:
+        loaded = PE._load_ml_regime_rows(tmp_csv2)
+        check("_load_ml_regime_rows: reads real CSV as list of dicts",
+              len(loaded) == 1 and loaded[0]["vr_regime"] == "trending")
+        check("_load_ml_regime_rows: combined with ml_regime_snapshot end-to-end",
+              PE.ml_regime_snapshot(loaded, "285A")["vr_regime"] == "trending")
+    finally:
+        os.remove(tmp_csv2)
 
 
 def test_public_export_load_regime_readonly():
@@ -2669,6 +2908,103 @@ def test_public_export_previous_deltas():
           {"price_last": None, "bull_ratio": None, "bear_ratio": None,
            "post_count_today": None, "previous_generated_at": None})
     check("prev_deltas: empty/None rec -> no crash", PE.previous_deltas(None)["price_last"] is None)
+
+
+def test_public_export_sd_levels_and_drawdown():
+    """★2026-09-06追加(ユーザー指示「公開ダッシュボードのさらなる改善策を立案・
+    全て反映」)。daily_return_pct_series/daily_return_sd_pct/sd_based_price_levels/
+    recent_high_low/drawdown_from_recent_high_pct(いずれも公開レコードに既にある
+    price_sentiment_seriesのみを使う純関数)を検証する。"""
+    pss = [
+        {"date": "2026-08-25", "price_close": 50000.0},
+        {"date": "2026-08-26", "price_close": 51000.0},   # +2.0%
+        {"date": "2026-08-27", "price_close": 49980.0},   # -2.0%(概算)
+        {"date": "2026-08-28", "price_close": 52000.0},   # +4.0%(概算・直近高値)
+        {"date": "2026-08-29", "price_close": 51000.0},   # -1.923%
+    ]
+    rets = PE.daily_return_pct_series(pss)
+    check("daily_return_pct_series: 5点から4件の日次リターンを作る", len(rets) == 4)
+    check("daily_return_pct_series: 昇順(古い→新しい)", rets[0]["date"] == "2026-08-26"
+          and rets[-1]["date"] == "2026-08-29")
+    check("daily_return_pct_series: 最初のリターンは+2.0%", abs(rets[0]["pct"] - 2.0) < 1e-9)
+    # 順序をシャッフルしても同じ結果になること(日付でソートしてから計算するため)
+    import random as _random
+    shuffled = list(pss)
+    _random.Random(42).shuffle(shuffled)
+    check("daily_return_pct_series: 入力順序に依存しない(内部でdateソート)",
+          PE.daily_return_pct_series(shuffled) == rets)
+    check("daily_return_pct_series: 空/None入力は空リスト(fail-soft)",
+          PE.daily_return_pct_series([]) == [] and PE.daily_return_pct_series(None) == [])
+    # price_close欠損/日付欠損の行は無視される
+    dirty = pss + [{"date": None, "price_close": 99999.0}, {"date": "2026-08-30"}]
+    check("daily_return_pct_series: 日付/終値欠損行は無視される(件数不変)",
+          len(PE.daily_return_pct_series(dirty)) == 4)
+
+    sd = PE.daily_return_sd_pct(pss)
+    import statistics as _stats
+    expected_sd = _stats.stdev([r["pct"] for r in rets])
+    check("daily_return_sd_pct: 標本標準偏差がstatistics.stdevと一致",
+          sd is not None and abs(sd - expected_sd) < 1e-9)
+    check("daily_return_sd_pct: リターンが1点以下ならNone(標準偏差を定義できない)",
+          PE.daily_return_sd_pct([{"date": "2026-08-25", "price_close": 100.0}]) is None)
+    check("daily_return_sd_pct: 空/None入力はNone(fail-soft)",
+          PE.daily_return_sd_pct([]) is None and PE.daily_return_sd_pct(None) is None)
+
+    levels = PE.sd_based_price_levels(50000.0, 2.0, multiples=(0.5, 1.0, 1.5))
+    check("sd_based_price_levels: 件数はmultiplesの数と一致", len(levels) == 3)
+    check("sd_based_price_levels: 0.5SD -> pct=1.0%・price_up=50500・price_down=49500",
+          abs(levels[0]["pct"] - 1.0) < 1e-9 and abs(levels[0]["price_up"] - 50500.0) < 1e-6
+          and abs(levels[0]["price_down"] - 49500.0) < 1e-6)
+    check("sd_based_price_levels: 1.5SD -> pct=3.0%", abs(levels[2]["pct"] - 3.0) < 1e-9)
+    check("sd_based_price_levels: current_priceがNoneなら空リスト(fail-soft)",
+          PE.sd_based_price_levels(None, 2.0) == [])
+    check("sd_based_price_levels: sd_pctがNoneなら空リスト(fail-soft)",
+          PE.sd_based_price_levels(50000.0, None) == [])
+
+    hi, lo = PE.recent_high_low(pss)
+    check("recent_high_low: 最高値は2026-08-28の52000.0", hi["date"] == "2026-08-28"
+          and hi["price_close"] == 52000.0)
+    check("recent_high_low: 最安値は2026-08-27の49980.0", lo["date"] == "2026-08-27"
+          and lo["price_close"] == 49980.0)
+    check("recent_high_low: 空/None入力は(None, None)(fail-soft)",
+          PE.recent_high_low([]) == (None, None) and PE.recent_high_low(None) == (None, None))
+
+    dd = PE.drawdown_from_recent_high_pct(51000.0, pss)
+    check("drawdown_from_recent_high_pct: 51000/52000-1 と一致(概算-1.923%)",
+          dd is not None and abs(dd - (51000.0 / 52000.0 - 1.0) * 100.0) < 1e-9)
+    check("drawdown_from_recent_high_pct: 現在値=直近最高値そのものなら0%",
+          abs(PE.drawdown_from_recent_high_pct(52000.0, pss) - 0.0) < 1e-9)
+    check("drawdown_from_recent_high_pct: 現在値が最高値を更新していれば正の値",
+          PE.drawdown_from_recent_high_pct(55000.0, pss) > 0)
+    check("drawdown_from_recent_high_pct: current_price None -> None(fail-soft)",
+          PE.drawdown_from_recent_high_pct(None, pss) is None)
+    check("drawdown_from_recent_high_pct: 系列が空/None -> None(fail-soft)",
+          PE.drawdown_from_recent_high_pct(50000.0, []) is None
+          and PE.drawdown_from_recent_high_pct(50000.0, None) is None)
+
+    # ---- filter_trading_day_rows(★2026-09-06追加: ユーザー指示「本日の値動き÷
+    # 執行コストの推移は、市場が開いている日だけにしましょう」) ----
+    mixed_days = [
+        {"date": "2026-08-28", "pct": 1.0},   # 金(平日)
+        {"date": "2026-08-29", "pct": 2.0},   # 土
+        {"date": "2026-08-30", "pct": 3.0},   # 日
+        {"date": "2026-08-31", "pct": 4.0},   # 月(平日)
+    ]
+    filtered = PE.filter_trading_day_rows(mixed_days)
+    check("filter_trading_day_rows: 土日の行を除外する",
+          [r["date"] for r in filtered] == ["2026-08-28", "2026-08-31"])
+    check("filter_trading_day_rows: 平日のみの入力はそのまま(件数不変)",
+          len(PE.filter_trading_day_rows(mixed_days[:1] + mixed_days[3:])) == 2)
+    check("filter_trading_day_rows: 空/None入力は空リスト(fail-soft)",
+          PE.filter_trading_day_rows([]) == [] and PE.filter_trading_day_rows(None) == [])
+    check("filter_trading_day_rows: 日付欠損/不正な行は除外(fail-soft)",
+          PE.filter_trading_day_rows([{"date": None, "pct": 1.0},
+                                      {"date": "not-a-date", "pct": 2.0},
+                                      {"date": "2026-08-31", "pct": 3.0}])
+          == [{"date": "2026-08-31", "pct": 3.0}])
+    check("filter_trading_day_rows: date_key引数でキー名を切り替えられる",
+          PE.filter_trading_day_rows([{"d": "2026-08-31", "pct": 1.0}], date_key="d")
+          == [{"d": "2026-08-31", "pct": 1.0}])
 
 
 def test_public_export_sentiment_last_24h_10min():
@@ -4240,6 +4576,9 @@ def _main_body():
                test_public_export_build_record, test_public_export_load_regime_readonly,
                test_public_export_trend_from_snapshots,
                test_public_export_extended_hours_summary,
+               test_public_export_peer_snapshot_summary,
+               test_public_export_read_execution_cost_bp,
+               test_public_export_ml_regime_snapshot,
                test_public_export_price_sentiment_series,
                test_public_export_intraday_today_series,
                test_public_export_adr_pts_price_fallback,
@@ -4253,6 +4592,7 @@ def _main_body():
                test_news_fetch_collect_news_io,
                test_public_export_signal_state_changes,
                test_public_export_previous_deltas,
+               test_public_export_sd_levels_and_drawdown,
                test_public_export_sentiment_last_24h_10min,
                test_public_dashboard_today_time_buckets,
                test_public_dashboard_today_time_buckets_60s,

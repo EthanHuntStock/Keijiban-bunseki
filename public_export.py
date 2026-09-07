@@ -686,6 +686,124 @@ def previous_deltas(rec):
     }
 
 
+# ============================================================================
+# 支持線(SD単位)・直近高値からの乖離率(★2026-09-06追加)
+# ============================================================================
+# 経緯: ユーザー指示「公開用ダッシュボードのさらなる改善策を複数立案・全て反映」を
+# 受けた提案の実装。トレPJ/コーデが2026-09-06に実測した「285A日次リターンSD」・
+# モニタが同日実装したSD単位の支持線パネル(ai_sector_monitor support_levels.py)の
+# 考え方を、おにや式の公開レコードに既にある集計値(price_sentiment_series・
+# price.last)だけを使って再現する。新しい特別なデータソースは不要(=既存の
+# ホワイトリスト方式の外に出ない・個別投稿は一切参照しない)。
+def daily_return_pct_series(price_sentiment_series):
+    """price_sentiment_series(公開レコードの14日分価格推移・{date,price_close,...}の
+    リスト)から、連続する2日の終値の変化率(%)を日付昇順で計算する純関数。
+    先頭行は前日が無いため出力に含まれない。日付欠損・終値欠損・0除算の行は
+    スキップする(fail-soft・捏造しない)。
+    戻り値: [{"date": ..., "pct": float}, ...](古い→新しい順)。
+    """
+    rows = [r for r in (price_sentiment_series or []) if isinstance(r, dict)
+           and r.get("date") and r.get("price_close") is not None]
+    rows = sorted(rows, key=lambda r: r["date"])
+    out = []
+    for i in range(1, len(rows)):
+        prev_c, cur = rows[i - 1].get("price_close"), rows[i]
+        try:
+            if not prev_c:
+                continue
+            pct = (float(cur["price_close"]) / float(prev_c) - 1.0) * 100.0
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        out.append({"date": cur["date"], "pct": pct})
+    return out
+
+
+def daily_return_sd_pct(price_sentiment_series):
+    """daily_return_pct_series()の日次リターン(%)から標本標準偏差を計算する純関数。
+    有効なリターンが2点未満なら標準偏差を定義できないためNone(fail-soft)。
+    """
+    rets = [r["pct"] for r in daily_return_pct_series(price_sentiment_series)]
+    n = len(rets)
+    if n < 2:
+        return None
+    mean = sum(rets) / n
+    var = sum((x - mean) ** 2 for x in rets) / (n - 1)
+    return var ** 0.5
+
+
+def sd_based_price_levels(current_price, sd_pct, multiples=(0.5, 1.0, 1.5)):
+    """現在値・日次リターンSD(%)から、対称なSD単位の価格水準を組み立てる純関数。
+    「この価格は現在値から何SDの位置か」という値幅の目安を示す記述目的であり、
+    統計的な優位性・予測の主張ではない(コーデ2026-09-06 18:18投稿の「SD等間隔で
+    刻む」提案を一般化)。current_price/sd_pctいずれかがNoneなら空リスト。
+
+    戻り値: [{"multiple": 0.5, "pct": <sd_pct*multiple>,
+             "price_up": ..., "price_down": ...}, ...]
+    """
+    if current_price is None or sd_pct is None:
+        return []
+    out = []
+    for m in multiples:
+        pct = sd_pct * m
+        out.append({
+            "multiple": m, "pct": pct,
+            "price_up": current_price * (1 + pct / 100.0),
+            "price_down": current_price * (1 - pct / 100.0),
+        })
+    return out
+
+
+def recent_high_low(price_sentiment_series):
+    """price_sentiment_series(公開レコードの日次終値系列)から、直近の最高値・
+    最安値の行を取り出す純関数。有効な終値が1件も無ければ(None, None)。
+    戻り値: (最高値の行 or None, 最安値の行 or None)。各行は{date, price_close}。
+    """
+    rows = [r for r in (price_sentiment_series or []) if isinstance(r, dict)
+           and r.get("price_close") is not None]
+    if not rows:
+        return None, None
+    hi = max(rows, key=lambda r: r["price_close"])
+    lo = min(rows, key=lambda r: r["price_close"])
+    return hi, lo
+
+
+def drawdown_from_recent_high_pct(current_price, price_sentiment_series):
+    """直近(公開レコードの日次終値系列内)の最高値から、現在値が何%乖離しているかを
+    計算する純関数。名前は「下落率」だが符号は正負どちらも取りうる(現在値が直近
+    最高値そのものなら0%・それを更新していれば正の値になる=捏造せずそのまま返す)。
+    current_price None・系列に有効な終値が無い、いずれの場合もNone(fail-soft)。
+    """
+    hi, _ = recent_high_low(price_sentiment_series)
+    if current_price is None or not hi or not hi.get("price_close"):
+        return None
+    try:
+        return (float(current_price) / float(hi["price_close"]) - 1.0) * 100.0
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def filter_trading_day_rows(rows, date_key="date"):
+    """rows(daily_return_pct_series()等が返す{date_key: "YYYY-MM-DD", ...}のリスト)
+    から、土日にあたる行を除いた純関数。_is_trading_hours()と同じ「祝日カレンダー
+    までは見ない簡易判定」(曜日のみ・平日=市場が開いている日とみなす)。
+    ★2026-09-06追加(ユーザー指示「本日の値動き÷執行コストの推移は、市場が開いて
+    いる日だけにしましょう」)。日付が欠損/不正な形式の行は安全側で除外する
+    (fail-soft・捏造しない)。"""
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        d = r.get(date_key)
+        if not d:
+            continue
+        try:
+            if dt.datetime.strptime(str(d)[:10], "%Y-%m-%d").weekday() < 5:
+                out.append(r)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def next_commentary_failure_streak(prev_streak, succeeded):
     """★2026-08-20追加(ユーザー提案「AI考察生成の失敗が静かに握りつぶされないように」)。
     AI考察(ai_commentary)生成の成功/失敗から、次の「連続失敗回数」を返す純関数。
@@ -1326,12 +1444,197 @@ def extended_hours_summary(adr_pts_data):
 
 
 # ============================================================================
+# 米国半導体ピア動向(★2026-09-06追加)
+# ============================================================================
+# 経緯: ユーザー指示「AI考察のプロンプトについて、今までのプロジェクトの知見を
+# 踏まえて改善が必要。メンバーに相談してみては」→エンジニアがCROSS_PROJECT_LOG
+# 2026-09-06 18:13でトレPJ(公開適否)・モニタ(データ供給インターフェース)へ相談。
+# トレPJ 18:52投稿「段1(SNDK_gap IC=+0.6136・真OOS33日・family補正後p<0.0005で
+# 頑健)という相関の存在は事実として記述可。段2の損益数値(bp/p値/IC値等)は285A
+# 固有としては引き続き非推奨」。モニタ 18:55投稿「us_jp_semis_propagation.pyの
+# 観測値を平日15:36にai_sector_monitor\_ledger\us_jp_propagation.csvへ日次永続化
+# する形でインターフェースを確定。判定は一切含まれておらず生の%変化のみ」。
+# ⇒ このモジュールは「モニタの台帳から生の%変化を読み取るだけ」に徹し、相関係数・
+# 有意性判定・損益は一切扱わない(判定はトレPJの領分・このモジュールに持ち込まない)。
+PEER_PROPAGATION_CSV_PATH = os.environ.get(
+    "BBS_PEER_PROPAGATION_CSV",
+    r"C:\AI用フォルダ\ai_sector_monitor\_ledger\us_jp_propagation.csv")
+
+
+def _load_peer_propagation_rows(csv_path=None):
+    """モニタのus_jp_propagation.csv(列: date_d0,us_key,us_ticker,us_d0_pct,
+    jp_symbol,date_d1,jp_d1_pct,date_d2,jp_d2_pct,in_scope,pre_registration)を
+    読み取り専用でdictのリストへ。ファイル未生成/読み取り失敗はいずれも空リストへ
+    fail-soft(呼び手[peer_snapshot_summary]側でpeer=Noneに劣化する)。"""
+    path = csv_path or PEER_PROPAGATION_CSV_PATH
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        import csv as _csv
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            return list(_csv.DictReader(f))
+    except Exception:
+        return []
+
+
+EXECUTION_COST_TABLE_PATH = os.environ.get(
+    "BBS_EXECUTION_COST_TABLE_PATH",
+    r"C:\Users\ryuta\OneDrive\AI用フォルダ\claudecode-ap\entry_exit_decomp\_out\board_gross.json")
+
+
+def read_execution_cost_bp(symbol=None, path=None):
+    """コーデ/モニタが実測した銘柄別の往復実効費用(bp)の恒久テーブル
+    (`claudecode-ap\\entry_exit_decomp\\_out\\board_gross.json`・cost_table)から、
+    指定銘柄(既定=config.SYMBOL)の値だけを読み取り専用で取り出す純関数寄りI/O。
+
+    ★2026-09-06追加。コーデが2026-09-06 17:53投稿・18:14投稿の2回にわたって提案した
+    「本日の値動きは往復実効費用の何倍だったか」という公開向け記述材料
+    (カタログA-6・「動いているのに取れない」という日中の実態を煽らず伝える)を、
+    AI考察へ実装するために新設。詳細はCROSS_PROJECT_LOG 2026-09-06 17:53/18:14参照。
+    このモジュールは費用テーブルを読むだけで、比率の計算・文言の組み立ては
+    呼び手(public_insight.render_public_prompt)側の責務(既存のprevious差分計算と
+    同じ役割分担)。
+
+    戻り値: {"cost_bp": float, "days": int|None, "src": str|None}。ファイル無し/
+    該当銘柄無し/壊れている場合は None(fail-soft)。
+    """
+    path = path or EXECUTION_COST_TABLE_PATH
+    sym = symbol or config.SYMBOL
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        row = ((d or {}).get("cost_table") or {}).get(sym)
+        if not isinstance(row, dict) or row.get("bp") is None:
+            return None
+        return {"cost_bp": float(row["bp"]), "days": row.get("days"), "src": row.get("src")}
+    except Exception:
+        return None
+
+
+# ============================================================================
+# ML(株ML学習)のvr_regime/disp_q90_q50(★2026-09-06追加)
+# ============================================================================
+# 経緯: エンジニアがCROSS_PROJECT_LOG 2026-09-06 18:13でMLへ「ボラレジーム以外に
+# AI考察の材料になりそうな検証済み中間シグナルがあれば」と相談→ML18:19投稿で
+# vr_regime(トレンド性の型・非予測的)・disp_q90_q50(不確実性の広さ・5銘柄プールで
+# 置換検定p=0.014有意)の2候補を提示→19:20にエンジニアが未実装だったと自己点検し
+# インターフェースを依頼→ML19:35投稿で`株ML学習\_export\ml_regime_285A.csv`
+# (列: date,symbol,cutoff,vr_regime,disp_q90_q50)として実装・実データでbackfill済み。
+# このモジュールは生値を読むだけで判定・相関値は一切扱わない。
+ML_REGIME_EXPORT_PATH = os.environ.get(
+    "BBS_ML_REGIME_EXPORT_PATH",
+    r"C:\Users\ryuta\OneDrive\AI用フォルダ\株ML学習\_export\ml_regime_285A.csv")
+
+
+def _load_ml_regime_rows(path=None):
+    """MLのml_regime_285A.csvを読み取り専用でdictのリストへ。ファイル未生成/
+    読み取り失敗はいずれも空リストへfail-soft。"""
+    path = path or ML_REGIME_EXPORT_PATH
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        import csv as _csv
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            return list(_csv.DictReader(f))
+    except Exception:
+        return []
+
+
+def ml_regime_snapshot(rows, symbol="285A", baseline_window=20):
+    """_load_ml_regime_rows()が返す行群から、symbolの最新行(=直近営業日)の
+    vr_regime(トレンド性の型)を取り出し、直近baseline_window日(最新行を除く)の
+    disp_q90_q50(不確実性の広さ)の中央値と比較した区分(wide/narrow/typical)を
+    付与する純関数(ネットワーク/ファイルI/Oなし)。
+
+    width_classはこの関数自身がその場で計算する記述的な区分であり、MLからは
+    判定・相関値を一切受け取らない(生の日次値のみを受け取り、比較はこちら側で
+    行う設計。ratio>=1.3→wide・<=0.77→narrow・それ以外→typical、という単純な
+    閾値による記述であり、統計的検定ではない)。
+
+    戻り値: {"date","vr_regime","width_class"} または、該当行が無ければ None。
+    """
+    filtered = [r for r in rows or [] if isinstance(r, dict) and r.get("symbol") == symbol
+               and r.get("date")]
+    if not filtered:
+        return None
+    filtered.sort(key=lambda r: r["date"])
+    latest = filtered[-1]
+    vr = latest.get("vr_regime") or None
+    try:
+        disp = float(latest.get("disp_q90_q50"))
+    except (TypeError, ValueError):
+        disp = None
+
+    history = filtered[:-1][-baseline_window:] if len(filtered) > 1 else []
+    baseline_vals = []
+    for r in history:
+        try:
+            baseline_vals.append(float(r.get("disp_q90_q50")))
+        except (TypeError, ValueError):
+            continue
+
+    width_class = None
+    if disp is not None and baseline_vals:
+        s = sorted(baseline_vals)
+        n = len(s)
+        mid = n // 2
+        baseline_median = s[mid] if n % 2 == 1 else (s[mid - 1] + s[mid]) / 2.0
+        if baseline_median:
+            ratio = disp / baseline_median
+            if ratio >= 1.3:
+                width_class = "wide"
+            elif ratio <= 0.77:
+                width_class = "narrow"
+            else:
+                width_class = "typical"
+
+    if not vr and not width_class:
+        return None
+    return {"date": latest.get("date"), "vr_regime": vr, "width_class": width_class}
+
+
+def peer_snapshot_summary(rows, jp_symbol="285A", us_key="sandisk"):
+    """_load_peer_propagation_rows()が返す行群から、jp_symbol×us_keyに一致する
+    行のうち date_d0 が最新の1件を取り出す純関数(ネットワーク/ファイルI/Oなし)。
+
+    既定 us_key="sandisk"(=SNDK)は、トレPJが段1でGO判定した相関
+    (SNDK_gap IC=+0.6136)に対応する米国ピア。他のus_key(micron等)を指定すれば
+    同じ関数で別ピアの最新値も取り出せる(呼び手の用途に応じて選べる設計)。
+
+    戻り値: {"us_key","us_ticker","us_d0_pct","date_d0"} または、該当行が無い/
+    us_d0_ptcが空・数値変換不能なら None(fail-soft)。相関係数・判定・損益は
+    一切含まない(生の前日終値変化率(%)のみ)。
+    """
+    best = None
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        if r.get("jp_symbol") != jp_symbol or r.get("us_key") != us_key:
+            continue
+        pct_raw = r.get("us_d0_pct")
+        if pct_raw in (None, "", "None"):
+            continue
+        try:
+            pct = float(pct_raw)
+        except (TypeError, ValueError):
+            continue
+        date_d0 = r.get("date_d0") or ""
+        if best is None or date_d0 > best["date_d0"]:
+            best = {"us_key": r.get("us_key"), "us_ticker": r.get("us_ticker"),
+                    "us_d0_pct": pct, "date_d0": date_d0}
+    return best
+
+
+# ============================================================================
 # 純関数: 公開レコード組み立て(既存の集計済み結果だけを受け取る=生コメント非依存)
 # ============================================================================
 def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None,
                         generated_at=None, price_sentiment_series=None,
                         ai_commentary=None, regime=None, intraday_today=None,
-                        previous=None, extended_hours=None,
+                        previous=None, extended_hours=None, peer=None,
+                        execution_cost=None, ml_regime=None,
                         board_history_14d=None, signal_changes=None,
                         sentiment_last_24h=None, signal_cards_history_14d=None,
                         news=None):
@@ -1374,6 +1677,25 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                    {tse_close, pts, adr} のdict、または None。None(既定)なら出力
                    レコードにキー自体を含めない(既存動作を壊さない・フィード取得
                    失敗時等の想定挙動)。
+      ml_regime  - ★2026-09-06追加(ML2026-09-06 19:35投稿の提案「vr_regime(トレンド性の
+                   型)・disp_q90_q50(不確実性の広さ)」を実装)。ml_regime_snapshot()が
+                   返す{date,vr_regime,width_class}のdict、または None。判定・相関値は
+                   一切含まない(width_classはこのモジュール自身が計算する記述的区分の
+                   み)。None(既定)なら出力レコードにキー自体を含めない。
+      execution_cost - ★2026-09-06追加(コーデ2026-09-06 17:53/18:14投稿の提案「本日の
+                   値動きは往復実効費用の何倍だったか」を実装)。
+                   read_execution_cost_bp()が返す{cost_bp, days, src}のdict、または
+                   None。None(既定)なら出力レコードにキー自体を含めない(費用テーブルが
+                   まだ無い/該当銘柄なしの想定挙動)。
+      peer       - ★2026-09-06追加(ユーザー指示「AI考察のプロンプト改善をメンバーに
+                   相談してみては」を受けたエンジニア提案。トレPJ2026-09-06 18:52投稿
+                   「段1(相関の存在という事実)は記述可」・モニタ2026-09-06 18:55投稿
+                   「ファイル経由の安定インターフェース確定」を受けて実装)。
+                   peer_snapshot_summary()が返す{us_key,us_ticker,us_d0_pct,date_d0}
+                   のdict、または None。米国半導体ピア(既定=サンディスク/SNDK)の
+                   前日終値変化率(%)のみ(判定/相関係数/損益は一切含まない=生値のみ
+                   受け渡す設計)。None(既定)なら出力レコードにキー自体を含めない
+                   (モニタ側の台帳がまだ無い/読めない日の想定挙動)。
       board_history_14d - ★2026-08-20追加(ユーザー提案「メーターに推移スパークラインを」)。
                    board_score_daily_series() が返す
                    [{date, overheat_score, capitulation_score}, ...] のリスト、または
@@ -1479,6 +1801,31 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
             "adr": ({"price_yen": adr.get("price_yen"), "price_usd": adr.get("price_usd"),
                     "change_pct": adr.get("change_pct"), "time": adr.get("time")}
                    if adr else None),
+        }
+    if peer is not None:
+        # ★2026-09-06追加。詳細はpeer_snapshot_summary()のdocstring・
+        # CROSS_PROJECT_LOG 2026-09-06 18:13/18:52/18:55参照。
+        rec["peer"] = {
+            "us_key": peer.get("us_key"),
+            "us_ticker": peer.get("us_ticker"),
+            "us_d0_pct": peer.get("us_d0_pct"),
+            "date_d0": peer.get("date_d0"),
+        }
+    if execution_cost is not None:
+        # ★2026-09-06追加。詳細はread_execution_cost_bp()のdocstring・
+        # CROSS_PROJECT_LOG 2026-09-06 17:53/18:14参照。
+        rec["execution_cost"] = {
+            "cost_bp": execution_cost.get("cost_bp"),
+            "days": execution_cost.get("days"),
+            "src": execution_cost.get("src"),
+        }
+    if ml_regime is not None:
+        # ★2026-09-06追加。詳細はml_regime_snapshot()のdocstring・
+        # CROSS_PROJECT_LOG 2026-09-06 18:13/19:20/19:35参照。
+        rec["ml_regime"] = {
+            "date": ml_regime.get("date"),
+            "vr_regime": ml_regime.get("vr_regime"),
+            "width_class": ml_regime.get("width_class"),
         }
     if board_history_14d is not None:
         rec["board_history_14d"] = list(board_history_14d)
@@ -1833,6 +2180,28 @@ def _build_from_live_data(with_commentary=False):
     # のdocstring参照)。
     intraday_today = intraday_today_series(snaps, price_intraday, adr_pts=adr_pts_data)
     extended_hours = extended_hours_summary(adr_pts_data)
+    # ★2026-09-06追加: 詳細はpeer_snapshot_summary()のdocstring・
+    # CROSS_PROJECT_LOG 2026-09-06 18:13/18:52/18:55参照。モニタ側の台帳が
+    # まだ生成されていない/読めない場合もfail-softでpeer=Noneに劣化する。
+    peer = None
+    try:
+        peer = peer_snapshot_summary(_load_peer_propagation_rows())
+    except Exception as e:
+        _log(f"WARN peer_snapshot_summary failed (fail-soft, rec['peer'] omitted): {e!r}")
+    # ★2026-09-06追加: 詳細はread_execution_cost_bp()のdocstring・
+    # CROSS_PROJECT_LOG 2026-09-06 17:53/18:14参照。
+    execution_cost = None
+    try:
+        execution_cost = read_execution_cost_bp()
+    except Exception as e:
+        _log(f"WARN read_execution_cost_bp failed (fail-soft, rec['execution_cost'] omitted): {e!r}")
+    # ★2026-09-06追加: 詳細はml_regime_snapshot()のdocstring・
+    # CROSS_PROJECT_LOG 2026-09-06 18:13/19:20/19:35参照。
+    ml_regime = None
+    try:
+        ml_regime = ml_regime_snapshot(_load_ml_regime_rows())
+    except Exception as e:
+        _log(f"WARN ml_regime_snapshot failed (fail-soft, rec['ml_regime'] omitted): {e!r}")
     # ★2026-08-19追加(ユーザー依頼「AI考察は前回からの変化に対する考察も入れる」)。
     # 今回の書き出しで latest.json が上書きされる"前"の状態を読んでおく(=前回分の
     # 公開レコード)。読み取り専用(load_public_latest())・今回のrec組み立てより前に
@@ -1895,6 +2264,8 @@ def _build_from_live_data(with_commentary=False):
         prelim = build_public_record(S, price_intraday, trend, price_sentiment_series=pss,
                                      regime=regime, intraday_today=intraday_today,
                                      previous=previous, extended_hours=extended_hours,
+                                     peer=peer, execution_cost=execution_cost,
+                                     ml_regime=ml_regime,
                                      board_history_14d=board_history_14d,
                                      signal_changes=signal_changes,
                                      sentiment_last_24h=sentiment_last_24h,
@@ -1919,7 +2290,8 @@ def _build_from_live_data(with_commentary=False):
     return write_public_export(S, price_intraday, trend, price_sentiment_series=pss,
                                ai_commentary=ai_commentary, regime=regime,
                                intraday_today=intraday_today, previous=previous,
-                               extended_hours=extended_hours,
+                               extended_hours=extended_hours, peer=peer,
+                               execution_cost=execution_cost, ml_regime=ml_regime,
                                board_history_14d=board_history_14d,
                                signal_changes=signal_changes,
                                sentiment_last_24h=sentiment_last_24h,

@@ -1829,6 +1829,93 @@ def tab_northstar(analyzed=None, raw=None, day=None):
     else:
         st.info("intraday_linkage の台帳がまだありません。")
 
+    # --- comprehensive_stats: 掲示板センチメント5指標×3ホライズンの統計評価 ---
+    _comprehensive_stats_panel(_RES)
+
+
+def _comprehensive_stats_rows(path):
+    """comprehensive_stats_latest.csv(正本=research/comprehensive_stats.py が書出す
+    機械可読CSV)を読み取り専用で読み、数値列をfloat/intへ変換して返す。
+    ファイル無し/空/壊れていればNone(呼び出し元は無言でセクション省略)。
+    ★統計計算はここで再実装しない・CSVをそのまま表示するだけ。"""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    except Exception:
+        return None
+    if not rows:
+        return None
+    for r in rows:
+        for k in ("r", "diff_pt", "t"):
+            # ★2026-09-07 generate_static_dashboard.py側のselftest追加時に発見・
+            # 同型バグを是正: r[k]だと列名が想定と異なる場合にKeyErrorでクラッシュ
+            # していた。r.get(k)でNone扱いにしてfail-softを保つ。
+            try:
+                r[k] = float(r.get(k))
+            except (TypeError, ValueError):
+                r[k] = None
+    return rows
+
+
+def _comprehensive_stats_panel(res_dir):
+    """掲示板センチメント5指標(売り煽り度/買い煽り度/悲鳴・投げ売り度/強気比率/投稿数)
+    ×3ホライズン(翌1/3/5日)の相関r・中央値分割の高群-低群差(pt)・t値マトリクス。
+    正本(research/comprehensive_stats.py)が書き出すCSVを読むだけ・再計算しない。
+    CSVが無ければ無言でセクション省略。"""
+    rows = _comprehensive_stats_rows(os.path.join(res_dir, "comprehensive_stats_latest.csv"))
+    if not rows:
+        return
+    st.markdown("##### 📊 掲示板センチメント×株価 統計評価 (研究)")
+    st.caption("売り煽り度/買い煽り度/悲鳴・投げ売り度/強気比率/投稿数(出来高) の各指標と、"
+               "翌1日/3日/5日リターンの相関係数r・中央値分割(高群-低群)の差(pt)・t値。"
+               "**探索的分析であり確定した予測ではありません**。指標×ホライズンの多重比較"
+               "(計15セル)であり、|t|が大きいセルも偶然の可能性を排除できません。"
+               "シグナル/売買判断には使いません。")
+    metrics, horizons = [], []
+    for r in rows:
+        if r["metric_name"] not in metrics:
+            metrics.append(r["metric_name"])
+        if r["horizon_name"] not in horizons:
+            horizons.append(r["horizon_name"])
+    by_key = {(r["metric_name"], r["horizon_name"]): r for r in rows}
+    thead = "<th style='text-align:left'>指標</th>" + "".join(
+        f"<th style='text-align:center'>{h}</th>" for h in horizons)
+    body_rows = []
+    for m in metrics:
+        cells = []
+        for h in horizons:
+            c = by_key.get((m, h))
+            if not c or c.get("r") is None:
+                cells.append("<td style='text-align:center'>—</td>")
+                continue
+            t = c.get("t")
+            r = c["r"]
+            # ★2026-09-07追加(ユーザー指示「ポジティブ:緑、ネガティブ:赤で色付け」)。
+            # r(相関係数)の符号で色を決める(高群ほど翌日リターンが高い=r>0=緑・
+            # 低い=r<0=赤。r/diff_pt/tは同じ方向で動く設計のためrで代表させる)。
+            # |t|>=2は従来どおり太字で強調するが、色そのものは常に符号で塗る
+            # (株価チャートの「上昇=赤/下落=青」という別の配色規則とは別軸・
+            # 混同しないよう緑/赤を使う)。
+            tone = COL["green"] if r > 0 else (COL["red"] if r < 0 else COL["muted"])
+            strong = t is not None and abs(t) >= 2
+            style = f"font-weight:{'700' if strong else '500'};color:{tone}"
+            diff_txt = f"{c['diff_pt']:+.2f}pt" if c.get("diff_pt") is not None else "—"
+            t_txt = f"t={t:.2f}" if t is not None else "t=—"
+            cells.append(f"<td style='text-align:center;{style}'>r={r:.2f}<br>"
+                        f"{diff_txt} / {t_txt}</td>")
+        body_rows.append(f"<tr><td>{m}</td>" + "".join(cells) + "</tr>")
+    table_html = (
+        "<table style='width:100%;border-collapse:collapse;font-size:.88em'>"
+        f"<thead><tr>{thead}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>")
+    st.markdown(table_html, unsafe_allow_html=True)
+    period = rows[0].get("data_period", "—")
+    calc = rows[0].get("calc_date", "—")
+    st.caption(f"データ期間: {period} / 算出日: {calc}。|t|≥2程度を目安にオレンジ太字で"
+               "強調していますが、統計的に確定した優位性ではありません。"
+               "正本の計算ロジック: research/comprehensive_stats.py。")
+
 
 def _fmt_rho(v):
     try:

@@ -400,6 +400,17 @@ FORWARD_OOS_PATH = os.path.join(RESEARCH_DIR, "forward_sentiment_285A.csv")
 # これ以前(<=)は IS seed(is_oos=false)。真OOSは date > HARNESS_START_DATE のみ。
 HARNESS_START_DATE = "2026-07-08"
 
+# ---- 場中10分足センチメント台帳(sentiment_intraday_ledger.py) ----
+#   ★2026-08-28追加(コーデ指摘・CROSS_PROJECT_LOG 2026-08-28 01:16投稿「場中10分足の
+#   センチメントは計算されているのにGoogle Sheets表示用に流れるだけで台帳化されて
+#   いない」への対応)。public_export.sentiment_last_24h_10min()が返す10分毎の
+#   {time, bull_ratio, bear_ratio, post_count}を、reversal_signals.py等の折り返し
+#   タイミング検証が価格・板の時系列と後から突き合わせられるよう永続化する。
+#   環境変数 BBS_SENTIMENT_INTRADAY_LEDGER_PATH で上書き可(既存パス変数と同型)。
+SENTIMENT_INTRADAY_LEDGER_PATH = os.environ.get(
+    "BBS_SENTIMENT_INTRADAY_LEDGER_PATH"
+) or os.path.join(RESEARCH_DIR, "sentiment_intraday_10min_285A.csv")
+
 # ---- backtest 往復コスト(全プロト必須のコスト補正=連携ログ2026-07-09 番犬systemic警鐘) ----
 #   285Aは10万円台・実測spread中央値≈20円/株(トレPJ計測)+スリッページ。手数料0(eスマート)。
 #   往復(建て+返し)の対名目コスト率。size|pos|でスケール。gross偏りを避ける唯一KPI=net。
@@ -591,7 +602,10 @@ LIVE_PRICE_STALE_MINUTES = int(os.environ.get("BBS_LIVE_PRICE_STALE_MINUTES", "5
 # ============================================================================
 GSHEETS_KEY_PATH = os.environ.get(
     "GSHEETS_KEY_PATH",
-    r"C:\AI用フォルダ\おにや式投資法\secrets\gsheets_key.json")
+    os.path.join(BASE_DIR, "secrets", "gsheets_key.json"))
+# ★2026-08-28: 旧既定値はC:\AI用フォルダ\おにや式投資法\secrets\...のハードコード絶対パス
+# だった(唯一の実体・OneDrive側に複製なし)。連携ログ07:52投稿の横断確認を受け、
+# secretsをOneDrive側(BASE_DIR配下)へコピーしBASE_DIR相対に変更(移管元は削除せず退避)。
 GSHEETS_SPREADSHEET_ID = os.environ.get(
     "GSHEETS_SPREADSHEET_ID",
     "12gxBT9fbAAeYRm_zyt7Tusdi5QvuSOeSzPH4teR0MVQ")

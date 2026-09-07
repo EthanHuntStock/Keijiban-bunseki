@@ -160,6 +160,69 @@ def main():
           ttc.estimate_tier_size_shares(ticks) ==
           ttc.estimate_tier_size_shares(ticks, ttc.DEFAULT_THRESHOLDS))
 
+    # ---- _decompose_tick_amount: 仮想小口分解(項目8・2026-08-28新設) ----
+    check("_decompose_tick_amount: tickvol<=unit_lotなら分解しない(1件のまま)",
+          ttc._decompose_tick_amount(500, 1000, 1000) == [500 * 1000])
+    check("_decompose_tick_amount: tickvol==unit_lotちょうどなら分解しない(境界・<=)",
+          ttc._decompose_tick_amount(1000, 1000, 1000) == [1000 * 1000])
+    check("_decompose_tick_amount: 割り切れる場合は等分ロットのみ",
+          ttc._decompose_tick_amount(2000, 500, 1000) == [500_000.0, 500_000.0])
+    check("_decompose_tick_amount: 端数は最後の1件にまとめる",
+          ttc._decompose_tick_amount(1500, 1000, 1000) == [1_000_000.0, 500_000.0])
+    check("_decompose_tick_amount: unit_lot_shares=Noneなら分解しない",
+          ttc._decompose_tick_amount(5000, 1000, None) == [5000 * 1000])
+    check("_decompose_tick_amount: unit_lot_shares<=0なら分解しない",
+          ttc._decompose_tick_amount(5000, 1000, 0) == [5000 * 1000])
+    check("_decompose_tick_amount: 分解後の合計金額は元のamountと一致(保存則)",
+          approx(sum(ttc._decompose_tick_amount(3700, 1234, 1000)), 3700 * 1234))
+
+    # ---- estimate_tier_size_shares_v2: 実運用向けv2(項目9・2026-08-28新設) ----
+    th_v2 = {"super": 1_000_000_000, "big": 200_000_000, "mid": 50_000_000}
+    # 1件でamount=52.5M(mid相当)・株数1500・価格35000のtickをunit_lot=1000で分解すると
+    # 1000株(35M=mid未満なので実はsmall...)-> 価格が低いので検証用に価格を調整する。
+    # 価格52000・株数1500 -> amount=78M(mid)。分解: 1000株分=52M(mid), 500株分=26M(small)
+    v2_ticks = [
+        {"time": "t0", "price": 52000, "tickvol": 1500, "bid": 51900, "ask": 52000},  # mid相当・分解対象
+        {"time": "t1", "price": 52000, "tickvol": 100, "bid": 51900, "ask": 52000},   # small(分解不要)
+        {"time": "t2", "price": 52000, "tickvol": 20000, "bid": 51900, "ask": 52000}, # super(分解対象外=amount>=big閾値)
+    ]
+    shares_v1_cmp = ttc.estimate_tier_size_shares(v2_ticks, th_v2)
+    shares_v2 = ttc.estimate_tier_size_shares_v2(v2_ticks, th_v2, unit_lot_shares=1000)
+    check("estimate_tier_size_shares_v2: 出力形状はv1と同じ",
+          set(shares_v2.keys()) == set(ttc.TIER_ORDER) | {"total_amount_yen", "n_ticks"})
+    check("estimate_tier_size_shares_v2: n_ticksは分解前の件数(3件)のまま",
+          shares_v2["n_ticks"] == 3)
+    check("estimate_tier_size_shares_v2: 総額はv1と一致(再配分しても合計は保存)",
+          approx(shares_v2["total_amount_yen"], shares_v1_cmp["total_amount_yen"]))
+    check("estimate_tier_size_shares_v2: mid相当tickが分解されmid金額がv1より減る",
+          shares_v2["mid"]["amount_yen"] < shares_v1_cmp["mid"]["amount_yen"])
+    check("estimate_tier_size_shares_v2: 分解分がsmallへ再配分されsmall金額がv1より増える",
+          shares_v2["small"]["amount_yen"] > shares_v1_cmp["small"]["amount_yen"])
+    check("estimate_tier_size_shares_v2: mid amount = 1000株分(52M)のみ",
+          approx(shares_v2["mid"]["amount_yen"], 52_000_000.0))
+    check("estimate_tier_size_shares_v2: small amount = 元の5.2M + 分解分500株(26M)",
+          approx(shares_v2["small"]["amount_yen"], 5_200_000.0 + 26_000_000.0))
+    check("estimate_tier_size_shares_v2: super(20000株)は分解対象外でv1と完全一致",
+          approx(shares_v2["super"]["amount_yen"], shares_v1_cmp["super"]["amount_yen"]))
+    check("estimate_tier_size_shares_v2: shares sum to 1.0",
+          approx(sum(shares_v2[t]["share"] for t in ttc.TIER_ORDER), 1.0))
+    check("estimate_tier_size_shares_v2: 方向キーを含まない(サイズのみ)",
+          all(set(shares_v2[t].keys()) == {"amount_yen", "share"} for t in ttc.TIER_ORDER))
+    empty_v2 = ttc.estimate_tier_size_shares_v2([])
+    check("estimate_tier_size_shares_v2: 空入力 -> 全share 0.0(0除算回避)",
+          all(empty_v2[t]["share"] == 0.0 for t in ttc.TIER_ORDER)
+          and empty_v2["total_amount_yen"] == 0.0 and empty_v2["n_ticks"] == 0)
+    check("estimate_tier_size_shares_v2: None入力 -> 空入力と同じ",
+          ttc.estimate_tier_size_shares_v2(None) == empty_v2)
+    check("estimate_tier_size_shares_v2: unit_lot_shares省略時はDEFAULT_UNIT_LOT_SHARES(1000)と同じ",
+          ttc.estimate_tier_size_shares_v2(v2_ticks, th_v2) ==
+          ttc.estimate_tier_size_shares_v2(v2_ticks, th_v2, unit_lot_shares=ttc.DEFAULT_UNIT_LOT_SHARES))
+    check("estimate_tier_size_shares_v2: unit_lot_shares=0(=分解なし)ならv1と完全一致",
+          ttc.estimate_tier_size_shares_v2(v2_ticks, th_v2, unit_lot_shares=0) == shares_v1_cmp)
+    check("estimate_tier_size_shares_v2: max_decompose_amount=0(分解対象なし)ならv1と完全一致",
+          ttc.estimate_tier_size_shares_v2(v2_ticks, th_v2, unit_lot_shares=1000,
+                                            max_decompose_amount=0) == shares_v1_cmp)
+
     # ---- filter_ticks_window: 窓の境界(項目5) ----
     win_ticks = [
         {"time": "2026-08-27 09:00:00"},

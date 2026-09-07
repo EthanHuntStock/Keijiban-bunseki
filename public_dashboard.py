@@ -37,6 +37,7 @@ import config
 import public_export
 from dashboard import (
     COL, REGIME_BANDS, HAS_PLOTLY, chip, inject_css, _gauge, regime_band, _rgba,
+    _comprehensive_stats_panel,
 )
 
 try:
@@ -965,6 +966,130 @@ def _extended_hours_card(rec):
 
 
 # ============================================================================
+# 値動きの目安・海外要因(★2026-09-06追加)
+# ============================================================================
+# 経緯: ユーザー指示「公開ダッシュボードのさらなる改善策を立案・全て反映」への
+# 対応。generate_static_dashboard.py(静的版)と全く同じデータ源(rec自体・
+# public_export.pyの純関数)・同じ日本語ラベルで、Streamlit版にも同内容を追加する
+# (「おにや式ダッシュボードはStreamlit版/画像版の2系統・修正は常に両方同時に」
+# という既存の運用規律どおり)。
+_VR_REGIME_JA = {"trending": "トレンド型", "reverting": "レンジ(往復)型",
+                "efficient": "方向感の乏しい型"}
+_WIDTH_CLASS_JA = {"wide": "普段より広め", "narrow": "普段より狭め", "typical": "普段並み"}
+_US_PEER_NAME_JA = {"micron": "マイクロン", "sandisk": "サンディスク",
+                    "nvidia": "エヌビディア", "amd": "AMD",
+                    "broadcom": "ブロードコム", "tsmc": "TSMC"}
+
+
+def _support_levels_panel(rec):
+    """price_sentiment_series(既存の公開集計値)だけから、SD単位の参考価格水準・
+    直近営業日高値からの乖離率を表示する。データ不足時はfail-softで案内文のみ。
+    """
+    st.markdown("#### 📐 支持線・抵抗線の目安（SD単位）")
+    price = rec.get("price") or {}
+    last = price.get("last")
+    pss = rec.get("price_sentiment_series") or []
+    sd_pct = public_export.daily_return_sd_pct(pss)
+    if last is None or sd_pct is None:
+        st.caption("データ蓄積中です(値幅の目安を出すには数営業日分の価格推移が必要です)。")
+        return
+    levels = public_export.sd_based_price_levels(last, sd_pct)
+    rows = [{"値幅の目安": f"{lv['multiple']:.1f}SD（±{lv['pct']:.2f}%）",
+            "上側の水準": f"{lv['price_up']:,.0f}円",
+            "下側の水準": f"{lv['price_down']:,.0f}円"} for lv in levels]
+    st.table(rows)
+    dd = public_export.drawdown_from_recent_high_pct(last, pss)
+    hi, _lo = public_export.recent_high_low(pss)
+    if dd is not None and hi:
+        st.caption(f"直近{len(pss)}日間の最高値（{hi.get('date', '')}・"
+                  f"{hi.get('price_close'):,.0f}円）からの乖離: {dd:+.2f}%")
+    st.caption(f"SDは直近{len(pss)}日間の日次終値リターンの標準偏差（{sd_pct:.2f}%/日）"
+              "から算出した値幅の目安であり、到達を予測するものではありません。")
+
+
+def _market_context_panel(rec):
+    """海外半導体ピア(peer)・本日の値動きの型(ml_regime)・執行コスト比較
+    (execution_cost)を視覚的なバッジ/カードとして表示する
+    (public_insight.pyのプロンプト設計と同じデータ源・同じ安全設計)。
+    """
+    st.markdown("#### 🌐 市場コンテキスト")
+    peer = rec.get("peer")
+    mlr = rec.get("ml_regime")
+    ec = rec.get("execution_cost")
+    price = rec.get("price") or {}
+    chg = price.get("change_pct")
+
+    cols_needed = [bool(peer and peer.get("us_d0_pct") is not None),
+                  bool(mlr and mlr.get("vr_regime")),
+                  bool(ec and ec.get("cost_bp") and chg is not None)]
+    if not any(cols_needed):
+        st.caption("データ蓄積中です。")
+        return
+    cols = st.columns(sum(cols_needed))
+    idx = 0
+    if cols_needed[0]:
+        with cols[idx]:
+            name = _US_PEER_NAME_JA.get(peer.get("us_key"), peer.get("us_ticker") or "海外ピア")
+            us_pct = peer["us_d0_pct"]
+            # ★2026-09-07追加(ユーザー指示「ポジティブ:緑、ネガティブ:赤で色付け」)。
+            # st.metricはvalue自体の色を制御できない(delta引数の3色しか無い)ため、
+            # ヘッダーの騰落率表示(_header内のchg_color)と同じmarkdown色付け
+            # パターンに切り替える。
+            tone = COL["green"] if us_pct > 0 else (COL["red"] if us_pct < 0 else COL["muted"])
+            st.markdown(
+                f"<div style='font-size:.8em;color:{COL['muted']}'>"
+                f"{name}（{peer.get('us_ticker', '')}・前日）</div>"
+                f"<div style='font-size:1.55em;font-weight:700;color:{tone}'>"
+                f"{us_pct:+.2f}%</div>", unsafe_allow_html=True)
+        idx += 1
+    if cols_needed[1]:
+        with cols[idx]:
+            vr_ja = _VR_REGIME_JA.get(mlr.get("vr_regime"), mlr.get("vr_regime"))
+            width_ja = _WIDTH_CLASS_JA.get(mlr.get("width_class"), mlr.get("width_class") or "—")
+            st.metric("本日の値動きの型", vr_ja, delta=f"不確実性: {width_ja}",
+                     delta_color="off")
+        idx += 1
+    if cols_needed[2]:
+        with cols[idx]:
+            ratio = abs(chg) * 100.0 / ec["cost_bp"]
+            st.metric("値動き ÷ 執行コスト", f"約{ratio:.1f}倍",
+                     delta=f"費用実測{ec['cost_bp']:.2f}bp", delta_color="off")
+    st.caption("海外ピアの値動き・本日の値動きの型はいずれも事実の記述であり、"
+              "翌営業日の値動きを予測するものではありません。値動き÷執行コストは"
+              "値幅の大きさの目安であり、実際に利益を確保できることを意味しません。")
+
+
+def _execution_cost_history_panel(rec):
+    """過去の日次値動き(price_sentiment_series由来)と、銘柄の往復実効費用
+    (execution_cost.cost_bp・実測固定値)から、日毎の「値動き÷執行コスト」倍率を
+    一覧表示する。データ不足時はfail-softで案内文のみ。
+
+    ★2026-09-06追加(ユーザー指示「本日の値動き÷執行コストの推移は、市場が開いて
+    いる日だけにしましょう」): filter_trading_day_rows()で土日の行を除外する
+    (静的版generate_static_dashboard.pyと同じ設計)。
+    """
+    st.markdown("#### 本日の値動き ÷ 執行コストの推移")
+    ec = rec.get("execution_cost")
+    pss = rec.get("price_sentiment_series") or []
+    if not ec or not ec.get("cost_bp"):
+        st.caption("データ蓄積中です(執行コストの実測値がまだありません)。")
+        return
+    rets = public_export.filter_trading_day_rows(public_export.daily_return_pct_series(pss))
+    if not rets:
+        st.caption("データ蓄積中です(日次の値動き推移が必要です)。")
+        return
+    cost_bp = ec["cost_bp"]
+    rows = [{"日付": r["date"], "前日比": f"{r['pct']:+.2f}%",
+            "値動き÷執行コスト": f"約{(abs(r['pct']) * 100.0 / cost_bp):.1f}倍"}
+           for r in rets[-10:]]
+    st.table(rows)
+    st.caption(f"執行コスト(往復実効費用・実測{cost_bp:.2f}bp・{ec.get('days', '')}日分の"
+              f"{ec.get('src', '')})は日によらず一定の値として比較しています。倍率が"
+              "大きいほど値動きが執行コストに対して相対的に大きかったことを示す"
+              "目安であり、実際に利益を確保できることを意味しません。")
+
+
+# ============================================================================
 # ★2026-08-21追加(ユーザー依頼「板の買い・売り総計(成行を含めた全価格帯)の推移を
 # 折れ線グラフで」。おにや10:42投稿で仕様確定・トレPJ10:47投稿で記録側に
 # over_sell_qty/under_buy_qty/market_sell_qty/market_buy_qtyの4列を追加・
@@ -1263,6 +1388,31 @@ def main():
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     _price_and_sentiment_charts(rec, live_price)
+
+    # ★2026-09-06追加(ユーザー指示「公開ダッシュボードのさらなる改善策を立案・
+    # 全て反映」): generate_static_dashboard.py(静的版)と同じ「値動きの目安・
+    # 海外要因」パネル群をStreamlit版にも追加。
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    st.markdown("### 📐 値動きの目安・海外要因")
+    ctx_cols = st.columns(2)
+    with ctx_cols[0]:
+        _support_levels_panel(rec)
+    with ctx_cols[1]:
+        _market_context_panel(rec)
+    _execution_cost_history_panel(rec)
+
+    # ★2026-09-07追加(おにや22:05依頼「掲示板センチメント5指標×3ホライズンの
+    # 統計評価テーブル」・ユーザー指示で一般公開Streamlit版にも実装)。
+    # データ源は正本(research/comprehensive_stats.py)が書き出す
+    # comprehensive_stats_latest.csvで、上の3パネル(support_levels等)と違い
+    # rec(=latest.json)経由ではなく直接読む——これはdashboard.py(内部版)・
+    # generate_static_dashboard.py(画像版)と全く同じ関数を再利用しており
+    # (新規コピーを作らない・共有ロジックの独立コピー化を避ける)、両者は
+    # 既にこの直接読み込み方式で実装・検証済み。値は既に集計済みの統計量のみ
+    # (個別投稿・著者情報等は一切含まない)で、22:05依頼で全項目の公開を
+    # ユーザー承認済み。
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    _comprehensive_stats_panel(config.RESEARCH_DIR)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     _ai_commentary(rec)

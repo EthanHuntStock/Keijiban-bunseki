@@ -44,7 +44,8 @@ tick_tier_classifier.py - kabu APIのtickデータ(price,tickvol,bid,ask)から
 
 純関数(ネット/pandas非依存 = selftest対象):
   infer_direction / classify_tick_tier / classify_tick_tiers / aggregate_tier_flow /
-  filter_ticks_window / aggregate_tier_amount / estimate_tier_size_shares
+  filter_ticks_window / aggregate_tier_amount / estimate_tier_size_shares /
+  estimate_tier_size_shares_v2 / _decompose_tick_amount
 I/O補助(純関数ではないがネット非依存):
   load_ticks_csv
 
@@ -56,6 +57,13 @@ I/O補助(純関数ではないがネット非依存):
        仕分けができたなら十分」(2026-08-27)を受けて新設。
   aggregate_tier_flow(classified_ticks) は方向つき集計を維持するが(既存コード互換の
   ため残置)、上記の理由で**実運用では使わないこと**(下記関数docstringの警告参照)。
+
+  estimate_tier_size_shares_v2(ticks, thresholds=DEFAULT_THRESHOLDS,
+                                unit_lot_shares=DEFAULT_UNIT_LOT_SHARES)
+    -> 2026-08-28新設。v1と同じ出力形状だが、"仮想小口再配分"(tick粒度の粗さ=
+       複数の小口注文が1tickへ集約されている仮説を踏まえた分解ロジック)により
+       moomoo実測とのMAEが実測で改善(12.38pt→8.32pt、詳細は関数docstring参照)。
+       estimate_tier_size_shares()(v1)は後方互換のため変更せず残置する。
 ============================================================================
 """
 import csv
@@ -81,6 +89,17 @@ DEFAULT_THRESHOLDS = {
 }
 
 TIER_ORDER = ("super", "big", "mid", "small")
+
+# ============================================================================
+# v2(仮想小口再配分)の既定パラメータ — 2026-08-28診断で校正
+# ============================================================================
+# 診断結果(下記 estimate_tier_size_shares_v2 のdocstring参照)で、単位ロット株数を
+# 285A・実データ9点(2026-08-27の5点+2026-08-28の4点、ground truth=tier_flow_manual_log.csv)
+# でグリッドサーチした結果、1000株が全体MAE最小(8.32pt、v1=12.38pt)だった。
+# 08-27を訓練/08-28を検証、その逆、の両方向で1000株が最良となり(held-out MAEも
+# v1より改善)、9点全体への過学習ではないことを確認済み(n=9は依然極小サンプルで
+# 確定的な最適値ではない・継続校正が前提)。
+DEFAULT_UNIT_LOT_SHARES = 1000
 
 
 def _to_float(x):
@@ -295,6 +314,129 @@ def estimate_tier_size_shares(ticks, thresholds=None):
 # ============================================================================
 # 時間窓での絞り込み(純関数・文字列時刻の辞書式比較)
 # ============================================================================
+def _decompose_tick_amount(tickvol, price, unit_lot_shares):
+    """
+    1件のtick(株数tickvol・価格price)を unit_lot_shares 株ずつの"仮想小口"へ分解し、
+    各仮想ロットの金額(price*ロット株数)のリストを返す純関数。
+    端数(tickvol % unit_lot_shares)は最後の1件にまとめる。
+    tickvol <= unit_lot_shares、または unit_lot_shares が None/0以下の場合は
+    分解せず [price * tickvol] のリスト(1件)をそのまま返す。
+    """
+    if unit_lot_shares is None or unit_lot_shares <= 0 or tickvol <= unit_lot_shares:
+        return [price * tickvol]
+    n_full = int(tickvol // unit_lot_shares)
+    remainder = tickvol - n_full * unit_lot_shares
+    lots = [unit_lot_shares] * n_full
+    if remainder > 1e-9:
+        lots.append(remainder)
+    return [price * lot for lot in lots]
+
+
+def estimate_tier_size_shares_v2(ticks, thresholds=None, unit_lot_shares=None,
+                                  max_decompose_amount=None):
+    """
+    ★実運用向け公開API v2(2026-08-28新設・estimate_tier_size_shares()の代替案)。
+    tierごとの出来高金額シェアを推定する点は estimate_tier_size_shares() と同じ
+    (方向は一切主張しない・出力形状も同一)だが、内部ロジックが異なる。
+
+    ---- 背景(2026-08-28診断・仮説A支持) ----
+    estimate_tier_size_shares()(v1)はmoomoo実測との比較で系統バイアスがあった
+    (中口を+13.6pt過大評価・小口を-19.0pt過小評価、2026-08-27/28の9点平均)。
+    実tickデータ(285A)を診断した結果:
+      - kabu tick CSVのtickvolは100%が単元株(100株)の倍数で、"mid"tierに分類される
+        tickvolの中央値は約1500株(min=1000・max=3900-4100株)だった一方、
+        "small"tierに分類されるtickvolの中央値は200-300株にとどまる
+        (診断スクリプト実行結果・本モジュールのcalibrateフォルダ相当は無くこの
+        docstringに要旨のみ記録)。
+      - "mid"の典型サイズ(1000-2000株)は、"small"の典型サイズ(100-300株)の
+        単純な整数倍に近く、複数の小口注文が同時刻・同価格で約定し1tickへ
+        集約されている(=仮説A: tick粒度の粗さ)可能性と整合的だった。
+      - 時間帯別(寄付/前引け前/後場開始/大引け前)ではtickvolの中央値はほぼ一定
+        (300株)で、密度(件数/分)は変動したが典型サイズ自体は時間帯で大きく
+        変わらなかった(仮説B=時間帯による粒度の違いは主要因ではないと判断)。
+      - 株数のみ(価格を使わない)閾値へ変更する代替ロジック(仮説C寄り)も試したが、
+        v1とほぼ同じMAE(12.50pt)で改善しなかった(価格変動由来の分布形状の
+        歪みは主要因ではない)。
+    ⇒ 仮説Aが最も支持された。対策として、amount(price*tickvol)がmax_decompose_amount
+    未満(既定=big閾値。すでに高精度なsuper/bigは分解対象から除外し壊さない)の
+    tickだけを、unit_lot_shares株ずつの仮想小口へ分解してから再分類する
+    (=集約を推定的に解く)。
+
+    ---- 校正結果(2026-08-27/28・9点のtier_flow_manual_log.csv) ----
+    unit_lot_shares(既定 DEFAULT_UNIT_LOT_SHARES=1000)をグリッドサーチした結果、
+    全体MAEがv1の12.38ptから8.32ptへ改善(mid: 13.6pt→5.2pt、small: 19.7pt→11.9pt)。
+    08-27を訓練/08-28を検証、その逆方向、いずれもunit_lot=1000がheld-outでも
+    v1より改善しており(過学習ではない)、平均rhoも0.711→0.822へ改善した。
+    ただしn=9は極小サンプルであり確定的な最適値ではない(継続校正が前提。
+    tier_size_report.py等で観測点が増えたら再グリッドサーチが望ましい)。
+    super/bigのMAEはv1と完全に同一(分解対象外のため無変化=既存の高精度を壊さない
+    設計)。
+
+    ---- 2026-09-07 継続校正(誠実な追記・n=4新規点) ----
+    09-07の実況スクリーンショット4点(10:11/10:19/10:36/11:17)をtier_flow_manual_log.csv
+    へ追加(n=9→13)し、estimate_tier_size_shares_v2()の09-07単独MAEを測定した結果、
+    **11.22pt(08-27/28校正時の8.32ptより悪化)**、pooled相関も+0.117まで低下(旧rho
+    0.6-0.8から大幅悪化)。tier別バイアス(model-moomoo)は大口(big)の過大評価が
+    +10.5pt(旧9点)→+14.8pt(09-07)、小口(small)の過小評価が-9.75pt→-22.4ptへ、
+    いずれも同じ方向のまま拡大していた(新しい種類のバイアスではなく、既存バイアスの
+    悪化)。unit_lot_sharesを全13点/旧9点のみ/新4点のみでそれぞれ再グリッドサーチした
+    ところ、**新4点だけに最適な値(300)を旧9点へ適用するとMAEが14.4ptへ悪化**する一方、
+    既定値1000は新4点単独でも11.2ptに留まり両日にまたがる頑健性が最も高かった
+    ⇒ **n=4の新データのみでパラメータ変更はしない(過学習回避)**。
+    結論: 「サイズ分類も閾値次第で相関は弱い」という既存の限界表明は正しかったのみ
+    ならず、**限界はさらに深刻である可能性がある**。実運用(Format A報告の階層別
+    フロー欄)はmoomoo画面の実測値をそのまま使用しており本分類器は使っていないため
+    実害はないが、この分類器を将来actionableな用途に格上げする前には必ず本知見を
+    参照すること。詳細=CROSS_PROJECT_LOG 2026-09-07 11:32投稿。
+
+    引数:
+      ticks: classify_tick_tiers()と同じ入力形式
+      thresholds: 省略時 DEFAULT_THRESHOLDS
+      unit_lot_shares: 仮想小口1件あたりの株数。省略時 DEFAULT_UNIT_LOT_SHARES(1000)
+      max_decompose_amount: これ未満の金額のtickのみ分解対象にする。省略時は
+        thresholds["big"](=大口閾値未満、つまりmid/small相当のtickのみ分解し、
+        super/bigは既存の高精度を維持するため分解しない)
+
+    戻り値: estimate_tier_size_shares() と同じ形状
+      {super:{amount_yen,share}, big:{...}, mid:{...}, small:{...},
+       total_amount_yen, n_ticks}
+    n_ticksは分解前の元tick件数(=分類対象になったtick数。仮想ロット件数ではない)。
+    """
+    th = thresholds or DEFAULT_THRESHOLDS
+    unit_lot = DEFAULT_UNIT_LOT_SHARES if unit_lot_shares is None else unit_lot_shares
+    decompose_cap = th["big"] if max_decompose_amount is None else max_decompose_amount
+
+    amounts = {tier: 0.0 for tier in TIER_ORDER}
+    n_ticks = 0
+    for t in (ticks or []):
+        if not isinstance(t, dict):
+            continue
+        price = _to_float(t.get("price"))
+        vol = _to_float(t.get("tickvol"))
+        if price is None or vol is None or vol <= 0:
+            continue
+        n_ticks += 1
+        amount = price * vol
+        if amount < decompose_cap and unit_lot and unit_lot > 0:
+            for lot_amount in _decompose_tick_amount(vol, price, unit_lot):
+                tier = classify_tick_tier(lot_amount, th)
+                if tier:
+                    amounts[tier] += lot_amount
+        else:
+            tier = classify_tick_tier(amount, th)
+            if tier:
+                amounts[tier] += amount
+
+    total = sum(amounts.values())
+    out = {}
+    for tier in TIER_ORDER:
+        share = (amounts[tier] / total) if total > 0 else 0.0
+        out[tier] = {"amount_yen": amounts[tier], "share": share}
+    out["total_amount_yen"] = total
+    out["n_ticks"] = n_ticks
+    return out
+
+
 def filter_ticks_window(ticks, start_time=None, end_time=None):
     """
     tickのリストを time列(文字列 'YYYY-MM-DD HH:MM:SS...')の辞書式比較で

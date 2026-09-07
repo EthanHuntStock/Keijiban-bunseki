@@ -149,6 +149,9 @@ def build_public_insight_context(public_record):
     signal_cards = r.get("signal_cards") or []
     regime = r.get("regime")
     signal_state_changes = r.get("signal_state_changes") or []
+    peer = r.get("peer")
+    execution_cost = r.get("execution_cost")
+    ml_regime = r.get("ml_regime")
 
     # ★2026-08-21追加(ユーザー依頼「公開ダッシュボードのAI考察では、日本市場の
     # 開場時間帯を考慮した考察をするように」)。generated_at(このレコードの集計時刻)
@@ -257,11 +260,53 @@ def build_public_insight_context(public_record):
             }
             for c in signal_state_changes if isinstance(c, dict)
         ],
+        # ★2026-09-06追加(CROSS_PROJECT_LOG 2026-09-06 18:13/18:52/18:55参照)。
+        # public_export.py peer_snapshot_summary()の集計値のみ(生の前日終値変化率(%)。
+        # 相関係数・判定・損益は一切含まれない=構造的にこのモジュールへ届かない)。
+        "peer": ({
+            "us_key": peer.get("us_key"),
+            "us_ticker": peer.get("us_ticker"),
+            "us_d0_pct": peer.get("us_d0_pct"),
+            "date_d0": peer.get("date_d0"),
+        } if isinstance(peer, dict) else None),
+        # ★2026-09-06追加(コーデ2026-09-06 17:53/18:14投稿の提案「本日の値動きは
+        # 往復実効費用の何倍だったか」)。public_export.py read_execution_cost_bp()の
+        # 集計値のみ(相関・判定は一切含まれない)。
+        "execution_cost": ({
+            "cost_bp": execution_cost.get("cost_bp"),
+            "days": execution_cost.get("days"),
+            "src": execution_cost.get("src"),
+        } if isinstance(execution_cost, dict) else None),
+        # ★2026-09-06追加(ML2026-09-06 19:35投稿の提案「vr_regime・disp_q90_q50」を
+        # 実装)。public_export.py ml_regime_snapshot()の集計値のみ(判定・相関値は
+        # 一切含まれない)。
+        "ml_regime": ({
+            "date": ml_regime.get("date"),
+            "vr_regime": ml_regime.get("vr_regime"),
+            "width_class": ml_regime.get("width_class"),
+        } if isinstance(ml_regime, dict) else None),
     }
 
 
 # 呼び手/テストがシグネチャを機械検証しやすいよう、引数名も固定しておく。
 assert list(inspect.signature(build_public_insight_context).parameters) == ["public_record"]
+
+
+# ★2026-09-06追加: public_export.py peer_snapshot_summary()のus_key(内部識別子)を
+# 日本語の企業名へ表示変換するためだけの表示専用マッピング(判定・相関値は含まない)。
+# ai_sector_monitor(モニタ)のconfig.pyのUS_TICKERS相当だが、プロジェクト間の
+# クロスimportを避けるためこのモジュール内に独立して持つ(小さな表示名の重複であり、
+# 版ズレしても実害は表示上の企業名だけに限られるため許容する設計判断)。
+_US_PEER_NAME_JA = {
+    "micron": "マイクロン", "sandisk": "サンディスク", "nvidia": "エヌビディア",
+    "amd": "AMD", "broadcom": "ブロードコム", "tsmc": "TSMC",
+}
+
+# ★2026-09-06追加: MLのvr_regime(トレンド性の型)・width_class(不確実性の広さの区分)を
+# 日本語の表示文言へ変換するためだけの表示専用マッピング(判定・相関値は含まない)。
+_VR_REGIME_JA = {"trending": "トレンド型", "reverting": "レンジ(往復)型",
+                 "efficient": "方向感の乏しい型"}
+_WIDTH_CLASS_JA = {"wide": "普段より広め", "narrow": "普段より狭め", "typical": "普段並み"}
 
 
 def _fmt(v):
@@ -411,6 +456,67 @@ def render_public_prompt(context, target_length="400〜600字程度"):
                      f" ・ADR現地値={_fmt(adr.get('price_usd'))}ドル)")
         L.append("")
 
+    # ★2026-09-06追加(ユーザー指示「AI考察のプロンプト改善をメンバーに相談しては」
+    # →エンジニアがCROSS_PROJECT_LOG 2026-09-06 18:13でトレPJ/モニタへ相談・
+    # トレPJ18:52「段1(相関の事実)は記述可」・モニタ18:55「データ供給確定」を受け
+    # 実装)。米国半導体ピア(既定=サンディスク/SNDK)の前日終値変化率(%)のみを渡す
+    # (相関係数・判定・損益は一切渡さない=public_export.py側で既に除外済み)。
+    peer = c.get("peer")
+    if peer and peer.get("us_d0_pct") is not None:
+        peer_name = _US_PEER_NAME_JA.get(peer.get("us_key"), peer.get("us_ticker") or "海外の関連企業")
+        L.append(f"■ 海外の主要半導体ピア動向(前日の米国市場・{_fmt(peer.get('date_d0'))}時点)")
+        L.append(f"  {peer_name}({_fmt(peer.get('us_ticker'))}): 前日比{peer.get('us_d0_pct'):+.2f}%")
+        L.append("  (キオクシアと同じNAND事業を手掛ける主要企業。この銘柄の値動きと285Aの"
+                 "その後の値動きには、統計的な相関が観測されています。)")
+        # ★2026-09-06追加(コーデ2026-09-06 18:36投稿の訂正後の実測値を採用)。
+        # 「相関がある」と「その分を実際に取れる」は別問題であることを、285A自身の
+        # 過去実測値で示す。18:16時点の誤測定値(1.13%・calc_indicative列は前日終値に
+        # 固定される既知仕様を誤用)は18:31で撤回されているため使用せず、18:36の
+        # bid/ask中点による訂正後の値(全38日 median=51.2bp・p90=203.4bp)のみを使う。
+        L.append("  (参考: 285Aの寄りギャップは過去実測で中央値約2.3%ですが、寄り前の"
+                 "気配と実際の始値は中央値で約0.5%、値動きが荒れる日には2%以上ずれる"
+                 "ことも過去に観測されています。方向についての示唆があっても、"
+                 "その分をそのまま得られるとは限りません。)")
+        L.append("")
+
+    # ★2026-09-06追加(コーデ2026-09-06 17:53/18:14投稿の提案「本日の値動きは
+    # 往復実効費用の何倍だったか」・モニタ実装のexecution_cost.py[A-6]と同じ
+    # データ源[claudecode-ap\entry_exit_decomp\_out\board_gross.json]を使用)。
+    # 予測でなく、既に確定した本日の値動きの大きさを、実測済みの執行コストと
+    # 比較する客観的な記述材料(bp・p値・IC値等の内部統計指標は使わない・
+    # 単純な比率のみ)。
+    ec = c.get("execution_cost")
+    if ec and ec.get("cost_bp") and p.get("change_pct") is not None:
+        cost_bp = ec.get("cost_bp")
+        move_bp = abs(p.get("change_pct")) * 100.0  # %→bp換算
+        ratio = (move_bp / cost_bp) if cost_bp else None
+        if ratio is not None:
+            L.append("■ 本日の値動きと執行コストの比較")
+            L.append(f"  本日の値動き(前日比の絶対値): 約{move_bp:.0f}bp"
+                     f" / 往復実効費用(実測値): {cost_bp:.2f}bp"
+                     f" ⇒ 値動きは執行コストの約{ratio:.1f}倍")
+            L.append(f"  (執行コストは{_fmt(ec.get('days'))}日分の{_fmt(ec.get('src'))}に"
+                     f"基づく実測値。値動きの大きさが執行コストの何倍かを示す客観的な"
+                     f"目安であり、実際に利益を確保できることを意味しません。)")
+            L.append("")
+
+    # ★2026-09-06追加(ML2026-09-06 19:35投稿の提案「vr_regime・disp_q90_q50」を実装)。
+    # 方向を予測しない、本日の値動きの「型」の事後的な記述。width_classは
+    # public_export.py側が直近の実測値と比較して計算した記述的区分のみ
+    # (相関係数・判定は一切渡さない)。
+    mlr = c.get("ml_regime")
+    if mlr and (mlr.get("vr_regime") or mlr.get("width_class")):
+        L.append("■ 本日の値動きの型(事後の記述・方向予測ではない)")
+        if mlr.get("vr_regime"):
+            vr_ja = _VR_REGIME_JA.get(mlr.get("vr_regime"), mlr.get("vr_regime"))
+            L.append(f"  値動きの型: {vr_ja}")
+        if mlr.get("width_class"):
+            width_ja = _WIDTH_CLASS_JA.get(mlr.get("width_class"), mlr.get("width_class"))
+            L.append(f"  値動き予測の不確実性(裾の広さ): {width_ja}")
+        L.append("  (いずれも本日の値動きの事後的な性質を分類したものであり、"
+                 "翌営業日以降の値動きを予測するものではありません。)")
+        L.append("")
+
     L.append("■ 出力の指示(厳守)")
     L.append(f"  ・日本語で{target_length}でまとめる。")
     L.append("  ・冒頭または末尾に『掲示板の集計センチメントデータに基づく分析であり、"
@@ -451,6 +557,38 @@ def render_public_prompt(context, target_length="400〜600字程度"):
     if signal_changes:
         L.append("  ・「■ 前回取引日からの状態変化」があれば、どの指標がどう"
                  "変わったかに触れる。")
+    if peer and peer.get("us_d0_pct") is not None:
+        # ★2026-09-06追加: 文言はトレPJ2026-09-06 18:52投稿の承認済み案をほぼ
+        # そのまま採用(bp・p値・IC値等の内部の統計指標を一切出さない、という
+        # 指示も含めて踏襲)。
+        L.append("  ・「■ 海外の主要半導体ピア動向」があれば、この銘柄の前日の"
+                 "値動きを客観的な背景情報として一言触れる。断定的な予測(だから"
+                 "上がる/下がる)は書かない。半導体セクター全体で見ると、値動きが"
+                 "比較的落ち着いた日には、この関連性が寄り執行のコストを差し引いた"
+                 "後も残る傾向が観測されている一方、値動きが荒い日については"
+                 "コストを上回るかまだ確認できていない、という留保も踏まえた"
+                 "慎重な書き方にする。bp・p値・IC値等の内部の統計指標は"
+                 "一切書かない。また、寄りギャップと寄り前気配のズレについての"
+                 "参考情報があれば、『相関はあっても、その分をそのまま得られる"
+                 "とは限らない』という留保として一言触れる。")
+    ec = c.get("execution_cost")
+    if ec and ec.get("cost_bp") and p.get("change_pct") is not None:
+        # ★2026-09-06追加(コーデ2026-09-06 17:53/18:14投稿の提案)。
+        L.append("  ・「■ 本日の値動きと執行コストの比較」があれば、値動きの大きさが"
+                 "執行コストの何倍だったかに一言触れる。倍率が小さい(コストに近い)"
+                 "日は『細かい値動きは執行コストにほぼ吸収される水準だった』、"
+                 "倍率が大きい日は『値動きは執行コストを大きく上回る規模だった』"
+                 "という客観的な記述に留め、『だから利益が出る/出た』とは書かない"
+                 "(実際に得られる損益は、執行のタイミングやスリッページなど"
+                 "他の要因にも左右されるため)。")
+    mlr = c.get("ml_regime")
+    if mlr and (mlr.get("vr_regime") or mlr.get("width_class")):
+        # ★2026-09-06追加(ML2026-09-06 19:35投稿の提案)。
+        L.append("  ・「■ 本日の値動きの型」があれば、今日の値動きがどんな型だったか"
+                 "(トレンド型/レンジ型/方向感の乏しい型)、予測の裾がどれだけ広かったか"
+                 "(普段より広め/狭め/並み)を、事実の記述として一言触れる。"
+                 "これらは事後の分類であり、『次もこの型が続く』『次は荒れる』等の"
+                 "予測にはしない。")
     if regime:
         L.append("  ・「■ ボラ・レジーム帯」にも一言触れ、現在の値動きの荒さの"
                  "目安を伝える(較正中であればその旨を正直に書く)。そのレジームの"
@@ -902,6 +1040,109 @@ def _run_selftests():
     # extended_hours未提供(None)の場合は既存動作を壊さず、そのセクション自体が現れない
     check("context: extended_hours None when absent", ctx["extended_hours"] is None)
     check("prompt: no PTS section when extended_hours absent", "PTS(私設取引システム" not in prompt)
+
+    # ---- peer(海外半導体ピア動向) ----
+    # ★2026-09-06追加(CROSS_PROJECT_LOG 2026-09-06 18:13/18:52/18:55参照)。
+    rec_peer = dict(rec)
+    rec_peer["peer"] = {"us_key": "sandisk", "us_ticker": "SNDK", "us_d0_pct": 11.9,
+                        "date_d0": "2026-09-04",
+                        "correlation_ic": 0.6136}  # ホワイトリスト検証用の未知キー
+    ctx_peer = build_public_insight_context(rec_peer)
+    check("context: peer passthrough (us_key/us_ticker/us_d0_pct/date_d0)",
+          ctx_peer["peer"]["us_ticker"] == "SNDK" and ctx_peer["peer"]["us_d0_pct"] == 11.9)
+    check("context: peer drops unknown keys (whitelist・相関係数等は渡さない)",
+          "correlation_ic" not in ctx_peer["peer"]
+          and set(ctx_peer["peer"]) == {"us_key", "us_ticker", "us_d0_pct", "date_d0"})
+    prompt_peer = render_public_prompt(ctx_peer)
+    check("prompt: peer section present with Japanese name and value",
+          "サンディスク" in prompt_peer and "SNDK" in prompt_peer and "+11.90%" in prompt_peer)
+    check("prompt: peer instruction forbids internal stats jargon",
+          "bp・p値・IC値等の内部の統計指標は" in prompt_peer
+          and "断定的な予測" in prompt_peer)
+    check("prompt: peer instruction not leaking raw IC number",
+          "0.6136" not in prompt_peer)
+    # peer未提供(None)の場合は既存動作を壊さず、そのセクション自体が現れない
+    check("context: peer None when absent", ctx["peer"] is None)
+    check("prompt: no peer section when peer absent", "海外の主要半導体ピア動向" not in prompt)
+    # us_d0_ptcが無い(データ欠損)場合もセクションを出さない(fail-soft)
+    rec_peer_empty = dict(rec)
+    rec_peer_empty["peer"] = {"us_key": "sandisk", "us_ticker": "SNDK", "us_d0_pct": None,
+                              "date_d0": "2026-09-04"}
+    ctx_peer_empty = build_public_insight_context(rec_peer_empty)
+    prompt_peer_empty = render_public_prompt(ctx_peer_empty)
+    check("prompt: no peer section when us_d0_pct is None",
+          "海外の主要半導体ピア動向" not in prompt_peer_empty)
+    # ★2026-09-06追加: コーデ18:36投稿の訂正後実測値(寄りギャップ vs 寄り前気配ズレ)
+    # がpeerセクションと一緒に出ること・誤測定値(1.13%)が漏れていないことを確認。
+    check("prompt: corrected gap-vs-quote-deviation caveat present alongside peer section",
+          "約0.5%" in prompt_peer and "約2.3%" in prompt_peer)
+    check("prompt: retracted mismeasured value (1.13%) never appears",
+          "1.13%" not in prompt_peer)
+
+    # ---- execution_cost(本日の値動きと執行コストの比較) ----
+    # ★2026-09-06追加(コーデ2026-09-06 17:53/18:14投稿の提案「本日の値動きは
+    # 往復実効費用の何倍だったか」)。
+    rec_ec = dict(rec)
+    rec_ec["execution_cost"] = {"cost_bp": 2.76, "days": 37, "src": "板ウォーク実測",
+                                "verdict": "GO"}  # ホワイトリスト検証用の未知キー
+    ctx_ec = build_public_insight_context(rec_ec)
+    check("context: execution_cost passthrough (cost_bp/days/src)",
+          ctx_ec["execution_cost"]["cost_bp"] == 2.76
+          and ctx_ec["execution_cost"]["days"] == 37)
+    check("context: execution_cost drops unknown keys (whitelist・判定は渡さない)",
+          "verdict" not in ctx_ec["execution_cost"]
+          and set(ctx_ec["execution_cost"]) == {"cost_bp", "days", "src"})
+    # rec のサンプルはprice.change_pct=3.75(%) → move_bp=375・375/2.76≈135.9倍
+    prompt_ec = render_public_prompt(ctx_ec)
+    check("prompt: execution_cost section present with computed ratio",
+          "本日の値動きと執行コストの比較" in prompt_ec and "2.76bp" in prompt_ec
+          and "135.9倍" in prompt_ec)
+    check("prompt: execution_cost instruction tells LLM not to write 'だから利益が出る/出た'",
+          "だから利益が出る/出た" in prompt_ec)
+    # execution_cost未提供(None)の場合は既存動作を壊さず、そのセクション自体が現れない
+    check("context: execution_cost None when absent", ctx["execution_cost"] is None)
+    check("prompt: no execution_cost section when absent",
+          "本日の値動きと執行コストの比較" not in prompt)
+    # change_pctが無い場合も比率を計算できないためセクションを出さない(fail-soft)
+    rec_ec_nochg = dict(rec)
+    rec_ec_nochg["price"] = dict(rec["price"])
+    rec_ec_nochg["price"]["change_pct"] = None
+    rec_ec_nochg["execution_cost"] = {"cost_bp": 2.76, "days": 37, "src": "板ウォーク実測"}
+    ctx_ec_nochg = build_public_insight_context(rec_ec_nochg)
+    prompt_ec_nochg = render_public_prompt(ctx_ec_nochg)
+    check("prompt: no execution_cost section when change_pct is None",
+          "本日の値動きと執行コストの比較" not in prompt_ec_nochg)
+
+    # ---- ml_regime(本日の値動きの型) ----
+    # ★2026-09-06追加(ML2026-09-06 19:35投稿の提案「vr_regime・disp_q90_q50」)。
+    rec_mlr = dict(rec)
+    rec_mlr["ml_regime"] = {"date": "2026-09-04", "vr_regime": "trending",
+                            "width_class": "wide", "correlation_ic": 0.5}  # ホワイトリスト検証用の未知キー
+    ctx_mlr = build_public_insight_context(rec_mlr)
+    check("context: ml_regime passthrough (vr_regime/width_class)",
+          ctx_mlr["ml_regime"]["vr_regime"] == "trending"
+          and ctx_mlr["ml_regime"]["width_class"] == "wide")
+    check("context: ml_regime drops unknown keys (whitelist・相関係数は渡さない)",
+          "correlation_ic" not in ctx_mlr["ml_regime"]
+          and set(ctx_mlr["ml_regime"]) == {"date", "vr_regime", "width_class"})
+    prompt_mlr = render_public_prompt(ctx_mlr)
+    check("prompt: ml_regime section present with Japanese labels",
+          "本日の値動きの型" in prompt_mlr and "トレンド型" in prompt_mlr
+          and "普段より広め" in prompt_mlr)
+    check("prompt: ml_regime instruction forbids predicting continuation",
+          "予測にはしない" in prompt_mlr)
+    check("prompt: ml_regime raw internal labels (trending/wide) not leaked verbatim",
+          "trending" not in prompt_mlr and "wide" not in prompt_mlr)
+    # ml_regime未提供(None)の場合は既存動作を壊さず、そのセクション自体が現れない
+    check("context: ml_regime None when absent", ctx["ml_regime"] is None)
+    check("prompt: no ml_regime section when absent", "本日の値動きの型" not in prompt)
+    # vr_regime・width_classともNoneの場合もセクションを出さない(fail-soft)
+    rec_mlr_empty = dict(rec)
+    rec_mlr_empty["ml_regime"] = {"date": "2026-09-04", "vr_regime": None, "width_class": None}
+    ctx_mlr_empty = build_public_insight_context(rec_mlr_empty)
+    prompt_mlr_empty = render_public_prompt(ctx_mlr_empty)
+    check("prompt: no ml_regime section when both fields are None",
+          "本日の値動きの型" not in prompt_mlr_empty)
 
     # ---- signal_cards/regime/signal_state_changes(ダッシュボード掲載情報)----
     # ★2026-08-21追加(ユーザー依頼「AI考察では、ダッシュボードに記載の情報に対する

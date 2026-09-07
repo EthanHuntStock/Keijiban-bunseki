@@ -24,6 +24,7 @@ compare_with_manual() をそのまま呼ぶだけで良いように関数分離�
 import argparse
 import datetime as dt
 import os
+import sys
 
 import config
 import tick_tier_classifier as ttc
@@ -64,24 +65,33 @@ def _normalize_as_of(date_iso, as_of_hhmm):
     return f"{date_iso} {hhmm}"
 
 
-def build_tier_size_report(date_iso, as_of_hhmm=None, thresholds=None, ticks_dir=None):
+def build_tier_size_report(date_iso, as_of_hhmm=None, thresholds=None, ticks_dir=None,
+                            use_v2=False, unit_lot_shares=None):
     """
     指定日・as_of時刻までのtierサイズ構成比レポートを組み立てる。
-    ⚠️方向情報は一切含まない(estimate_tier_size_shares()を使用)。
+    ⚠️方向情報は一切含まない(既定=estimate_tier_size_shares()=v1を使用)。
 
     引数:
       date_iso: 'YYYY-MM-DD'
       as_of_hhmm: 'HH:MM'省略時はその日の全tick(=最新まで)を対象にする
       thresholds: 省略時 tick_tier_classifier.DEFAULT_THRESHOLDS
       ticks_dir: 省略時 config.KABU_PROTO1_285A_TICKS_DIR
+      use_v2: True で estimate_tier_size_shares_v2()(仮想小口再配分・2026-08-28新設。
+        moomoo実測とのMAEがv1比で改善済み・tick_tier_classifier.pyのdocstring参照)を使う。
+        既定False(=v1)で後方互換を維持する。
+      unit_lot_shares: use_v2=True の場合のみ使用。省略時 DEFAULT_UNIT_LOT_SHARES
 
     戻り値:
-      {date, as_of, n_ticks_total, shares(=estimate_tier_size_sharesの戻り値そのまま)}
+      {date, as_of, n_ticks_total, shares(=estimate_tier_size_shares[_v2]の戻り値そのまま)}
     """
     ticks = load_day_ticks(date_iso, ticks_dir=ticks_dir)
     end_time = _normalize_as_of(date_iso, as_of_hhmm)
     windowed = ttc.filter_ticks_window(ticks, end_time=end_time) if end_time else ticks
-    shares = ttc.estimate_tier_size_shares(windowed, thresholds=thresholds)
+    if use_v2:
+        shares = ttc.estimate_tier_size_shares_v2(windowed, thresholds=thresholds,
+                                                   unit_lot_shares=unit_lot_shares)
+    else:
+        shares = ttc.estimate_tier_size_shares(windowed, thresholds=thresholds)
     return {
         "date": date_iso,
         "as_of": as_of_hhmm or "(latest)",
@@ -163,7 +173,8 @@ def _manual_shares_from_row(row):
     return {t: (amounts[t] / total if total > 0 else 0.0) for t in ttc.TIER_ORDER}
 
 
-def compare_with_manual(date_iso, thresholds=None, ticks_dir=None, manual_rows=None):
+def compare_with_manual(date_iso, thresholds=None, ticks_dir=None, manual_rows=None,
+                         use_v2=False, unit_lot_shares=None):
     """
     tier_flow_manual_log.csv の当日分の各観測時刻について、kabu tickベースの推定
     シェアと moomoo実測(手動転記)シェアを並べ、時点ごとのスピアマン順位相関(4tier)と
@@ -178,6 +189,7 @@ def compare_with_manual(date_iso, thresholds=None, ticks_dir=None, manual_rows=N
 
     manual_rows: テスト用に外部から観測行を注入したい場合に指定(省略時は
     tier_flow_manual_log.read_all_observations()から当日分を読む)。
+    use_v2/unit_lot_shares: build_tier_size_report()と同じ(既定False=v1・後方互換)。
     """
     if manual_rows is None:
         manual_rows = [r for r in tier_flow_manual_log.read_all_observations()
@@ -186,7 +198,8 @@ def compare_with_manual(date_iso, thresholds=None, ticks_dir=None, manual_rows=N
     for obs in manual_rows:
         as_of = obs["time"]
         report = build_tier_size_report(date_iso, as_of_hhmm=as_of,
-                                        thresholds=thresholds, ticks_dir=ticks_dir)
+                                        thresholds=thresholds, ticks_dir=ticks_dir,
+                                        use_v2=use_v2, unit_lot_shares=unit_lot_shares)
         kabu_shares = {t: report["shares"][t]["share"] for t in ttc.TIER_ORDER}
         manual_shares = _manual_shares_from_row(obs)
         kabu_vec = [kabu_shares[t] for t in ttc.TIER_ORDER]
@@ -263,7 +276,25 @@ def format_compare_text(date_iso, rows):
 # ============================================================================
 # CLI
 # ============================================================================
+def _make_stdout_encoding_safe():
+    """
+    標準出力の文字コードに依存せず(PYTHONIOENCODING未設定でも)print()での
+    UnicodeEncodeErrorを起こさないようにする(2026-08-28修正)。
+    日本語Windowsコンソールの既定cp932では'≈'等の一部記号がエンコードできず、
+    --compare-manual実行時にクラッシュしていた。sys.stdout/stderrをerrors="replace"
+    へreconfigureし、エンコードできない文字は'?'等へ置換して出力を継続する
+    (例外を起こさないことを優先。文字化けは許容)。
+    reconfigure非対応環境(古いPython等)では黙って何もしない(fail-soft)。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main():
+    _make_stdout_encoding_safe()
     ap = argparse.ArgumentParser(
         description="kabu tickから285Aのtierサイズ構成比を表示する(方向は出さない・read-only)")
     ap.add_argument("--date", default=None,
@@ -275,25 +306,35 @@ def main():
                     help="tier_flow_manual_log.csvの当日分と誤差を明示的に表示する"
                          "(★同日に観測行があれば、このフラグを付けなくても自動表示される。"
                          "付けると観測行が無い日でも『観測行なし』の案内を出す)")
+    ap.add_argument("--v2", action="store_true",
+                    help="estimate_tier_size_shares_v2()(仮想小口再配分・2026-08-28新設)"
+                         "を使う。既定はv1(estimate_tier_size_shares、後方互換)。"
+                         "moomoo実測とのMAE比較はtick_tier_classifier.pyのdocstring参照")
+    ap.add_argument("--unit-lot-shares", type=int, default=None,
+                    help="--v2使用時のみ有効。仮想小口1件の株数(省略時"
+                         "DEFAULT_UNIT_LOT_SHARES=1000)")
     ap.add_argument("--selftest", action="store_true",
                     help="合成tick(実データ非依存)でロジックの自己テストを実行して終了")
     args = ap.parse_args()
 
     if args.selftest:
-        import sys
         sys.exit(1 if _run_selftests() else 0)
 
     date_iso = args.date or dt.date.today().isoformat()
 
-    report = build_tier_size_report(date_iso, as_of_hhmm=args.as_of)
+    report = build_tier_size_report(date_iso, as_of_hhmm=args.as_of,
+                                    use_v2=args.v2, unit_lot_shares=args.unit_lot_shares)
     print(format_report_text(report))
+    if args.v2:
+        print(f"※--v2使用中(仮想小口再配分、unit_lot_shares="
+              f"{args.unit_lot_shares or ttc.DEFAULT_UNIT_LOT_SHARES}株)")
 
     # ★2026-08-27追加(おにや21:59要望): tier_flow_manual_log.csvに当日分の観測行が
     # あれば、フラグ無しでも自動的に較正誤差を表示する(継続モニタリング目的)。
     # --compare-manual/--compare-with-manual-log を明示すると、観測行が無い日でも
     # その旨の案内を出す(サイレントに何も出さないと「今日は比較していない」のか
     # 「観測行が無かった」のか区別できないため)。
-    rows = compare_with_manual(date_iso)
+    rows = compare_with_manual(date_iso, use_v2=args.v2, unit_lot_shares=args.unit_lot_shares)
     if args.compare_manual or rows:
         print()
         print(format_compare_text(date_iso, rows))
