@@ -1173,11 +1173,11 @@ def _board_totals_chart(board_totals_remote):
 # カード・過去24時間センチメント推移・AI考察が9指標/レジームにも言及する
 # 拡張)が未反映だった。ページ上から下への実際の並び順に沿って再構成し、
 # 各要素を漏れなく説明する。
-# ★2026-08-21同日中に再更新(ユーザー依頼「このダッシュボードの読み方、を
-# 更新しましょう」): 「本日の推移」を4チャート縦一列(価格推移→板の買い・売り
-# 総計→本日のセンチメント推移→過去24時間のセンチメント推移)へ再構成し、
-# 「過去14日間の推移」も縦一列化した後の実際の並び順・項目数に合わせて
-# ⑤〜⑦を再構成(旧⑤の1項目を⑤⑥⑦の3項目へ分割・以降の番号を1つずつ繰り下げ)。
+# ★2026-09-08全面再構成(ユーザー指示「AI考察はトップに移動」「AIセクター
+# ワールドモニターと同様に、各表示をグルーピングしてタブで選択できるように」):
+# AI考察がタブ外・最上部固定になり、残りが4タブ(センチメント概況/価格・推移/
+# 値動きの目安・海外要因/統計評価)へグルーピングされた新レイアウトに合わせて
+# 全面的に書き直す(旧①〜⑨の番号体系は廃止・タブ構成に沿った見出しへ)。
 # ============================================================================
 def _reading_guide():
     with st.expander("📖 このダッシュボードの読み方（初めての方向け）"):
@@ -1188,23 +1188,31 @@ def _reading_guide():
             "(取得できない場合はYahoo Financeやスプレッドシート保存値へ自動的に"
             "切り替わります)。取引時間中に更新が止まっている可能性がある場合は"
             "「⚠️価格データの更新が…」という注意書きが表示されます。\n\n"
-            "**② 🔥灼熱メーター／😱阿鼻叫喚メーター**\n"
-            "- 掲示板の投稿内容から算出した「過熱度」「セリングクライマックス度」の"
-            "合成指標です。値が高いほど投稿の偏り・熱量が大きいことを示しますが、"
-            "売買のシグナルではありません。ゲージ下の小さな折れ線は直近日ごとの"
-            "スコア推移(蓄積前は非表示)です。\n\n"
-            "**③ ボラ・レジーム帯**\n"
-            "- 現在の値動きの荒さ(ボラティリティ)が「平穏〜急変」のどの水準に"
-            "あるかの目安です。データ蓄積初期は「較正中(calibrating)」と表示され、"
-            "これは異常ではなく閾値を学習している途中であることを示します。\n\n"
-            "**④ 🎯シグナル発火状況（9指標）**\n"
-            "- 投稿の偏り・語彙・投稿量などを9つの観点で統計的にチェックした"
-            "一覧です。🟢OK=平常範囲内／🟠警戒=やや偏りが大きい／🔴発火=閾値超過、"
-            "を示す記述的なラベルであり、売買の推奨ではありません。前回の取引日から"
-            "状態が変わった指標があれば、一覧の直前に「📌前回の取引日からの状態変化」"
-            "として自動的に強調表示されます。\n\n"
-            "**⑤ 本日の推移（価格推移／板の買い・売り総計／本日のセンチメント推移）**\n"
-            "- 3つのチャートを縦に並べており、横軸(時刻)は全て東証立会時間"
+            "**② 🤖AI考察（常時最上部・タブとは独立）**\n"
+            "- 下の4タブに表示されている集計値(株価・掲示板の強弱比率・9指標の"
+            "発火状況・ボラレジーム・前回取引日からの状態変化・PTS/ADR等)だけを"
+            "もとにAIが生成した文章です。個別の投稿内容やユーザー名は一切含まれ"
+            "ません。文章の上にある「前回集計との比較」の数値は、直近の自動更新"
+            "1回分(数分程度)の短時間の変化です。\n\n"
+            "**③ タブ「🔥 センチメント概況」**\n"
+            "- **灼熱メーター／阿鼻叫喚メーター**: 掲示板の投稿内容から算出した"
+            "「過熱度」「セリングクライマックス度」の合成指標です。値が高いほど"
+            "投稿の偏り・熱量が大きいことを示しますが、売買のシグナルではありません。"
+            "ゲージ下の小さな折れ線は直近日ごとのスコア推移(蓄積前は非表示)です。"
+            "**ボラ・レジーム帯**は現在の値動きの荒さが「平穏〜急変」のどの水準に"
+            "あるかの目安で、データ蓄積初期は「較正中(calibrating)」と表示され"
+            "(異常ではなく閾値を学習している途中)ます。**PTS・米国ADR**"
+            "(表示される場合のみ)は東証の取引時間外の値動きで、PTS=私設取引"
+            "システムでの夜間取引、ADR=米国預託証券(円換算)。あくまで翌営業日の"
+            "値動きを見る上での参考情報です。**シグナル発火状況(9指標)**は投稿の"
+            "偏り・語彙・投稿量などを9つの観点で統計的にチェックした一覧で、"
+            "🟢OK=平常範囲内／🟠警戒=やや偏りが大きい／🔴発火=閾値超過、を示す"
+            "記述的なラベルであり売買の推奨ではありません。前回の取引日から状態が"
+            "変わった指標があれば「📌前回の取引日からの状態変化」として自動的に"
+            "強調表示されます。\n\n"
+            "**④ タブ「📈 価格・推移」**\n"
+            "- **本日の推移**(価格推移／板の買い・売り総計／本日のセンチメント推移)"
+            "は3つのチャートを縦に並べており、横軸(時刻)は全て東証立会時間"
             "(前場9:00-11:20・後場12:30-15:30、昼休みは除外)で揃えているため"
             "同じ時刻の動きを上下で見比べられます。**価格推移**は10分足ローソク足"
             "＋出来高で、見出し下に本日の高値・安値も表示します。**板の買い・売り"
@@ -1215,23 +1223,25 @@ def _reading_guide():
             "まとめて取得した時刻ではなく投稿自体のタイムスタンプを使用)。強気/弱気"
             "比率の線がまだAI分析が追いついていない箇所は、投稿量(棒グラフ)は"
             "あっても一時的に前後の値を結んで表示することがあります(システム停止"
-            "ではなく分析処理の順番待ちです)。\n\n"
-            "**⑥ 過去14日間の推移（価格推移／センチメント推移）**\n"
-            "- 直近14営業日ぶんを日足で縦に並べたものです。センチメント推移は"
-            "強気/弱気/中立の3本の比率と投稿量(棒グラフ)を表示します。\n\n"
-            "**⑦ 過去24時間のセンチメント推移**\n"
-            "- 暦日をまたいだ直近24時間ぶんを10分刻みで表示します(⑤の「本日の"
-            "センチメント推移」が本日の立会時間だけに絞っているのに対し、こちらは"
-            "前日夜間・寄り付き前も含むローリング窓です)。\n\n"
-            "**⑧ PTS・米国ADR（表示される場合のみ）**\n"
-            "- 東証の取引時間外の値動きです。PTS=私設取引システムでの夜間取引、"
-            "ADR=米国預託証券(円換算)。あくまで翌営業日の値動きを見る上での参考"
-            "情報であり、それ自体が値上がり/値下がりを予測するものではありません。\n\n"
-            "**⑨ 🤖AI考察**\n"
-            "- 上記の集計値(株価・掲示板の強弱比率・9指標の発火状況・ボラレジーム・"
-            "前回取引日からの状態変化・PTS/ADR等)だけをもとにAIが生成した文章です。"
-            "個別の投稿内容やユーザー名は一切含まれません。文章の上にある「前回集計"
-            "との比較」の数値は、直近の自動更新1回分(数分程度)の短時間の変化です。\n\n"
+            "ではなく分析処理の順番待ちです)。**過去14日間の推移**(価格推移／"
+            "センチメント推移)は直近14営業日ぶんを日足で縦に並べたもので、"
+            "センチメント推移は強気/弱気/中立の3本の比率と投稿量(棒グラフ)を"
+            "表示します。**過去24時間のセンチメント推移**は暦日をまたいだ直近"
+            "24時間ぶんを10分刻みで表示します(本日のセンチメント推移が本日の"
+            "立会時間だけに絞っているのに対し、こちらは前日夜間・寄り付き前も"
+            "含むローリング窓です)。\n\n"
+            "**⑤ タブ「📐 値動きの目安・海外要因」**\n"
+            "- 直近の日次終値リターンの標準偏差(SD)から算出した値幅の目安"
+            "(支持線・抵抗線の目安)、海外半導体ピア・当日の値動きの型・執行コスト"
+            "比較といった市場コンテキスト、日次の「値動き÷執行コスト」倍率の"
+            "推移を表示します。いずれも到達を予測するものではなく、値幅の"
+            "大きさの目安です。\n\n"
+            "**⑥ タブ「📊 統計評価」**\n"
+            "- 掲示板センチメント5指標(売り煽り度/買い煽り度/悲鳴・投げ売り度/"
+            "強気比率/投稿数)と翌1日/3日/5日リターンの相関係数r・中央値分割の"
+            "差(pt)・t値のマトリクスです。緑=相関がプラス(高群ほど翌日リターンが"
+            "高い)・赤=マイナス、太字は|t|≥2程度の目安です。探索的分析であり"
+            "確定した予測ではありません。\n\n"
             "本ダッシュボードは研究・エンタメ用途の情報提供であり、投資助言では"
             "ありません。最終的な投資判断はご自身の責任で行ってください。")
 
@@ -1341,80 +1351,90 @@ def main():
     _header(rec, live_price)
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    top = st.columns([1.1, 1.1, 1.6])
-    board = rec.get("board") or {}
-    board_history_14d = rec.get("board_history_14d") or []
-    with top[0]:
-        _gauge(board.get("overheat_score") or 0, "🔥 灼熱メーター(過熱)",
-              config.SIG_OVERHEAT_TH, [COL["green"], COL["yellow"], COL["orange"]])
-        _meter_sparkline(board_history_14d, "overheat_score", COL["orange"])
-    with top[1]:
-        # ★2026-08-21修正(ユーザー指摘「タイトルが『阿鼻叫喚』になっているので
-        # 『メーター』を足して」): 灼熱側は"🔥 灼熱メーター(過熱)"と"メーター"を
-        # 含むのに対し、こちらは"メーター"が抜けていた表記不統一を是正。
-        _gauge(board.get("capitulation_score") or 0, "😱 阿鼻叫喚メーター(セリクラ)",
-              config.SIG_CAPITULATION_FIRE, [COL["green"], COL["orange"], COL["red"]])
-        _meter_sparkline(board_history_14d, "capitulation_score", COL["red"])
-    with top[2]:
-        regime = rec.get("regime") or {}
-        # dashboard.py の regime_band() は {"vol_regime_score":..., "vol_regime":...} を
-        # 持つ dict を期待する(内部ダッシュボードでは signal_export/latest.json 相当)。
-        # public_export側でも同じキー名に揃えてあるためそのまま渡せる。
-        regime_band(regime)
-        _extended_hours_card(rec)
-
-    st.markdown("#### 📰 関連ニュース（直近24時間）")
-    _news_summary(rec)
-
-    st.markdown("#### 🎯 シグナル発火状況（9指標）")
-    # ★2026-08-19追加(ユーザー依頼): 「発火」が何を意味するか一目でわかるよう説明を追加。
-    st.caption(
-        "掲示板の投稿を集計した9つの指標(過熱度・投稿量の偏り等)が、あらかじめ決めた"
-        "統計的なしきい値を超えたかどうかを示す一覧です。「発火」は"
-        "**売買のシグナルではなく**、「統計的に見て平常時より偏りが大きい状態」を"
-        "示す記述的な警告ラベルです。🟢OK=平常範囲内　🟠警戒=やや偏りが大きい　"
-        "🔴発火=しきい値超過(過熱・悲観が強い)。")
-    _signal_changes_note(rec)
-    _signal_list(rec)
-    st.caption("※研究・エンタメ用途・未検証。売買シグナルではありません。"
-               "掲示板は方向よりボラを予測する傾向が文献で報告されています"
-               "(Antweiler & Frank, 2004)。")
-
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    # ★2026-08-21修正(ユーザー依頼「本日の価格推移と板のグラフを上下に並べる」):
-    # 板総計チャートは_intraday_today_charts()内部(価格推移とセンチメント推移の
-    # 間)へ移動したため、board_totals_remoteを引数として渡す。単独呼び出しは廃止。
-    _intraday_today_charts(rec, live_price, sentiment_24h_remote, board_totals_remote)
-
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    _price_and_sentiment_charts(rec, live_price)
-
-    # ★2026-09-06追加(ユーザー指示「公開ダッシュボードのさらなる改善策を立案・
-    # 全て反映」): generate_static_dashboard.py(静的版)と同じ「値動きの目安・
-    # 海外要因」パネル群をStreamlit版にも追加。
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    st.markdown("### 📐 値動きの目安・海外要因")
-    ctx_cols = st.columns(2)
-    with ctx_cols[0]:
-        _support_levels_panel(rec)
-    with ctx_cols[1]:
-        _market_context_panel(rec)
-    _execution_cost_history_panel(rec)
-
-    # ★2026-09-07追加(おにや22:05依頼「掲示板センチメント5指標×3ホライズンの
-    # 統計評価テーブル」・ユーザー指示で一般公開Streamlit版にも実装)。
-    # ★2026-09-08是正: 当初はconfig.RESEARCH_DIR配下のCSVを直接ファイルパスで
-    # 読む実装にしていたが、Streamlit Cloud環境はローカルファイルシステムに
-    # 触れられないため実機で無言の非表示を確認・是正した。他の3パネル
-    # (support_levels等)と同じくrec(=latest.json経由でクラウドに届く)から
-    # 読む設計に変更(正本=public_export.comprehensive_stats_summary()が
-    # build_public_record()のrec['comprehensive_stats']へ格納)。描画自体は
-    # dashboard.py(内部版)と同じ関数を再利用(新規コピーを作らない)。
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    _render_comprehensive_stats_table(rec.get("comprehensive_stats"))
-
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    # ★2026-09-08追加(ユーザー指示「AI考察はトップに移動」「AIセクター
+    # ワールドモニターと同様に、各表示をグルーピングしてタブで選択できるように」)。
+    # モニタ(ai_sector_monitor)のtemplates/index.htmlも「AI考察はタブ非依存で
+    # 常時最上部に表示・その他はタブでグルーピング」という設計であり、それに
+    # 合わせる(モニタ側はJSでのCSSクラス切替・Streamlit版はネイティブの
+    # st.tabs()で同じ発想を実現する・新規の外部ライブラリは使わない)。
     _ai_commentary(rec)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    tab_overview, tab_trend, tab_levels, tab_stats = st.tabs([
+        "🔥 センチメント概況", "📈 価格・推移", "📐 値動きの目安・海外要因", "📊 統計評価",
+    ])
+
+    with tab_overview:
+        top = st.columns([1.1, 1.1, 1.6])
+        board = rec.get("board") or {}
+        board_history_14d = rec.get("board_history_14d") or []
+        with top[0]:
+            _gauge(board.get("overheat_score") or 0, "🔥 灼熱メーター(過熱)",
+                  config.SIG_OVERHEAT_TH, [COL["green"], COL["yellow"], COL["orange"]])
+            _meter_sparkline(board_history_14d, "overheat_score", COL["orange"])
+        with top[1]:
+            # ★2026-08-21修正(ユーザー指摘「タイトルが『阿鼻叫喚』になっているので
+            # 『メーター』を足して」): 灼熱側は"🔥 灼熱メーター(過熱)"と"メーター"を
+            # 含むのに対し、こちらは"メーター"が抜けていた表記不統一を是正。
+            _gauge(board.get("capitulation_score") or 0, "😱 阿鼻叫喚メーター(セリクラ)",
+                  config.SIG_CAPITULATION_FIRE, [COL["green"], COL["orange"], COL["red"]])
+            _meter_sparkline(board_history_14d, "capitulation_score", COL["red"])
+        with top[2]:
+            regime = rec.get("regime") or {}
+            # dashboard.py の regime_band() は {"vol_regime_score":..., "vol_regime":...} を
+            # 持つ dict を期待する(内部ダッシュボードでは signal_export/latest.json 相当)。
+            # public_export側でも同じキー名に揃えてあるためそのまま渡せる。
+            regime_band(regime)
+            _extended_hours_card(rec)
+
+        st.markdown("#### 📰 関連ニュース（直近24時間）")
+        _news_summary(rec)
+
+        st.markdown("#### 🎯 シグナル発火状況（9指標）")
+        # ★2026-08-19追加(ユーザー依頼): 「発火」が何を意味するか一目でわかるよう説明を追加。
+        st.caption(
+            "掲示板の投稿を集計した9つの指標(過熱度・投稿量の偏り等)が、あらかじめ決めた"
+            "統計的なしきい値を超えたかどうかを示す一覧です。「発火」は"
+            "**売買のシグナルではなく**、「統計的に見て平常時より偏りが大きい状態」を"
+            "示す記述的な警告ラベルです。🟢OK=平常範囲内　🟠警戒=やや偏りが大きい　"
+            "🔴発火=しきい値超過(過熱・悲観が強い)。")
+        _signal_changes_note(rec)
+        _signal_list(rec)
+        st.caption("※研究・エンタメ用途・未検証。売買シグナルではありません。"
+                   "掲示板は方向よりボラを予測する傾向が文献で報告されています"
+                   "(Antweiler & Frank, 2004)。")
+
+    with tab_trend:
+        # ★2026-08-21修正(ユーザー依頼「本日の価格推移と板のグラフを上下に並べる」):
+        # 板総計チャートは_intraday_today_charts()内部(価格推移とセンチメント推移の
+        # 間)へ移動したため、board_totals_remoteを引数として渡す。単独呼び出しは廃止。
+        _intraday_today_charts(rec, live_price, sentiment_24h_remote, board_totals_remote)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        _price_and_sentiment_charts(rec, live_price)
+
+    with tab_levels:
+        # ★2026-09-06追加(ユーザー指示「公開ダッシュボードのさらなる改善策を立案・
+        # 全て反映」): generate_static_dashboard.py(静的版)と同じ「値動きの目安・
+        # 海外要因」パネル群をStreamlit版にも追加。
+        st.markdown("### 📐 値動きの目安・海外要因")
+        ctx_cols = st.columns(2)
+        with ctx_cols[0]:
+            _support_levels_panel(rec)
+        with ctx_cols[1]:
+            _market_context_panel(rec)
+        _execution_cost_history_panel(rec)
+
+    with tab_stats:
+        # ★2026-09-07追加(おにや22:05依頼「掲示板センチメント5指標×3ホライズンの
+        # 統計評価テーブル」・ユーザー指示で一般公開Streamlit版にも実装)。
+        # ★2026-09-08是正: 当初はconfig.RESEARCH_DIR配下のCSVを直接ファイルパスで
+        # 読む実装にしていたが、Streamlit Cloud環境はローカルファイルシステムに
+        # 触れられないため実機で無言の非表示を確認・是正した。他の3パネル
+        # (support_levels等)と同じくrec(=latest.json経由でクラウドに届く)から
+        # 読む設計に変更(正本=public_export.comprehensive_stats_summary()が
+        # build_public_record()のrec['comprehensive_stats']へ格納)。描画自体は
+        # dashboard.py(内部版)と同じ関数を再利用(新規コピーを作らない)。
+        _render_comprehensive_stats_table(rec.get("comprehensive_stats"))
 
     _disclaimer(rec)
 
