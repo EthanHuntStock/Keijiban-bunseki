@@ -1279,16 +1279,7 @@ def main():
     # 済み・[[reference-avatar-photo-has-grok-watermark]]参照)を`assets/avatar.jpg`
     # としてリポジトリへ同梱(Streamlit Cloudはリポジトリを丸ごとクローンするため、
     # スクリプトからの相対パスで読める)。
-    col_avatar, col_link = st.columns([1, 15])
-    with col_avatar:
-        st.image("assets/avatar.jpg", width=40)
-    with col_link:
-        st.markdown(
-            "<div style='display:flex;align-items:center;height:40px'>"
-            "<a href='https://www.youtube.com/@EthanHuntStock' target='_blank' "
-            "rel='noopener noreferrer' style='text-decoration:none'>"
-            "📺 YouTube: @EthanHuntStock</a></div>",
-            unsafe_allow_html=True)
+    # ★2026-10-02(ユーザー依頼「ダッシュボード上部のYouTubeリンクを削除」「アバターも消して」): YouTubeリンクとアバター画像を削除。
 
     # ★2026-09-06追加(ユーザー依頼「モニターとダッシュボードの相互リンクを入れて」):
     # 姉妹プロジェクト「AIセクター ワールドモニター」(ai_sector_monitor・キオクシア285A
