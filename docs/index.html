@@ -144,7 +144,7 @@
         <span class="price">17,505円</span>
         <span class="chg" style="color:#1D4ED8">-2.21%</span>
       </div>
-      <p class="caption">更新時刻: 2026-10-09T16:44:06（データは1分間隔で自動生成され、このページも
+      <p class="caption">更新時刻: 2026-10-09T16:55:02（データは1分間隔で自動生成され、このページも
       60秒毎に自動再読み込みされます）</p>
       
       <p id='visit-count-badge' class='caption'>👀 累計閲覧数: 8,678</p>
@@ -154,39 +154,46 @@
            (ai_sector_monitor)のtemplates/index.htmlと同じく、AI考察はタブ非依存で
            常時最上部に表示する。 -->
       <h2>🤖 AI考察</h2>
-      <div class='metric-row'><div class='metric-card'><div class='metric-label'>株価</div><div class='metric-value'>17,505円</div><div class='metric-delta'>+0円</div></div><div class='metric-card'><div class='metric-label'>強気比率</div><div class='metric-value'>35.4%</div><div class='metric-delta'>+0.0pt</div></div><div class='metric-card'><div class='metric-label'>弱気比率</div><div class='metric-value'>52.1%</div><div class='metric-delta'>+0.0pt</div></div></div><p class='caption'>前回集計(2026-10-09T16:36:15)との比較</p>
-      <div class='ai-box'>**※本レポートは「掲示板投稿の集計センチメントデータに基づく分析」であり、投資助言ではありません。**<br>
+      <div class='metric-row'><div class='metric-card'><div class='metric-label'>株価</div><div class='metric-value'>17,505円</div><div class='metric-delta'>+0円</div></div><div class='metric-card'><div class='metric-label'>強気比率</div><div class='metric-value'>35.4%</div><div class='metric-delta'>+0.0pt</div></div><div class='metric-card'><div class='metric-label'>弱気比率</div><div class='metric-value'>52.1%</div><div class='metric-delta'>+0.0pt</div></div></div><p class='caption'>前回集計(2026-10-09T16:44:06)との比較</p>
+      <div class='ai-box'>**※本分析は掲示板投稿の集計センチメントデータに基づくものであり、投資助言ではありません。**<br>
 <br>
 ---<br>
 <br>
-### 1. 価格・取引環境の概要  <br>
-2026年10月9日の取引終了後、終値は 17,505円となり、前日比‑2.21％の下落でした。PTS（夜間取引）では同銘柄が 17,570円へ微増しており、東証最終値に対して＋0.37％の上昇が確認されています。執行コストは約 2.8bpで、当日の価格変動幅は約 221bp―すなわち執行コストのおよそ 80倍という極端なボラティリティでした。<br>
+### 全体的なセンチメントと価格動向  <br>
+2026年10月9日の終値は 17,505円で、前日比‑2.21％の下落となりました。一方、掲示板の投稿量は 5,689件（投稿速度 334.6／時）で、過去数日間に比べてやや増加していますが、強気比率は 35.4％、弱気比率は 52.1％と依然としてネガティブ寄りです。過熱度スコアは 11.7 と閾値 36 を大きく下回っているため、「灼熱」や「セリクラ」の警戒サインは出ていません。<br>
 <br>
-### 2. 掲示板センチメントと過熱感  <br>
-本日の掲示板では総投稿数が 5,669件（投稿速度≈334件／時）で、強気比率は 35.4％、弱気比率は 52.1％と弱気が優勢です。一方、過熱度スコアは 11.7点で、設定閾値 36点を大きく下回っているため「平常」と評価されます。つまり、価格は下落しているものの、掲示板上の熱狂的な買い圧力はほぼ見られません。<br>
+### ボラティリティとレジーム  <br>
+ボラティリティ指標 BVP が 0.458 の **calibrating**（較正中）という低ボラ帯に位置しています。これは、掲示板上のセンチメントが比較的落ち着いていることを示唆します。したがって、弱気比率の高さと過熱度の低さは概ね整合しており、急激な価格変動が起きにくい環境と言えるでしょう。<br>
 <br>
-### 3. シグナル発火状況とその背景  <br>
-- **暴落煽り語彙**：警戒（指数 4.2）  <br>
-- **阿鼻叫喚（セリクラ）**：警戒（スコア 28.0）  <br>
+### シグナル発火状況のポイント  <br>
+- **暴落煽り語彙** が「警戒」レベルに上昇しています。これは一部の投稿で下落懸念が強く表出していることを示しますが、スコア自体は 4.2／100 投稿と限定的です。  <br>
+- **阿鼻叫喚（セリクラ）** も同様に「警戒」。弱気比率の上昇とともに、潜在的な売り圧力が増えている可能性があります。  <br>
+- 他の指標はすべて「OK」で、ネームド集中や他銘柄混入率は正常範囲内に留まっています。つまり、特定人物への過度な注目はなく、市場全体の話題が散漫であることが伺えます。<br>
 <br>
-この二つが「警戒」レベルに達している点は注目に値します。弱気比率の上昇と相まって、掲示板上では潜在的な売り圧力や不安感が高まっていることが伺えます。一方で、ネームド集中や他銘柄混入率は依然として平常範囲内（OK）であり、特定の投資家層への過度な依存は認められません。<br>
+### 前回取引日からの変化  <br>
+10月8日までは「暴落煽り語彙」「阿鼻叫喚」ともに「OK」でしたが、今回の集計で警戒へ転換しました。これは、直近の価格下落（‑2.2％）に伴い、売り側の心理が強まった結果と考えられます。逆に「他銘柄混入率」は警戒から OK に戻っており、掲示板上の話題が本銘柄中心にシフトした兆候です。<br>
 <br>
-### 4. 前回集計時点との比較  <br>
-前回（10月9日 16:36）のデータと比較すると、価格・強気比率ともに変化なしですが、投稿数が 35件増加しています。これは取引終了後の情報更新や夜間取引開始に伴う投稿増加と考えられ、掲示板活動自体は活発化しているものの、センチメントの方向性は変わっていないことを示唆します。<br>
+### 前回集計時点との比較  <br>
+前回（10:44）の強気比率は 35.4％、弱気比率 52.1％で、今回と変化なしですが投稿件数が 20 件増加しています。価格自体は横ばいなので、センチメントの変化は小幅ながら継続的に弱気側が優位であることを示しています。<br>
 <br>
-### 5. ボラティリティとレジーム帯  <br>
-現在のボラティリティ指標（BVP）は 0.458で「較正中」のレジームに位置しています。過熱度が低く、弱気比率が過半数を占める状況にもかかわらず、ボラティリティはやや高めである点は、価格変動が掲示板感情以上に外部要因や流動性の変化に左右されている可能性を示しています。<br>
+### PTS・米国市場の参考情報  <br>
+取引時間外の私設取引システム（PTS）では 17,570円（＋0.37％）と僅かな上昇が観測されていますが、これは夜間の流動性が限られるため価格差が生じやすいだけで、翌日の東証開場時に必ずしも反映されるわけではありません。米国の主要指数は概ねプラス圏にあるものの、半導体関連指数がやや下落している点は、テクノロジー系銘柄への警戒感が若干残っている可能性を示唆します。<br>
 <br>
-### 6. 短期的なトレンドと執行コスト  <br>
-本日の値動きは「トレンド型」に分類され、予測の裾の広さは普段並みです。執行コストに対して価格変動が約 80倍という大きさは、取引参加者間での価格形成が急速に進んだことを裏付けます。ただし、この倍率だけで利益が確定したわけではなく、スリッページやタイミング等の追加要因が影響します。<br>
+### 執行コストと値動きの規模  <br>
+本日の価格変動幅は約 221bp（ベーシスポイント）で、往復実効費用は 2.76bpです。したがって、変動幅は執行コストの約 80 倍に相当し、取引コストが相対的に小さいことを示しています。「細かい値動きは執行コストにほぼ吸収される」ほどではなく、むしろ大きな価格変動が支配的であると言えるでしょう。<br>
 <br>
-### 7. 米国市場との相関参考情報  <br>
-同日の米国市場はS&amp;P500 +1.29％、ナスダック +1.20％と堅調でしたが、フィラデルフィア半導体指数は ‑1.60％の下落でした。これらは285Aとの直接的な相関を示すものではなく、あくまで市場全体の地合いとして参照すべき情報です。<br>
+### 値動きの型  <br>
+本日の値動きは **トレンド型** と分類され、予測不確実性（裾の広さ）は「普段並み」でした。これは、価格が一定方向に伸び縮みしつつも極端な乱高下は見られなかったことを意味します。事後の分類であるため、翌日の展開を予測する材料にはなりませんが、現在は明確な上昇・下降のシグナルが形成されていない状態です。<br>
+<br>
+### ボラティリティとレジームの再確認  <br>
+ボラティリティ指標 BVP 0.458 は「較正中」レベルで、掲示板のセンチメントが比較的均衡していることと一致しています。過熱度が低く、弱気比率が高めである点は、価格がやや下押し圧力にさらされやすい環境を示すものの、急激なクラッシュリスクは低いと判断できます。<br>
 <br>
 ---<br>
 <br>
-#### 結論（分析）  <br>
-価格は下落し、掲示板の弱気比率が過半数を占める一方で過熱度は低いため、現段階では「熱狂的な買い」は見られません。しかし、暴落煽り語彙と阿鼻叫喚スコアが警戒レベルに達している点は、潜在的な売り圧力や不安感が高まっているサインと捉えられます。ボラティリティがやや高めであることも相まって、今後の価格変動は掲示板感情だけでなく外部要因にも敏感になる可能性があります。投資家はこのギャップ（センチメントの穏やかさと実際のボラティリティ）を意識しながら、取引コストと流動性リスクを考慮したポジション管理が求められます。</div><p class='caption'>生成時刻: 2026-10-09T16:44:06</p>
+#### まとめ  <br>
+2026年10月9日のデータは、**弱気センチメントがやや優勢**でありながら、**過熱感や極端なボラティリティは顕在化していない**という特徴があります。暴落煽り語彙の警戒サインと弱気比率の上昇は、売り圧力が潜在的に強まっている可能性を示すものの、価格変動幅は大きく執行コストを上回る規模です。PTS での僅かな上昇や米国市場の堅調さは、短期的なプラス要因として捉えられますが、掲示板上のセンチメントが改善しない限り、持続的な上昇トレンドに転じる根拠はまだ不足しています。  <br>
+<br>
+以上をご参考に、投資判断はご自身のリスク許容度とポートフォリオ全体のバランスを踏まえて行ってください。</div><p class='caption'>生成時刻: 2026-10-09T16:55:02</p>
 
       <!-- ★2026-09-08追加(ユーザー指示「AIセクターワールドモニターと同様に、
            各表示をグルーピングしてタブで選択できるように」): モニタの
@@ -235,9 +242,9 @@
 同日 11:10 Yahoo!ニュースに掲載されたダイヤモンド・ザイの「デイリーZAi」では、キオクシア HD に買い需要が期待され、ABC マートやツルハ HD の決算結果が上昇材料となりつつ、日経平均は続落したと総括された。  <br>
 同日 9:35 日本経済新聞は、東芝がキオクシア株式を保有比率を 11.8％にまで削減したことを報じた。この売却は所有割合</div>
 <div class='news-row'><a href='https://news.google.com/rss/articles/CBMif0FVX3lxTE0tOEcxSlhLbE1HQUpvRFMxX3YzWmtYbXhEcDR4NjJEYk5vLTUtM3R5UnhWTmhib0g0elBnb0FZcnVIcVRXcGk3Rm1JeUhudDN6Q1dUa21Ha3FmYTFiN2tjVFJ5dDFtR3dycWZtSFZFc3Y3LVZmUlhxdVYwaHZINlU?oc=5' target='_blank' rel='noopener noreferrer'>オープンソースAIエージェント「Hermes Agent」のNous Research、NVIDIAなどから9,000万ドルを調達 - BRIDGE（ブリッジ）</a><span class='caption'>（BRIDGE（ブリッジ）・10/9 16:37）</span></div>
-<div class='news-row'><a href='https://news.google.com/rss/articles/CBMiZEFVX3lxTE5ZcFZkTWVvazNiOTczWXNGelEzVUtScGZ3dFJHeXVPeWNycmVwZFdDZGRQdmt6OVVDa050a3ZCMWNNNWt6Z2VJZElTN3Z6a0pCQ1IxWk1wUndKU1RUc3RjYnlvaFY?oc=5' target='_blank' rel='noopener noreferrer'>【元セガ社長 入交氏インタビュー/上】90年代にエヌビディア救済 「フアンCEOを再び舞台に」 - 読売新聞</a><span class='caption'>（読売新聞・10/9 16:37）</span></div>
+<div class='news-row'><a href='https://news.google.com/rss/articles/CBMi3AFBVV95cUxOSl93cXZ2MGNGY3JZaVgzUS1MWXVIVVZ0aHh1VEM4N2lJbVg3ZC1sUG5JN09TcWVEVkxtRno1ZE1Ib0xSUUpscGNIcU5PU29OMldmNU5yM1ZFWFYzWjh2YWZrZDFPSkF1VHFKYmI2NU5vRC1BclpiVTlxb29FRTlTWXZVcGluZ2s4clN1YlI0R0VLakhidm9DVEh5SUtZOGNBT3JSaWpMU2hsTjhOVm1oZW5pSFk5Nl9TcllVNnRZbFYxSTRoMUdaTFFoMEFDSW1jQ1AtYTZjQWhZSHlu0gGMAUFVX3lxTE1nQkdvNGJjZDBKMnltWVhHelVZYUFHMFBVS0xXXzJxckhGcEhjQzNWQzBnS0d2Ny1hNW5qSFU1aU9sRzFxR2pkcnRkRkZfOGhXdW01VVFWSE9OU2E4RFZReFBCZ3N6UFNJT3FHalRYa2pxVG10YlF4XzRpbWZkcHNzZlZvb3lTM2U2WE1C?oc=5' target='_blank' rel='noopener noreferrer'>【元セガ社長 入交氏インタビュー/上】90年代にエヌビディア救済 「フアンCEOを再び舞台に」 - ｄメニューニュース</a><span class='caption'>（ｄメニューニュース・10/9 16:37）</span></div>
 <div class='news-row'><a href='https://news.google.com/rss/articles/CBMiY0FVX3lxTE41TnEzdjBPQ29RR0xneUd5QUlRY1VRbUJ4UHRhc3R1ZkZMUmhMRjkxVHRUMmxHY2ppX21mNVJURHRZX1pfMXB0Z0MtaFFvdmgzR3N3TUZCWElfLVlGRkxKOWU3QQ?oc=5' target='_blank' rel='noopener noreferrer'>サンディスクのポータブルSSD「Extreme Pro」などが刷新 最大4,000MB/秒の超高速モデルなど - デジカメ Watch</a><span class='caption'>（デジカメ Watch・10/9 16:32）</span></div>
-<div class='news-row'><a href='https://news.google.com/rss/articles/CBMiW0FVX3lxTE9mNHViWEJPMW1xa2J1V2NVNUd3bklHajFwMFhEMjhOTWRTb1NQYV9ZSnd4SngySERKTHNud3ZKRUxxdkVQMTUwakhGVm40LWxxdzdOdmtGVlBQTkE?oc=5' target='_blank' rel='noopener noreferrer'>ASUS JAPAN、NVIDIA RTX Spark搭載のクリエイター向けAIノートPC「ProArt P16 / P14」を発売 - VIDEO SALON</a><span class='caption'>（VIDEO SALON・10/9 16:22）</span></div>
+<div class='news-row'><a href='https://news.google.com/rss/articles/CBMiW0FVX3lxTE9mNHViWEJPMW1xa2J1V2NVNUd3bklHajFwMFhEMjhOTWRTb1NQYV9ZSnd4SngySERKTHNud3ZKRUxxdkVQMTUwakhGVm40LWxxdzdOdmtGVlBQTkE?oc=5' target='_blank' rel='noopener noreferrer'>ASUS JAPAN、NVIDIA RTX Spark搭載のクリエイター向けAIノートPC「ProArt P16 / P14」を発売 - VIDEO SALON</a><span class='caption'>（VIDEO SALON・10/9 16:32）</span></div>
 <div class='news-row'><a href='https://news.google.com/rss/articles/CBMiakFVX3lxTE90MjhkczBId0NZX0FBZS1EN2xRbUF3amJ2MXlLU1ZyZkoxUmFoTW5rWms1LUE0LWFDLVRjNGxNRC00cVlFNUNpQWhZREFUYnhfSkpYTmRHMGJNMlVUNkNLNTZZdk9aN3NyTlE?oc=5' target='_blank' rel='noopener noreferrer'>サンディスク、ハイパフォーマンスなポータブルストレージ「SANDISK Portable SSD」など3機種 - kakaku.com</a><span class='caption'>（kakaku.com・10/9 16:21）</span></div>
 <div class='news-row'><a href='https://news.google.com/rss/articles/CBMiYEFVX3lxTE44NjFhZzA0SmhNWGUwX2FxYUx3a2t4V0ZrUHEwSkpNNUZpRFBtcW1aMlhEZi1oWHN2UHBVXzlndFRmVEZGX0J1NGUzZmZJdTdibFhjYk5sUW15bE9hODJ0cQ?oc=5' target='_blank' rel='noopener noreferrer'>キオクシア、ハイパースケールデータセンター向けE1.L SSDを開発 - Infoseek</a><span class='caption'>（Infoseek・10/9 16:12）</span></div>
 <div class='news-row'><a href='https://news.google.com/rss/articles/CBMib0FVX3lxTE5lSndZWGZSUkw2bTc4MXgyaTh1S043WlhyazlCR0g3enVWZURtVXdQaG1VQWRnWWNoOUtQMjN2dVk5Rk1lRnZLSjRrdUtudVdOS08xVG40UDVqV3d4c2hSWHd3NzZvTk9JbS1LQzJLUdIBaEFVX3lxTE8zN1l3cVIwekIzdm5uVDhSRE0wdjFnY2pLX29rM1FXaWdXUFZsVmNnRGNKTlFEbkZUZUZGZUo5bmR2Wi1IRDZ1OXktcjRTMzNZRzRjb2VJWTB1a1BIaHp6cjl0S05ZRy12?oc=5' target='_blank' rel='noopener noreferrer'>サンディスク、外付けポータブルSSDのラインアップを改訂 - ITmedia PC USER - ITmedia</a><span class='caption'>（ITmedia・10/9 14:29）</span></div>
@@ -313,7 +320,7 @@
 
       <hr style="border:none;border-top:1px solid var(--border);margin:2rem 0 1rem">
       <p class="caption">⚠️ 本情報は掲示板投稿を統計的に集計したものであり、投資助言ではありません。個別の投稿内容は含まれていません。研究・エンタメ用途です。</p>
-      <footer>生成: generate_static_dashboard.py（2026-10-09T16:52:57） /
+      <footer>生成: generate_static_dashboard.py（2026-10-09T17:03:05） /
       画像バックエンド: plotly+kaleido</footer>
     </div>
     <script>(function(){var url="https://script.google.com/macros/s/AKfycbwgSSGQ2n56ohmIYKlNDA1Xe3D8hd3GJbD0U90L4DGtXdb8pqrPokNMHJWjvN1__7bE/exec";var KEY='bbs_visit_counted';var already=sessionStorage.getItem(KEY);var action=already?'read':'hit';var ctrl=(typeof AbortController!=='undefined')?new AbortController():null;var timer=ctrl?setTimeout(function(){ctrl.abort();},5000):null;fetch(url+'?action='+action,{signal:ctrl?ctrl.signal:undefined}).then(function(r){if(timer)clearTimeout(timer);return r.json();}).then(function(data){if(!already)sessionStorage.setItem(KEY,'1');if(data&&typeof data.count==='number'){var el=document.getElementById('visit-count-badge');if(el){el.textContent='\u{1F440} \u7d2f\u8a08\u95b2\u89a7\u6570: '+data.count.toLocaleString();el.style.display='';}}}).catch(function(e){if(timer)clearTimeout(timer);console.warn('visit counter fetch failed (fail-soft):',e);});})();</script><script>(function(){var url="https://script.google.com/macros/s/AKfycbwgSSGQ2n56ohmIYKlNDA1Xe3D8hd3GJbD0U90L4DGtXdb8pqrPokNMHJWjvN1__7bE/exec";var KEY='bbs_liked';var btn=document.getElementById('like-button');var label=document.getElementById('like-count-label');if(!btn||!label)return;function renderLiked(count){btn.disabled=true;btn.style.cursor='default';btn.style.opacity='0.6';btn.textContent='\u2705';label.textContent="\u3044\u3044\u306d\u3057\u307e\u3057\u305f\uff01"+(typeof count==='number'?"\uff08\u7d2f\u8a08 "+count.toLocaleString()+" \u3044\u3044\u306d\uff09":'');}if(localStorage.getItem(KEY)){renderLiked(null);}btn.addEventListener('click',function(){if(localStorage.getItem(KEY))return;btn.disabled=true;var ctrl=(typeof AbortController!=='undefined')?new AbortController():null;var timer=ctrl?setTimeout(function(){ctrl.abort();},5000):null;fetch(url+'?action=like_hit',{signal:ctrl?ctrl.signal:undefined}).then(function(r){if(timer)clearTimeout(timer);return r.json();}).then(function(data){localStorage.setItem(KEY,'1');renderLiked(data&&typeof data.count==='number'?data.count:null);}).catch(function(e){if(timer)clearTimeout(timer);btn.disabled=false;console.warn('like button fetch failed (fail-soft):',e);});});})();</script><script>(function(){var DEFAULT_TAB='overview';function activate(tabName){var buttons=document.querySelectorAll('.tab-bar .tab-btn');var panels=document.querySelectorAll('[data-tab-panel]');if(!buttons.length||!panels.length)return;var matched=false;panels.forEach(function(p){var on=p.getAttribute('data-tab-panel')===tabName;if(on)matched=true;p.classList.toggle('tab-hidden',!on);});if(!matched){panels.forEach(function(p){p.classList.toggle('tab-hidden',p.getAttribute('data-tab-panel')!==DEFAULT_TAB);});tabName=DEFAULT_TAB;}buttons.forEach(function(b){var on=b.getAttribute('data-tab')===tabName;b.classList.toggle('active',on);b.setAttribute('aria-selected',on?'true':'false');});}document.addEventListener('DOMContentLoaded',function(){var bar=document.getElementById('tabBar');if(!bar)return;bar.addEventListener('click',function(e){var btn=e.target.closest('.tab-btn');if(!btn)return;activate(btn.getAttribute('data-tab'));});activate(DEFAULT_TAB);});})();</script></body></html>
