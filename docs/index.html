@@ -144,70 +144,46 @@
         <span class="price">17,505円</span>
         <span class="chg" style="color:#8B94A3">—</span>
       </div>
-      <p class="caption">更新時刻: 2026-10-11T04:16:26（データは1分間隔で自動生成され、このページも
+      <p class="caption">更新時刻: 2026-10-11T04:24:38（データは1分間隔で自動生成され、このページも
       60秒毎に自動再読み込みされます）</p>
       
-      <p id='visit-count-badge' class='caption'>👀 累計閲覧数: 8,888</p>
-      <p id='like-button-wrap' class='caption' style='display:none'></p>
+      <p id='visit-count-badge' class='caption'>👀 累計閲覧数: 8,890</p>
+      <p id='like-button-wrap' class='caption'><button id='like-button' type='button' style='cursor:pointer;border:1px solid var(--border);border-radius:6px;padding:1px 10px;margin-right:6px;background:var(--panel);color:var(--text);font-size:1em;vertical-align:middle'>👍</button><span id='like-count-label'>このダッシュボードが役に立ったら押してください（累計 4 いいね）</span></p>
 
       <!-- ★2026-09-08追加(ユーザー指示「AI考察はトップに移動」): モニタ
            (ai_sector_monitor)のtemplates/index.htmlと同じく、AI考察はタブ非依存で
            常時最上部に表示する。 -->
       <h2>🤖 AI考察</h2>
-      <div class='metric-row'><div class='metric-card'><div class='metric-label'>株価</div><div class='metric-value'>17,505円</div><div class='metric-delta'>+0円</div></div><div class='metric-card'><div class='metric-label'>強気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div><div class='metric-card'><div class='metric-label'>弱気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div></div><p class='caption'>前回集計(2026-10-11T04:06:00)との比較</p>
-      <div class='ai-box'>**※本レポートは「掲示板投稿の集計センチメントデータに基づく分析」であり、投資助言ではありません。**<br>
+      <div class='metric-row'><div class='metric-card'><div class='metric-label'>株価</div><div class='metric-value'>17,505円</div><div class='metric-delta'>+0円</div></div><div class='metric-card'><div class='metric-label'>強気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div><div class='metric-card'><div class='metric-label'>弱気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div></div><p class='caption'>前回集計(2026-10-11T04:16:26)との比較</p>
+      <div class='ai-box'>**※本分析は「掲示板投稿の集計センチメントデータに基づく」ものであり、投資助言ではありません。**<br>
 <br>
 ---<br>
 <br>
-### 1. 全体像  <br>
-2026‑10‑11 04:13 時点のキオクシアホールディングス（285A）の掲示板データは、取引時間外（休場）に取得されたものです。価格は前営業日終値 **¥17,505** が基準となりますが、実際の取引は行われていません。そのため「現在の値動き」は現在進行中ではなく、「直近の取引日の終値」として扱います。<br>
+### 全体的な概況  <br>
+2026年10月9日の終値 17,505円に対し、休場中の夜間取引（PTS）は約‑0.6％、米国ADRは‑1.8％と僅かな下落を示しています。これは、主要指数が概ね横ばい～微増である中、相対的にリスク回避的な動きが顕在化した可能性があります。<br>
 <br>
-### 2. 価格とボラティリティ  <br>
-- **価格**：¥17,505（前日比不明）。PTS・米国ADRともに若干下落しており、特にADRは約 ‑1.8 %の下落です。これは海外投資家の関心が薄れた可能性を示唆します。  <br>
-- **レジーム帯**は *calibrating*（BVP＝0.458）で、ボラティリティは「較中」レベルです。過熱度スコアが 5.7 と低いため、価格変動自体はまだ抑制された状態と言えます。<br>
+### 掲示板センチメント  <br>
+* **投稿数・速度**：77件／時速15.4件という低水準で、投稿速度は平常よりやや鈍化しています。  <br>
+* **強気/弱気比率**：個別数値は不明ですが、直近の日次推移を見ると、9月初旬に強気が50％近くに達した局面から徐々に低下し、10月9日は35％前後へ落ち込んでいます。一方で弱気は52％超と高水準です。この傾向は、掲示板でも「弱気」寄りの語り口が支配的になっていることを示唆します。  <br>
+* **過熱度スコア**：13.1（閾値36未満）で平常範囲内ですが、同時に「阿鼻叫喚」スコアが100に達しており、「セリクラ」（底値圏外）の指標が発火しています。過熱度は表面的に落ち着いているものの、潜在的な不安感が高まっていると解釈できます。  <br>
+* **シグナル発火**：  <br>
+  * 「ネームド集中」＝上位5名が全体の25％を占め、偏りが警戒レベル（橙色）。特定の投資家層への注目度が集中していることが伺えます。  <br>
+  * 「話題枯れ」＝投稿数の標準偏差が‑1.97と負側に大きく外れ、閑散状態が続いています。これは新規参加者や活発な議論が減少しているサインです。  <br>
+  * 「イナゴ語彙（euphoria）」は前回OKから警戒へ転換し、熱狂的な楽観語句が若干増えているものの、依然として低い水準に留まっています。  <br>
+* **その他**：他銘柄混入率は8％で平常範囲内、暴落煽り語彙も低レベルです。全体としては「弱気」寄りのトーンが支配的ですが、過熱度自体はまだ臨界点に達していません。<br>
 <br>
-### 3. 掲示板のセンチメント  <br>
-- **投稿量**：75 件／18.8 件/時という比較的緩やかなペース。急激なサージは認められません（シグナル「投稿サージ」も OK）。  <br>
-- **強気比率・弱気比率は不明**ですが、過熱度が低いこととボラティリティが較中であることから、極端な楽観・悲観は支配的ではないと推測できます。  <br>
+### ボラティリティとレジーム帯  <br>
+現在のレジームは **calibrating**（BVP 0.458）で、ボラティリティは比較的安定しています。過熱度が低めであることと一致し、急激な価格変動は観測されていませんが、弱気比率の上昇とともに潜在的なリスク感覚が高まっている点は注意が必要です。<br>
 <br>
-### 4. シグナル発火状況の読み取り  <br>
-| 指標 | 状態 | 背景に考えられる心理 |<br>
-|------|------|-------------------|<br>
-| **イナゴ語彙（euphoria）** | 警戒 (指数 4/100) | 一部の投稿で熱狂的な語句が増えているが、全体的な過熱には至っていない。潜在的な楽観感が芽生えている兆候です。 |<br>
-| **ネームド集中** | 発火 (上位5人シェア25%) | 特定のユーザーが議論を主導している可能性が高く、情報の偏りが生じやすい状況です。 |<br>
-| **他銘柄混入率** | 警戒 (8 %言及) | 掲示板が本来のテーマから逸脱し始めており、関心の分散が進んでいることを示唆します。 |<br>
-| **阿鼻叫喚（セリクラ）** | 発火 (スコア 100.0) | 「底値圏外」という極端な悲観表現が出現しており、一部の投資家は深刻なリスク感覚を抱えていることが分かります。 |<br>
-| **話題枯れ** | 発火 (z = ‑1.97) | 投稿数が統計的に低い水準に落ち込んでおり、関心の希薄化が進行中です。 |<br>
-| その他（過熱、暴落煽り語彙）はすべて OK | — | 異常な偏りは確認できません。 |<br>
+### 前回集計時点との比較  <br>
+前回（2026‑10‑11 04:16）と比べ、価格は変化なし、投稿件数は＋2件となっています。センチメントの微細な改善が見られる一方で、強気/弱気比率は依然として不明であり、判断材料は限られています。<br>
 <br>
-### 5. 前回集計との差分  <br>
-- **価格**は前回と同じ ¥17,505 で変化なし。  <br>
-- **投稿件数**も増減なし。  <br>
-- **強気/弱気比率**は不明のままですが、過熱度・ボラティリティの変化が無いことから、センチメントの根本的な転換は見られません。<br>
-<br>
-### 6. 前回取引日からの変化  <br>
-- **イナゴ語彙**は「OK」→「警戒」に遷移しています。これは過去数日間で楽観的な語句が徐々に増えていることを示す重要なサインです。一方で、過熱度スコアは依然として低いため、熱狂が広範囲に浸透したわけではありません。<br>
-<br>
-### 7. 米国市場・ADRの参考情報  <br>
-米国主要指数（S&amp;P 500、NASDAQ）は小幅上昇なのに対し、半導体関連指数 SOX は約 ‑4 %の下落です。285A と直接的な相関は不明ですが、テクノロジー系銘柄へのリスク回避姿勢が掲示板上の「他銘柄混入率」や「話題枯れ」に寄与している可能性があります。<br>
-<br>
-### 8. 本日の値動きの型  <br>
-- **型**：トレンド型（トレンド）  <br>
-- **予測不確実性**：普段並み  <br>
-この分類は、過去数日間の価格変動が比較的一貫した方向性を保っていたことを反映しています。ただし、これは「事後的」なラベリングであり、翌日以降の継続を保証するものではありません。<br>
-<br>
-### 9. ボラティリティとレジームの整合性  <br>
-過熱度スコアが低めであるにもかかわらず、ネームド集中や他銘柄混入率の上昇が見られる点は興味深いです。つまり、**ボラティリティは抑制されたままでも、一部の参加者間で情報が偏りやすくなっている**ことが伺えます。これは「較中」レベルのボラティリティと矛盾しないものの、潜在的なリスク要因（情報の非対称性）が存在することを示唆します。<br>
+### 市場環境との相関  <br>
+米国ADRの下落は、日本株全体のリスクオフ姿勢と合致しています。フィラデルフィア半導体指数が‑4.3％と大きく下落している点は、ハイテク系銘柄への警戒感が広がっていることを示し、285Aの弱気比率上昇にも寄与した可能性があります。<br>
 <br>
 ---<br>
 <br>
-#### 結論的なポイント  <br>
-1. **センチメントは過熱感が乏しく、ボラティリティも較中**である点は、価格が急激に変動しにくい環境を示しています。  <br>
-2. **イナゴ語彙の警戒化とネームド集中の発火**は、楽観的語句が局所的に増えている一方で、情報の偏りが顕在化しているサインです。  <br>
-3. **他銘柄混入率の上昇と話題枯れ**は、掲示板全体の関心が分散し始めていることを示し、今後の投稿量やセンチメントの方向性に注意が必要です。  <br>
-4. **価格・ボラティリティの変化はほぼ横ばい**であり、短期的なトレンドは大きく揺れ動いていないものの、上記のシグナルが示す微細な心理変化は注視すべきポイントです。<br>
-<br>
-以上が、提供いただいた集計データに基づく客観的な分析です。投資判断を行う際は、本レポートを参考情報のひとつとしてご活用ください。</div><p class='caption'>生成時刻: 2026-10-11T04:16:26</p>
+以上が、提供いただいた集計データに基づく客観的な分析です。投資判断はご自身のリスク許容度や追加情報を踏まえて行ってください。</div><p class='caption'>生成時刻: 2026-10-11T04:24:38</p>
 
       <!-- ★2026-09-08追加(ユーザー指示「AIセクターワールドモニターと同様に、
            各表示をグルーピングしてタブで選択できるように」): モニタの
@@ -252,12 +228,12 @@
         <h2>🎯 シグナル発火状況（9指標）</h2>
         <p class="caption">掲示板の投稿を集計した9つの指標が、統計的なしきい値を超えたかどうかを示す一覧です。
         「発火」は売買のシグナルではなく、「統計的に見て平常時より偏りが大きい状態」を示す記述的な警告ラベルです。</p>
-        <div class='info-box'>📌 前回の取引日(2026-10-10)からの状態変化: 「イナゴ語彙(euphoria)」OK→警戒</div>
-        <div class="panel"><div class='signal-row'><div class='signal-name'>灼熱メーター(過熱)<div class='signal-desc'>掲示板全体の強気/弱気の偏りと投稿の勢いから算出した「過熱度」の合成指標。</div></div><div class='signal-meta'><div class='signal-note'>過熱スコア5.7 (閾値36)</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#15803D;white-space:nowrap'>OK (現在値5.70 / 閾値&gt;36)</span></div><div class='signal-spark'><figure><img src='images/spark_signal_0.png' alt='灼熱メーター(過熱)の推移' loading='lazy'></figure></div></div></div>
+        <div class='info-box'>📌 前回の取引日(2026-10-10)からの状態変化: 「イナゴ語彙(euphoria)」OK→警戒、「他銘柄混入率」警戒→OK</div>
+        <div class="panel"><div class='signal-row'><div class='signal-name'>灼熱メーター(過熱)<div class='signal-desc'>掲示板全体の強気/弱気の偏りと投稿の勢いから算出した「過熱度」の合成指標。</div></div><div class='signal-meta'><div class='signal-note'>過熱スコア13.1 (閾値36)</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#15803D;white-space:nowrap'>OK (現在値13.10 / 閾値&gt;36)</span></div><div class='signal-spark'><figure><img src='images/spark_signal_0.png' alt='灼熱メーター(過熱)の推移' loading='lazy'></figure></div></div></div>
 <div class='signal-row'><div class='signal-name'>そう思う大量票<div class='signal-desc'>Yahoo!掲示板の「そう思う」共感ボタンが1投稿に集中して大量に押されているか。</div></div><div class='signal-meta'><div class='signal-note'>そう思う最大0票 (95超=過熱)</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#15803D;white-space:nowrap'>OK (現在値0 / 閾値&gt;=95)</span></div><div class='signal-spark'><figure><img src='images/spark_signal_1.png' alt='そう思う大量票の推移' loading='lazy'></figure></div></div></div>
-<div class='signal-row'><div class='signal-name'>イナゴ語彙(euphoria)<div class='signal-desc'>「爆上げ」「握力」等、熱狂・便乗を示す語彙が投稿にどれだけ含まれるか。</div></div><div class='signal-meta'><div class='signal-note'>euphoria指数4.0/100投稿</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#C2570B;white-space:nowrap'>警戒 (現在値4.00 / 閾値&gt;=5.5(発火)/&gt;=4.0(警戒)/100投稿)</span></div><div class='signal-spark'><figure><img src='images/spark_signal_2.png' alt='イナゴ語彙(euphoria)の推移' loading='lazy'></figure></div></div></div>
+<div class='signal-row'><div class='signal-name'>イナゴ語彙(euphoria)<div class='signal-desc'>「爆上げ」「握力」等、熱狂・便乗を示す語彙が投稿にどれだけ含まれるか。</div></div><div class='signal-meta'><div class='signal-note'>euphoria指数5.2/100投稿</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#C2570B;white-space:nowrap'>警戒 (現在値5.20 / 閾値&gt;=5.5(発火)/&gt;=4.0(警戒)/100投稿)</span></div><div class='signal-spark'><figure><img src='images/spark_signal_2.png' alt='イナゴ語彙(euphoria)の推移' loading='lazy'></figure></div></div></div>
 <div class='signal-row'><div class='signal-name'>ネームド集中<div class='signal-desc'>特定の常連投稿者(ハッシュ化ID)に投稿が偏っていないか(少数の声が目立ちすぎていないか)。</div></div><div class='signal-meta'><div class='signal-note'>上位5人シェア25%</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#C81E1E;white-space:nowrap'>発火 (現在値0.25 / 閾値&gt;=0.1)</span></div><div class='signal-spark'><figure><img src='images/spark_signal_3.png' alt='ネームド集中の推移' loading='lazy'></figure></div></div></div>
-<div class='signal-row'><div class='signal-name'>他銘柄混入率<div class='signal-desc'>本銘柄の掲示板で他の銘柄コードへの言及がどれだけ多いか(関心が他へ移りつつあるサイン)。</div></div><div class='signal-meta'><div class='signal-note'>他銘柄言及8% (関心離散のサイン)</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#C2570B;white-space:nowrap'>警戒 (現在値0.08 / 閾値&gt;=0.11(発火)/&gt;=0.08(警戒))</span></div><div class='signal-spark'><figure><img src='images/spark_signal_4.png' alt='他銘柄混入率の推移' loading='lazy'></figure></div></div></div>
+<div class='signal-row'><div class='signal-name'>他銘柄混入率<div class='signal-desc'>本銘柄の掲示板で他の銘柄コードへの言及がどれだけ多いか(関心が他へ移りつつあるサイン)。</div></div><div class='signal-meta'><div class='signal-note'>他銘柄言及8% (関心離散のサイン)</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#15803D;white-space:nowrap'>OK (現在値0.08 / 閾値&gt;=0.11)</span></div><div class='signal-spark'><figure><img src='images/spark_signal_4.png' alt='他銘柄混入率の推移' loading='lazy'></figure></div></div></div>
 <div class='signal-row'><div class='signal-name'>暴落煽り語彙<div class='signal-desc'>「暴落」「終わった」等、悲観・煽りを示す語彙が投稿にどれだけ含まれるか。</div></div><div class='signal-meta'><div class='signal-note'>煽り指数1.3/100投稿</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#15803D;white-space:nowrap'>OK (現在値1.30 / 閾値&gt;=5.0/100投稿)</span></div><div class='signal-spark'><figure><img src='images/spark_signal_5.png' alt='暴落煽り語彙の推移' loading='lazy'></figure></div></div></div>
 <div class='signal-row'><div class='signal-name'>阿鼻叫喚(セリクラ)<div class='signal-desc'>株価が安値圏にある中で悲観語彙が急増しているか(セリングクライマックスの兆候)。</div></div><div class='signal-meta'><div class='signal-note'>阿鼻叫喚スコア100.0 安値圏外</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#C81E1E;white-space:nowrap'>発火 (現在値100.00 / 閾値&gt;30)</span></div><div class='signal-spark'><figure><img src='images/spark_signal_6.png' alt='阿鼻叫喚(セリクラ)の推移' loading='lazy'></figure></div></div></div>
 <div class='signal-row'><div class='signal-name'>話題枯れ<div class='signal-desc'>過去の平均と比べて本日の投稿数が著しく少ないか(閑散・関心低下のサイン)。</div></div><div class='signal-meta'><div class='signal-note'>投稿数z=-1.97 (負=閑散)</div><div><span style='display:inline-block;border-radius:999px;padding:2px 10px;font-size:.82em;font-weight:600;color:#fff;background:#C81E1E;white-space:nowrap'>発火 (現在値-1.97 / 閾値z&lt;-1.0)</span></div><div class='signal-spark'><figure><img src='images/spark_signal_7.png' alt='話題枯れの推移' loading='lazy'></figure></div></div></div>
@@ -316,7 +292,7 @@
 
       <hr style="border:none;border-top:1px solid var(--border);margin:2rem 0 1rem">
       <p class="caption">⚠️ 本情報は掲示板投稿を統計的に集計したものであり、投資助言ではありません。個別の投稿内容は含まれていません。研究・エンタメ用途です。</p>
-      <footer>生成: generate_static_dashboard.py（2026-10-11T04:23:46） /
+      <footer>生成: generate_static_dashboard.py（2026-10-11T04:34:28） /
       画像バックエンド: plotly+kaleido</footer>
     </div>
     <script>(function(){var url="https://script.google.com/macros/s/AKfycbwgSSGQ2n56ohmIYKlNDA1Xe3D8hd3GJbD0U90L4DGtXdb8pqrPokNMHJWjvN1__7bE/exec";var KEY='bbs_visit_counted';var already=sessionStorage.getItem(KEY);var action=already?'read':'hit';var ctrl=(typeof AbortController!=='undefined')?new AbortController():null;var timer=ctrl?setTimeout(function(){ctrl.abort();},5000):null;fetch(url+'?action='+action,{signal:ctrl?ctrl.signal:undefined}).then(function(r){if(timer)clearTimeout(timer);return r.json();}).then(function(data){if(!already)sessionStorage.setItem(KEY,'1');if(data&&typeof data.count==='number'){var el=document.getElementById('visit-count-badge');if(el){el.textContent='\u{1F440} \u7d2f\u8a08\u95b2\u89a7\u6570: '+data.count.toLocaleString();el.style.display='';}}}).catch(function(e){if(timer)clearTimeout(timer);console.warn('visit counter fetch failed (fail-soft):',e);});})();</script><script>(function(){var url="https://script.google.com/macros/s/AKfycbwgSSGQ2n56ohmIYKlNDA1Xe3D8hd3GJbD0U90L4DGtXdb8pqrPokNMHJWjvN1__7bE/exec";var KEY='bbs_liked';var btn=document.getElementById('like-button');var label=document.getElementById('like-count-label');if(!btn||!label)return;function renderLiked(count){btn.disabled=true;btn.style.cursor='default';btn.style.opacity='0.6';btn.textContent='\u2705';label.textContent="\u3044\u3044\u306d\u3057\u307e\u3057\u305f\uff01"+(typeof count==='number'?"\uff08\u7d2f\u8a08 "+count.toLocaleString()+" \u3044\u3044\u306d\uff09":'');}if(localStorage.getItem(KEY)){renderLiked(null);}btn.addEventListener('click',function(){if(localStorage.getItem(KEY))return;btn.disabled=true;var ctrl=(typeof AbortController!=='undefined')?new AbortController():null;var timer=ctrl?setTimeout(function(){ctrl.abort();},5000):null;fetch(url+'?action=like_hit',{signal:ctrl?ctrl.signal:undefined}).then(function(r){if(timer)clearTimeout(timer);return r.json();}).then(function(data){localStorage.setItem(KEY,'1');renderLiked(data&&typeof data.count==='number'?data.count:null);}).catch(function(e){if(timer)clearTimeout(timer);btn.disabled=false;console.warn('like button fetch failed (fail-soft):',e);});});})();</script><script>(function(){var DEFAULT_TAB='overview';function activate(tabName){var buttons=document.querySelectorAll('.tab-bar .tab-btn');var panels=document.querySelectorAll('[data-tab-panel]');if(!buttons.length||!panels.length)return;var matched=false;panels.forEach(function(p){var on=p.getAttribute('data-tab-panel')===tabName;if(on)matched=true;p.classList.toggle('tab-hidden',!on);});if(!matched){panels.forEach(function(p){p.classList.toggle('tab-hidden',p.getAttribute('data-tab-panel')!==DEFAULT_TAB);});tabName=DEFAULT_TAB;}buttons.forEach(function(b){var on=b.getAttribute('data-tab')===tabName;b.classList.toggle('active',on);b.setAttribute('aria-selected',on?'true':'false');});}document.addEventListener('DOMContentLoaded',function(){var bar=document.getElementById('tabBar');if(!bar)return;bar.addEventListener('click',function(e){var btn=e.target.closest('.tab-btn');if(!btn)return;activate(btn.getAttribute('data-tab'));});activate(DEFAULT_TAB);});})();</script></body></html>
