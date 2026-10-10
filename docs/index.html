@@ -144,7 +144,7 @@
         <span class="price">17,505円</span>
         <span class="chg" style="color:#8B94A3">—</span>
       </div>
-      <p class="caption">更新時刻: 2026-10-10T20:05:45（データは1分間隔で自動生成され、このページも
+      <p class="caption">更新時刻: 2026-10-10T20:14:14（データは1分間隔で自動生成され、このページも
       60秒毎に自動再読み込みされます）</p>
       
       <p id='visit-count-badge' class='caption'>👀 累計閲覧数: 8,838</p>
@@ -154,46 +154,29 @@
            (ai_sector_monitor)のtemplates/index.htmlと同じく、AI考察はタブ非依存で
            常時最上部に表示する。 -->
       <h2>🤖 AI考察</h2>
-      <div class='metric-row'><div class='metric-card'><div class='metric-label'>株価</div><div class='metric-value'>17,505円</div><div class='metric-delta'>+0円</div></div><div class='metric-card'><div class='metric-label'>強気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div><div class='metric-card'><div class='metric-label'>弱気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div></div><p class='caption'>前回集計(2026-10-10T19:59:48)との比較</p>
-      <div class='ai-box'>**掲示板の集計センチメントデータに基く分析であり、投資助言ではありません**<br>
+      <div class='metric-row'><div class='metric-card'><div class='metric-label'>株価</div><div class='metric-value'>17,505円</div><div class='metric-delta'>+0円</div></div><div class='metric-card'><div class='metric-label'>強気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div><div class='metric-card'><div class='metric-label'>弱気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div></div><p class='caption'>前回集計(2026-10-10T20:05:45)との比較</p>
+      <div class='ai-box'>**掲示板の集計センチメントデータに基づく分析であり、投資助言ではありません**<br>
 <br>
 ---<br>
 <br>
 ### 全体的なセンチメントと価格動向  <br>
-2026年10月9日の終値は 17,505円（前日比不明）で、直近の日次推移を見ると、9月下旬から10月初旬にかけて強気比率が40％台～55％台へ上昇し、弱気比率は38％台～53％台と揺れ動いています。特に10月2日の 19,300円というピーク後は徐々に下落基調に転じ、10月7・8日はほぼ横ばい、10月9日は若干低下しています。この流れは、掲示板の強気比率が下降傾向にあることと一致しており、価格側の弱含みを裏付ける形となっています。<br>
+2026‑10‑09 の取引日終値は 17,505.0円で、直近の日次推移を見ると、9月半ばから10月上旬にかけて強気比率が40％台～56％台へ上昇した局面（例：10/01・10/02）と、再び35％前後に低下した局面（10/07・10/08・10/09）が交互に現れています。一方で過熱度スコアは 0.0（閾値36未満）で、掲示板上の熱狂感は乏しいことが示唆されます。<br>
 <br>
-### 過熱度と総悲観度の乖離  <br>
-過熱度スコアは 0.0（閾値36未満）で「正常」なのに対し、総悲観度スコアは 100.0 と極端に高く設定されています。これは、掲示板参加者が「不安・失望」を強く抱いているものの、実際の価格変動はまだ過熱感を伴っていないことを示唆します。つまり、潜在的なネガティブ感情が蓄積している一方で、市場全体の動きは比較的落ち着いている状態です。<br>
+### シグナル発火とレジーム帯  <br>
+「ネームド集中」「他銘柄混入率」「阿鼻叫喚」の３指標が発火している点は注目に値します。上位5名の投稿者が全体の12％を占めることで情報の多様性が低下し、同時に他銘柄への言及が増えていることは関心の分散を示しています。また「セリクラ（阿鼻叫喚）」スコアが 100.0 と最高レベルに達しているにもかかわらず過熱度が低いというギャップは、悲観的な語彙が集中しているが実際の市場参加者はそれを過大評価していない可能性を示唆します。<br>
 <br>
-### ボラティリティ（レジーム）  <br>
-現在のボラティリティ指標は 0.458 の **calibrating** 帯です。これは「変動が安定しつつある」ことを示す水準で、過熱度が低いこととも整合しています。一方で、過去の日次推移では価格が上下に大きく振れており、短期的なボラティリティはまだ一定程度残っていると解釈できます。<br>
+### ボラティリティとレジーム  <br>
+現在のボラティリティ指標 BVP は 0.458 で「較正中」のレジームに位置しています。これは価格変動が比較的穏やかであることを示す一方、ネームド集中や他銘柄混入率の上昇といった情報偏重が同時に起きているため、潜在的なリスク要因が埋もれやすい環境とも言えます。<br>
 <br>
-### シグナル発火状況のポイント  <br>
-- **ネームド集中** が発火（上位5名の投稿シェア12％）しており、特定のユーザーが議論を牽引している可能性があります。  <br>
-- **他銘柄混入率** が警戒レベルに上昇し、掲示板の関心が散漫になっている兆候が見られます。  <br>
-- **阿鼻叫喚（セリクラ）** が発火（スコア 100.0）で、深刻な下落懸念が顕在化しています。  <br>
-- **話題枯れ** も発火（投稿数 z‑score –1.37）し、全体的な投稿量が減少していることが確認されています。  <br>
+### 前回集計時点との比較  <br>
+前回（2026‑10‑10 20:05）と比べ、投稿件数は +11 件増加し、価格はほぼ横ばいです。強気／弱気比率は依然として不明ですが、投稿数の伸びは掲示板への関心が微増していることを裏付けます。<br>
 <br>
-これらは「偏り」や「関心の希薄化」を示す統計的シグナルであり、必ずしも売買タイミングを示すものではありませんが、掲示板参加者の心理が分散・不安化している背景として重要です。<br>
-<br>
-### 前回取引日からの変化と短期的な勢い  <br>
-前回（10月9日）の取引終了時点と比較すると、投稿件数は +11 件増加しています。価格自体は変化なしですが、投稿数の伸びは「話題枯れ」の発火にも関わらず、一部の関心層が残存していることを示唆します。これは、弱気比率が上昇しつつも、完全に沈黙したわけではないという微妙なバランスを反映しています。<br>
-<br>
-### 取引時間外（PTS・米国ADR）の動向  <br>
-夜間の PTS では 17,399円（‑0.61％）に下落し、米国ADR でも同様に 17,193円（‑1.78％）となっています。これらは東証終値からの下落圧力を示すものの、過熱度が低いことから「一時的な調整」と捉えるのが妥当です。<br>
-<br>
-### 市場全体の地合いとの相関  <br>
-米国市場は S&amp;P500 が＋1.15％、NASDAQ が＋0.64％と堅調なのに対し、フィラデルフィア半導体指数は‑4.30％と下落しています。285A のセンチメントは個別要因（掲示板）に起因し、米国市場全体の上昇局面とは直接的な相関が薄いことが読み取れます。<br>
-<br>
-### 本日の値動きの型  <br>
-本日の値動きは「トレンド型」で、予測不確実性は「普段並み」と評価されています。これは、過去数日間の価格変動パターンが一定の方向へ進んでいるものの、ボラティリティが急激に拡大していないことを意味します。したがって、今後の展開も急激な転換よりは緩やかな推移が続く可能性が高いと考えられます（あくまで過去の統計的分類です）。<br>
+### 時間外取引の参考情報  <br>
+夜間の私設取引システム（PTS）では ‑0.61％、米国ADRでも ‑1.78％の下落が確認されています。これらは東証終値に対して僅かな売り圧力が残っていることを示すだけで、翌日の東証開場時に同様の動きが続くかどうかは保証できません。<br>
 <br>
 ---<br>
 <br>
-#### 結論的な読み取り  <br>
-掲示板のセンチメントは「弱気志向が強まりつつある」一方で、過熱感はまだ顕在化していません。ボラティリティは現在安定帯にあり、価格変動は比較的穏やかです。ネームド集中や他銘柄混入率の上昇は、議論が分散しつつも特定テーマへの関心が残っていることを示しています。取引時間外の下落は一時的な調整と見る余地がありますが、全体としては「弱気比率上昇＝潜在的な下落圧力」という方向性が掲示板データと価格動向の両方で裏付けられています。  <br>
-<br>
-※本分析はあくまで集計センチメントデータに基づく客観的な解釈であり、投資判断や売買の推奨を目的としたものではありません。</div><p class='caption'>生成時刻: 2026-10-10T20:05:45</p>
+以上が、提供いただいた集計数値に基づく客観的な分析です。投資判断はご自身のリスク許容度や市場環境をご勘案のうえ、自己責任で行ってください。</div><p class='caption'>生成時刻: 2026-10-10T20:14:14</p>
 
       <!-- ★2026-09-08追加(ユーザー指示「AIセクターワールドモニターと同様に、
            各表示をグルーピングしてタブで選択できるように」): モニタの
@@ -248,7 +231,6 @@
 <div class='news-row'><a href='https://news.google.com/rss/articles/CBMidEFVX3lxTE1JSTljdmREdEJQX1NvdkI2dmN1Mm04WTJUeTZxbHZpZ21zZVl3V2ctMmE2bkFOb19pbGNNdkZVaFJvdUItbjFFb3lEbGlIVkx6STFWd0lxWG15cWtwS0VEUkxiQ3B0LTR2NE40SVJwd3BVdWV2?oc=5' target='_blank' rel='noopener noreferrer'>サンディスクとマックスリニア、2032年までの長期投資で半導体トップ候補に浮上 - BigGo ファイナンス</a><span class='caption'>（BigGo ファイナンス・10/10 03:20）</span></div>
 <div class='news-row'><a href='https://news.google.com/rss/articles/CBMiYEFVX3lxTE9rMzhYNVhGMlM5d3VwRFN2UDBaZmpYQUF6ZEtEODUzbW1ONGY2NGFKSEZVZmtUQk1RTkZuWXBFTFJpSVJsWUFtbWZJbUJJcC1SUWRXRF9EenFuYlRHR0RVdw?oc=5' target='_blank' rel='noopener noreferrer'>サンディスク、最大4,000MB/sのポータブルSSD「SANDISK Extreme PRO」など計3製品 - エルミタージュ秋葉原</a><span class='caption'>（エルミタージュ秋葉原・10/10 02:34）</span></div>
 <div class='news-row'><a href='https://news.google.com/rss/articles/CBMiYEFVX3lxTE1KRTNYZS1HcjRPa0JDQ0xPdFZTeDVaRzAtZEtpSVEyY2xOeHd0NkQ1cWFDcWh3ZW50M3RFeVpEeGtrdnF4VGduUlpsX2w3cG0yVGtyYzBEUEFDUkgxOG4yQg?oc=5' target='_blank' rel='noopener noreferrer'>第8世代BiCS QLC採用ハイパースケールデータセンター向けSSD「KIOXIA LD4」 - エルミタージュ秋葉原</a><span class='caption'>（エルミタージュ秋葉原・10/10 02:34）</span></div>
-<div class='news-row'><a href='https://news.google.com/rss/articles/CBMibEFVX3lxTE9yc2VXVUlfSXpOSjNTTjlJSDZ4MUpvR19fWFJGdnYzZGhTMmVPOFJPWjVLZG84OXZEVEhRc0NlSmIzR193YlVuU0ZkamtjRlJpRE91Z04yX2d0SDFFLXFPcTZlY05aOTlxYU9oNg?oc=5' target='_blank' rel='noopener noreferrer'>キオクシアHDの売買、2カ月ぶり低水準 ピークの1割に - 日本経済新聞</a><span class='caption'>（日本経済新聞・10/9 20:10）</span></div>
 <p class='caption'>※ニュース見出しの要約であり、投資助言ではありません。各見出しから元記事(Google News経由)へ移動できます。</p></div>
 
         <h2>🎯 シグナル発火状況（9指標）</h2>
@@ -318,7 +300,7 @@
 
       <hr style="border:none;border-top:1px solid var(--border);margin:2rem 0 1rem">
       <p class="caption">⚠️ 本情報は掲示板投稿を統計的に集計したものであり、投資助言ではありません。個別の投稿内容は含まれていません。研究・エンタメ用途です。</p>
-      <footer>生成: generate_static_dashboard.py（2026-10-10T20:10:56） /
+      <footer>生成: generate_static_dashboard.py（2026-10-10T20:20:57） /
       画像バックエンド: plotly+kaleido</footer>
     </div>
     <script>(function(){var url="https://script.google.com/macros/s/AKfycbwgSSGQ2n56ohmIYKlNDA1Xe3D8hd3GJbD0U90L4DGtXdb8pqrPokNMHJWjvN1__7bE/exec";var KEY='bbs_visit_counted';var already=sessionStorage.getItem(KEY);var action=already?'read':'hit';var ctrl=(typeof AbortController!=='undefined')?new AbortController():null;var timer=ctrl?setTimeout(function(){ctrl.abort();},5000):null;fetch(url+'?action='+action,{signal:ctrl?ctrl.signal:undefined}).then(function(r){if(timer)clearTimeout(timer);return r.json();}).then(function(data){if(!already)sessionStorage.setItem(KEY,'1');if(data&&typeof data.count==='number'){var el=document.getElementById('visit-count-badge');if(el){el.textContent='\u{1F440} \u7d2f\u8a08\u95b2\u89a7\u6570: '+data.count.toLocaleString();el.style.display='';}}}).catch(function(e){if(timer)clearTimeout(timer);console.warn('visit counter fetch failed (fail-soft):',e);});})();</script><script>(function(){var url="https://script.google.com/macros/s/AKfycbwgSSGQ2n56ohmIYKlNDA1Xe3D8hd3GJbD0U90L4DGtXdb8pqrPokNMHJWjvN1__7bE/exec";var KEY='bbs_liked';var btn=document.getElementById('like-button');var label=document.getElementById('like-count-label');if(!btn||!label)return;function renderLiked(count){btn.disabled=true;btn.style.cursor='default';btn.style.opacity='0.6';btn.textContent='\u2705';label.textContent="\u3044\u3044\u306d\u3057\u307e\u3057\u305f\uff01"+(typeof count==='number'?"\uff08\u7d2f\u8a08 "+count.toLocaleString()+" \u3044\u3044\u306d\uff09":'');}if(localStorage.getItem(KEY)){renderLiked(null);}btn.addEventListener('click',function(){if(localStorage.getItem(KEY))return;btn.disabled=true;var ctrl=(typeof AbortController!=='undefined')?new AbortController():null;var timer=ctrl?setTimeout(function(){ctrl.abort();},5000):null;fetch(url+'?action=like_hit',{signal:ctrl?ctrl.signal:undefined}).then(function(r){if(timer)clearTimeout(timer);return r.json();}).then(function(data){localStorage.setItem(KEY,'1');renderLiked(data&&typeof data.count==='number'?data.count:null);}).catch(function(e){if(timer)clearTimeout(timer);btn.disabled=false;console.warn('like button fetch failed (fail-soft):',e);});});})();</script><script>(function(){var DEFAULT_TAB='overview';function activate(tabName){var buttons=document.querySelectorAll('.tab-bar .tab-btn');var panels=document.querySelectorAll('[data-tab-panel]');if(!buttons.length||!panels.length)return;var matched=false;panels.forEach(function(p){var on=p.getAttribute('data-tab-panel')===tabName;if(on)matched=true;p.classList.toggle('tab-hidden',!on);});if(!matched){panels.forEach(function(p){p.classList.toggle('tab-hidden',p.getAttribute('data-tab-panel')!==DEFAULT_TAB);});tabName=DEFAULT_TAB;}buttons.forEach(function(b){var on=b.getAttribute('data-tab')===tabName;b.classList.toggle('active',on);b.setAttribute('aria-selected',on?'true':'false');});}document.addEventListener('DOMContentLoaded',function(){var bar=document.getElementById('tabBar');if(!bar)return;bar.addEventListener('click',function(e){var btn=e.target.closest('.tab-btn');if(!btn)return;activate(btn.getAttribute('data-tab'));});activate(DEFAULT_TAB);});})();</script></body></html>
