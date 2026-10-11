@@ -144,74 +144,52 @@
         <span class="price">17,505円</span>
         <span class="chg" style="color:#8B94A3">—</span>
       </div>
-      <p class="caption">更新時刻: 2026-10-12T03:54:35（データは1分間隔で自動生成され、このページも
+      <p class="caption">更新時刻: 2026-10-12T04:05:19（データは1分間隔で自動生成され、このページも
       60秒毎に自動再読み込みされます）</p>
       
-      <p id='visit-count-badge' class='caption'>👀 累計閲覧数: 9,027</p>
+      <p id='visit-count-badge' class='caption'>👀 累計閲覧数: 9,029</p>
       <p id='like-button-wrap' class='caption'><button id='like-button' type='button' style='cursor:pointer;border:1px solid var(--border);border-radius:6px;padding:1px 10px;margin-right:6px;background:var(--panel);color:var(--text);font-size:1em;vertical-align:middle'>👍</button><span id='like-count-label'>このダッシュボードが役に立ったら押してください（累計 4 いいね）</span></p>
 
       <!-- ★2026-09-08追加(ユーザー指示「AI考察はトップに移動」): モニタ
            (ai_sector_monitor)のtemplates/index.htmlと同じく、AI考察はタブ非依存で
            常時最上部に表示する。 -->
       <h2>🤖 AI考察</h2>
-      <div class='metric-row'><div class='metric-card'><div class='metric-label'>株価</div><div class='metric-value'>17,505円</div><div class='metric-delta'>+0円</div></div><div class='metric-card'><div class='metric-label'>強気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div><div class='metric-card'><div class='metric-label'>弱気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div></div><p class='caption'>前回集計(2026-10-12T03:46:20)との比較</p>
-      <div class='ai-box'>**掲示板の集計センチメントデータに基く分析であり、投資助言ではありません**  <br>
+      <div class='metric-row'><div class='metric-card'><div class='metric-label'>株価</div><div class='metric-value'>17,505円</div><div class='metric-delta'>+0円</div></div><div class='metric-card'><div class='metric-label'>強気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div><div class='metric-card'><div class='metric-label'>弱気比率</div><div class='metric-value'>—</div><div class='metric-delta'>—</div></div></div><p class='caption'>前回集計(2026-10-12T03:54:35)との比較</p>
+      <div class='ai-box'>**掲示板の集計センチメントデータに基く分析であり、投資助言ではありません**<br>
 <br>
----<br>
+---  <br>
 <br>
-### 1. 現在の市場環境と価格概況（寄り付き前）<br>
+### 全体的なセンチメントと価格の関係  <br>
+2026年10月9日の終値 17,505円は、直近の最高値（約19,300円）からやや下落した水準です。掲示板の強気比率は不明ですが、過熱度スコアが2.3と低く、総悲観度スコアが6.0と比較的高いことから、**「楽観的な声は少なく、慎重・警戒感が残っている」** 状態と判断できます。価格がやや下げ基調にあることと、センチメントが弱めであることは概ね一致しています。<br>
 <br>
-本日の東京証券取引所が開場する前の時点（2026‑10‑12 03:51）で、対象銘柄は **17,505円** の終値となっています。価格は前日比が不明ですが、直近の日次推移を見ると、9月28日の17,780円から徐々に下落し、10月9日には同水準まで戻しています。ボラティリティ指標（BVP）は **0.458** と「較中」レジームに位置し、取引時間内の価格変動は比較的穏やかです。<br>
+### ボラティリティとレジーム  <br>
+現在のボラティリティ指標は **calibrating（BVP = 0.458）** で、ボラティリティは「較正中」―すなわち極端に荒くもなく、落ち着いてもいない段階です。過熱度が低い一方で総悲観度が高い点は、**「市場参加者は価格変動に対してまだ敏感に反応できる余地がある」** と読む材料になります。<br>
 <br>
-### 2. 掲示板センチメントの概要<br>
+### シグナル発火状況のポイント  <br>
+- **ネームド集中が発火（上位5人で26％シェア）**：特定人物への注目度が高く、情報の偏りが生じやすい状況です。これは「話題が限定的に集中している」ことを示唆します。  <br>
+- **話題枯れが発火（投稿数z = ‑1.9）**：投稿量が統計的に少ないことを示す指標で、掲示板全体の活発さが低下している可能性があります。  <br>
+- その他の指標はすべてOKで、過熱や暴落煽りは顕在化していません。<br>
 <br>
-- **投稿数／投稿速度**：61件、15.2 件/時という低頻度。  <br>
-- **過熱度スコア**：2.3（閾値36未満＝平常）。  <br>
-- **総悲観度スコア**：6.0 とやや高めだが、過熱度が低いため「熱狂」よりは「慎重さ」の兆候と捉えられます。  <br>
-- **シグナル発火状況**：  <br>
-  - 「ネームド集中」（上位5名シェア26％）が唯一 **発火**。これは特定投資家への注目が集中していることを示唆します。  <br>
-  - 他の指標はすべて **OK**（平常範囲）です。  <br>
+### 前回取引日からの変化  <br>
+2026年10月7日まで続いていた「阿鼻叫喚（セリクラ）」の発火が、今回の集計では **OK に回復** しています。これは一時的に見られた悲観的な雰囲気が和らいだことを反映しており、掲示板の心理が徐々に安定しつつある兆候と捉えられます。<br>
 <br>
-### 3. 過去数日のセンチメント変遷と背景<br>
+### 前回集計時点との比較  <br>
+前回（2026‑10‑12 03:54）と今回の価格差は **±0円** で変化なしです。一方、投稿件数は **+0件** 増という微小な伸びしかなく、センチメントの顕著なシフトは見られません。したがって、**「価格は横ばいだが、掲示板側の心理的揺らぎはほぼ維持」** と言えるでしょう。<br>
 <br>
-| 日付 | 終値 | 強気比率 | 弱気比率 |<br>
-|------|------|----------|----------|<br>
-| 9/17 | 16,626.7 | 40.9 % | 51.5 % |<br>
-| …    | …    | …        | …        |<br>
-| 10/9 | 17,505   | **35.4 %** | **52.1 %** |<br>
+### PTS・米国ADRの動き  <br>
+夜間取引（PTS）は 17,399円（‑0.61％）で、基準となる東証終値より僅かに下回っています。米国ADRも 17,193円（‑1.78％）とやや割安です。これらは **「東京市場の開場前に既に売り圧力が働いていた」** 可能性を示唆しますが、翌日の東証での値動きを直接予測するものではありません。<br>
 <br>
-直近では強気比率が35％台に低下し、弱気比率が上昇しています。これは「ネームド集中」の発火と相まって、特定投資家の売り圧力が強まっている可能性を示唆します。一方、過熱度スコアは依然として低く、全体的な熱狂感は薄いままです。つまり、**センチメントはややネガティブに傾いているものの、市場は過度に過熱していない** 状態です。<br>
+### 本日の値動きの型  <br>
+本日の値動きは **トレンド型** に分類され、予測不確実性は「普段並み」でした。事後の分類であるため、**「今後も同様のパターンが続くか」** を断言する根拠にはなりませんが、現在は一定の方向感（上昇／下降）が存在すると解釈できます。<br>
 <br>
-### 4. 前回集計時点との比較<br>
+### まとめ  <br>
+- 強気比率は不明ながら過熱度が低く、総悲観度が高いため、**慎重姿勢が支配的** と考えられます。  <br>
+- ボラティリティは較正中で、価格変動に対する感度はまだ残っています。  <br>
+- 「ネームド集中」や「話題枯れ」の発火は、掲示板内で情報が局所的に偏っていることを示すシグナルです。  <br>
+- 前回取引日からの大きな変化はなく、価格は横ばい、投稿量も微増に留まります。  <br>
+- PTS・ADR の下落は開場前の売り圧力を反映していますが、翌日の東証での値動きを予測する材料にはなりません。  <br>
 <br>
-前回（2026‑10‑12 03:46）の集計でも価格は **17,505円** で変化なしでした。強気・弱気比率は不明ですが、投稿件数も同数です。したがって、価格面での顕著な変動はなく、センチメントの変化は「ネームド集中」の発火のみが顕著です。<br>
-<br>
-### 5. 海外取引（PTS・米国ADR）の動向<br>
-<br>
-- **PTS**：17,399円（前日比‑0.61％）  <br>
-- **米国ADR**：17,193円（前日比‑1.78％、現地ドル換算で10.86 USD）  <br>
-<br>
-両市場は東京終値よりやや下回っており、特にADRの下落幅が大きいことから、海外投資家の売り圧力が一定程度働いていると考えられます。ただし、これはあくまで取引時間外の価格であり、翌日の東証開場時の価格形成に直接結びつく保証はありません。<br>
-<br>
-### 6. 米国市場全体の地合い（参考情報）<br>
-<br>
-S&amp;P500は＋1.15％、NASDAQ総合は＋0.64％と堅調な一方で、フィラデルフィア半導体指数（SOX）は‑4.30％と下落しています。285Aとの直接的な相関は不明ですが、ハイテク系銘柄の弱さが市場全体のリスク回避姿勢を強めている可能性があります。<br>
-<br>
-### 7. 本日の値動きの型と評価<br>
-<br>
-本日の「値動きの型」は **トレンド型**、予測不確実性は「普段並み」とされています。これは過去数日間の価格変動が一方向に伸びやすい傾向が続いていることを示す分類であり、将来の継続性を暗示するものではありません。<br>
-<br>
----<br>
-<br>
-## 総合評価と示唆（投資助言ではありません）<br>
-<br>
-- **センチメントはやや弱含み**：強気比率の低下とネームド集中の発火は、特定投資家の売り圧力や関心の集中を示唆します。  <br>
-- **過熱感は限定的**：過熱度スコアが低く、総悲観度スコアも閾値以下であるため、市場全体が熱狂的に買い込んでいるわけではありません。  <br>
-- **ボラティリティは較中**：BVP 0.458 が示すように、価格変動は比較的落ち着いています。したがって、急激な乱高下のリスクは低いと考えられます。  <br>
-- **海外取引の乖離**：PTS・ADRが東京終値を下回っている点は、国外投資家が売り側に回っている可能性を示すものの、国内市場のセンチメントとは独立した要因です。  <br>
-- **地合いの影響**：米国ハイテク指数の下落はリスク回避ムードを醸成し、弱気比率上昇の背景になり得ると推測できます。  <br>
-<br>
-以上の指標を総合すると、**現在は「慎重ながらも比較的安定した」局面** にあると言えるでしょう。今後の価格変動は、掲示板上のセンチメントが再度過熱スコアを上げるか、ネームド集中がさらに拡大するかどうかに左右される可能性が高いです。投資判断を行う際は、本分析を参考にしつつ、自身のリスク許容度やポートフォリオ全体のバランスを踏まえて検討してください。</div><p class='caption'>生成時刻: 2026-10-12T03:54:35</p>
+以上が、提供いただいた集計データに基づく客観的な分析です。投資判断の際は、他のファンダメンタルズや市場環境も併せてご確認ください。</div><p class='caption'>生成時刻: 2026-10-12T04:05:19</p>
 
       <!-- ★2026-09-08追加(ユーザー指示「AIセクターワールドモニターと同様に、
            各表示をグルーピングしてタブで選択できるように」): モニタの
@@ -328,7 +306,7 @@ S&amp;P500は＋1.15％、NASDAQ総合は＋0.64％と堅調な一方で、フ�
 
       <hr style="border:none;border-top:1px solid var(--border);margin:2rem 0 1rem">
       <p class="caption">⚠️ 本情報は掲示板投稿を統計的に集計したものであり、投資助言ではありません。個別の投稿内容は含まれていません。研究・エンタメ用途です。</p>
-      <footer>生成: generate_static_dashboard.py（2026-10-12T03:57:57） /
+      <footer>生成: generate_static_dashboard.py（2026-10-12T04:07:57） /
       画像バックエンド: plotly+kaleido</footer>
     </div>
     <script>(function(){var url="https://script.google.com/macros/s/AKfycbwgSSGQ2n56ohmIYKlNDA1Xe3D8hd3GJbD0U90L4DGtXdb8pqrPokNMHJWjvN1__7bE/exec";var KEY='bbs_visit_counted';var already=sessionStorage.getItem(KEY);var action=already?'read':'hit';var ctrl=(typeof AbortController!=='undefined')?new AbortController():null;var timer=ctrl?setTimeout(function(){ctrl.abort();},5000):null;fetch(url+'?action='+action,{signal:ctrl?ctrl.signal:undefined}).then(function(r){if(timer)clearTimeout(timer);return r.json();}).then(function(data){if(!already)sessionStorage.setItem(KEY,'1');if(data&&typeof data.count==='number'){var el=document.getElementById('visit-count-badge');if(el){el.textContent='\u{1F440} \u7d2f\u8a08\u95b2\u89a7\u6570: '+data.count.toLocaleString();el.style.display='';}}}).catch(function(e){if(timer)clearTimeout(timer);console.warn('visit counter fetch failed (fail-soft):',e);});})();</script><script>(function(){var url="https://script.google.com/macros/s/AKfycbwgSSGQ2n56ohmIYKlNDA1Xe3D8hd3GJbD0U90L4DGtXdb8pqrPokNMHJWjvN1__7bE/exec";var KEY='bbs_liked';var btn=document.getElementById('like-button');var label=document.getElementById('like-count-label');if(!btn||!label)return;function renderLiked(count){btn.disabled=true;btn.style.cursor='default';btn.style.opacity='0.6';btn.textContent='\u2705';label.textContent="\u3044\u3044\u306d\u3057\u307e\u3057\u305f\uff01"+(typeof count==='number'?"\uff08\u7d2f\u8a08 "+count.toLocaleString()+" \u3044\u3044\u306d\uff09":'');}if(localStorage.getItem(KEY)){renderLiked(null);}btn.addEventListener('click',function(){if(localStorage.getItem(KEY))return;btn.disabled=true;var ctrl=(typeof AbortController!=='undefined')?new AbortController():null;var timer=ctrl?setTimeout(function(){ctrl.abort();},5000):null;fetch(url+'?action=like_hit',{signal:ctrl?ctrl.signal:undefined}).then(function(r){if(timer)clearTimeout(timer);return r.json();}).then(function(data){localStorage.setItem(KEY,'1');renderLiked(data&&typeof data.count==='number'?data.count:null);}).catch(function(e){if(timer)clearTimeout(timer);btn.disabled=false;console.warn('like button fetch failed (fail-soft):',e);});});})();</script><script>(function(){var DEFAULT_TAB='overview';function activate(tabName){var buttons=document.querySelectorAll('.tab-bar .tab-btn');var panels=document.querySelectorAll('[data-tab-panel]');if(!buttons.length||!panels.length)return;var matched=false;panels.forEach(function(p){var on=p.getAttribute('data-tab-panel')===tabName;if(on)matched=true;p.classList.toggle('tab-hidden',!on);});if(!matched){panels.forEach(function(p){p.classList.toggle('tab-hidden',p.getAttribute('data-tab-panel')!==DEFAULT_TAB);});tabName=DEFAULT_TAB;}buttons.forEach(function(b){var on=b.getAttribute('data-tab')===tabName;b.classList.toggle('active',on);b.setAttribute('aria-selected',on?'true':'false');});}document.addEventListener('DOMContentLoaded',function(){var bar=document.getElementById('tabBar');if(!bar)return;bar.addEventListener('click',function(e){var btn=e.target.closest('.tab-btn');if(!btn)return;activate(btn.getAttribute('data-tab'));});activate(DEFAULT_TAB);});})();</script></body></html>
