@@ -478,6 +478,12 @@ def collect(url=None):
     config.ensure_data_dir()
 
     rows, pages, page_cap = collect_via_api()
+    # 2026-10-30追加: bff APIが400等で1ページも取れず(rows=[]・pages=0)でもNoneを返さないため
+    # HTMLフォールバックに入らず parsed=0 が10-29 16:25から続いた(Yahoo掲示板が約17時間欠測)。
+    # 1ページも取れていない場合も失敗扱いにしてHTML最新~72件へ切り替える。
+    if rows is not None and not rows and pages == 0:
+        _log("WARN bff API 0ページ(400等) -> HTMLフォールバックへ")
+        rows = None
     if rows is None:
         # フォールバック: HTML最新~72件(HTMLはページング無し=page_cap概念なし)
         page_cap = False

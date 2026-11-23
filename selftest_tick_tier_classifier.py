@@ -35,6 +35,15 @@ def main():
           ttc.infer_direction({"price": 99, "bid": 100, "ask": 98}, prev_price=97) == "BUY")
     check("infer_direction mid-spread falls back to tick test (down)",
           ttc.infer_direction({"price": 99, "bid": 100, "ask": 98}, prev_price=101) == "SELL")
+    # ★2026-09-24追加: 列の向きが正常(bid<ask)でも反転(bid>ask)でも同じ結果(max/min解釈)
+    check("infer_direction normal-order columns (bid<ask): price>=max -> BUY",
+          ttc.infer_direction({"price": 100, "bid": 98, "ask": 100}) == "BUY")
+    check("infer_direction normal-order columns (bid<ask): price<=min -> SELL",
+          ttc.infer_direction({"price": 98, "bid": 98, "ask": 100}) == "SELL")
+    check("infer_direction normal-order columns mid-spread -> tick test",
+          ttc.infer_direction({"price": 99, "bid": 98, "ask": 100}, prev_price=97) == "BUY")
+    check("infer_direction bid==ask (provisional quote) -> BUY at/above",
+          ttc.infer_direction({"price": 100, "bid": 100, "ask": 100}) == "BUY")
     check("infer_direction no bid/ask uses tick test",
           ttc.infer_direction({"price": 105}, prev_price=100) == "BUY")
     check("infer_direction no info at all -> None",
@@ -237,6 +246,74 @@ def main():
           len(ttc.filter_ticks_window(win_ticks)) == 3)
     check("filter_ticks_window empty -> []",
           ttc.filter_ticks_window([]) == [] and ttc.filter_ticks_window(None) == [])
+
+    # ---- unit_lot_for_date: 285A株式分割(2026-09-29権利落ち・1→3)の日付別ロット(2026-10-02新設) ----
+    import datetime as _dtm
+    import importlib.util as _ilu
+    import os as _os
+    check("unit_lot_for_date: DEFAULT_UNIT_LOT_SHARES自体は1000のまま(分割前の過去結果をビット一致で再現)",
+          ttc.DEFAULT_UNIT_LOT_SHARES == 1000)
+    check("unit_lot_for_date: 金額閾値(円建て)は不変(super10億/big2億/mid5000万)",
+          ttc.DEFAULT_THRESHOLDS == {"super": 1_000_000_000, "big": 200_000_000, "mid": 50_000_000})
+    check("unit_lot_for_date: 分割前日(09-28)は1000株(素通し)",
+          ttc.unit_lot_for_date("2026-09-28") == 1000)
+    check("unit_lot_for_date: 権利落ち日(09-29)から3000株(境界・>=)",
+          ttc.unit_lot_for_date("2026-09-29") == 3000)
+    check("unit_lot_for_date: 09-30/10-01/10-02も3000株",
+          all(ttc.unit_lot_for_date(d) == 3000 for d in ("2026-09-30", "2026-10-01", "2026-10-02")))
+    check("unit_lot_for_date: 分割前の古い日(2026-06-26/2026-01-05)は1000株",
+          ttc.unit_lot_for_date("2026-06-26") == 1000 and ttc.unit_lot_for_date("2026-01-05") == 1000)
+    check("unit_lot_for_date: 時刻付き文字列('2026-09-29 09:00:00')も日付部で判定",
+          ttc.unit_lot_for_date("2026-09-29 09:00:00") == 3000
+          and ttc.unit_lot_for_date("2026-09-28 15:00:00.123") == 1000)
+    check("unit_lot_for_date: datetime.date / datetime も受理",
+          ttc.unit_lot_for_date(_dtm.date(2026, 9, 28)) == 1000
+          and ttc.unit_lot_for_date(_dtm.date(2026, 9, 29)) == 3000
+          and ttc.unit_lot_for_date(_dtm.datetime(2026, 10, 1, 10, 0, 0)) == 3000)
+    check("unit_lot_for_date: None/空/不正/範囲外日付は従来どおりbase(1000)で例外を出さない",
+          all(ttc.unit_lot_for_date(x) == 1000
+              for x in (None, "", "   ", "abc", "2026-13-45", "2026-02-30", 20260929, 3.5, [])))
+    check("unit_lot_for_date: base指定は尊重(分割前=base・分割後=base*3)",
+          ttc.unit_lot_for_date("2026-09-25", 500) == 500
+          and ttc.unit_lot_for_date("2026-10-01", 500) == 1500)
+    check("unit_lot_for_date: baseが0(分解なし指定)は分割後も0のまま(分解しない意味を保つ)",
+          ttc.unit_lot_for_date("2026-10-01", 0) == 0 and ttc.unit_lot_for_date("2026-09-25", 0) == 0)
+    # split_flag(正本)との一致: 正本が読めない環境ではSKIP(フォールバック値の整合のみ確認)
+    _here = _os.path.dirname(_os.path.abspath(__file__))
+    _cands = [p for p in (_os.environ.get("ONIYA_SPLIT_FLAG_PATH"),
+                          _os.path.join(_os.path.dirname(_here), "claudecode-ap",
+                                        "index_event_flag", "split_flag.py")) if p]
+    _canon = next((p for p in _cands if _os.path.isfile(p)), None)
+    if _canon:
+        _sp = _ilu.spec_from_file_location("_split_flag_canon", _canon)
+        _sf = _ilu.module_from_spec(_sp)
+        _sp.loader.exec_module(_sf)
+        check("split_flag正本一致: SPLIT_DATE(ISO)がtick_tier_classifierと一致",
+              ttc.SPLIT_DATE_ISO == _sf.SPLIT_DATE.isoformat())
+        check("split_flag正本一致: SPLIT_RATIOがtick_tier_classifierと一致",
+              ttc.SPLIT_RATIO == _sf.SPLIT_RATIO)
+        check("split_flag正本一致: 取得元はsplit_flag(フォールバックに落ちていない)",
+              ttc.SPLIT_SOURCE == "split_flag")
+        check("split_flag正本一致: フォールバック定数も正本と同値(参照不可の環境でも同じ挙動)",
+              ttc._FALLBACK_SPLIT_DATE_ISO == _sf.SPLIT_DATE.isoformat()
+              and ttc._FALLBACK_SPLIT_RATIO == _sf.SPLIT_RATIO)
+    else:
+        print("[SKIP] split_flag正本が見つからない環境(ONIYA_SPLIT_FLAG_PATH未設定・兄弟フォルダ無し)。"
+              "フォールバック値のみ確認")
+        check("フォールバック: 2026-09-29・比率3", ttc.SPLIT_SOURCE == "fallback"
+              and ttc.SPLIT_DATE_ISO == "2026-09-29" and ttc.SPLIT_RATIO == 3)
+    # 経済的な意味: 同じ約5,670万円の1ロットが、分割前(6.3万円×900株→ここでは56,700円×1000株)も
+    # 分割後(18,900円×3000株)もmidのまま残る。旧ロット1000株のままだと分割後は3分解されsmallへ消える。
+    _th = ttc.DEFAULT_THRESHOLDS
+    _pre = [{"time": "2026-09-28 10:00:00", "price": "56700", "tickvol": "1000"}]
+    _post = [{"time": "2026-09-30 10:00:00", "price": "18900", "tickvol": "3000"}]
+    _s_pre = ttc.estimate_tier_size_shares_v2(_pre, _th, unit_lot_shares=ttc.unit_lot_for_date("2026-09-28"))
+    _s_post_new = ttc.estimate_tier_size_shares_v2(_post, _th, unit_lot_shares=ttc.unit_lot_for_date("2026-09-30"))
+    _s_post_old = ttc.estimate_tier_size_shares_v2(_post, _th, unit_lot_shares=ttc.DEFAULT_UNIT_LOT_SHARES)
+    check("分割後の経済的等価: 18,900円x3000株は新ロット(3000)でmid(分割前56,700円x1000株と同じ階層)",
+          _s_pre["mid"]["share"] == 1.0 and _s_post_new["mid"]["share"] == 1.0)
+    check("分割後の旧ロット(1000)のままだとmidが消える(今回の不具合の再現)",
+          _s_post_old["mid"]["share"] == 0.0 and _s_post_old["small"]["share"] == 1.0)
 
     print(f"\n{'PASS' if not _failures else 'FAIL'}: {len(_failures)} failure(s)")
     for name in _failures:

@@ -15,6 +15,7 @@ jsonl_window.py - 大容量 append-only jsonl(raw_comments/analyzed/snapshots等
   - 純粋な read ヘルパーのみ(Streamlit 等フレームワークに非依存)。
 """
 import os
+import sys
 import json
 import datetime as dt
 
@@ -77,12 +78,29 @@ def read_jsonl_full(path):
                 if not line:
                     continue
                 try:
-                    rows.append(json.loads(line))
+                    rows.append(intern_row(json.loads(line)))
                 except Exception:
                     continue
     except Exception:
         pass
     return rows
+
+
+_INTERN_VALUE_KEYS = frozenset((
+    "source", "sentiment", "sentiment_source", "feel", "ts", "analyzed_at", "fetched_at",
+    "author", "user", "cluster_label", "cluster_id"))
+
+
+def intern_row(r):
+    """★2026-09-24追加(コーデ15:0x承認: pythonの約2.6GB削減・出力不変が条件)。
+    json.loads はC実装が呼び出しごとにキー文字列を新規生成するため、60日分(約60万+77万行)を読むと
+    同一のキー文字列(19個×行数)が別オブジェクトで大量に残る。キーと(繰り返しの多い)カテゴリ値を
+    sys.internで共有して重複を消す。**値・キー順・型は変えない**(==で旧版と一致)。dict以外はそのまま返す。"""
+    if type(r) is not dict:
+        return r
+    _i = sys.intern
+    return {_i(k): (_i(v) if (type(v) is str and k in _INTERN_VALUE_KEYS and len(v) <= 80) else v)
+            for k, v in r.items()}
 
 
 def read_jsonl_tail(path, n):
@@ -110,7 +128,8 @@ def read_jsonl_tail(path, n):
         return read_jsonl_full(path)[-n:]
 
 
-def read_jsonl_recent(path, days=60, now=None, ts_field="ts", stop_after_old=25000):
+def read_jsonl_recent(path, days=60, now=None, ts_field="ts", stop_after_old=25000, drop_keys=None, drop_keys_before=None,
+                      keep_keys=None):
     """ファイル末尾から逆読みし、行の ts_field が (now - days) より前になった
     時点で打ち切る(全件を読まない・行数ではなく日付境界で打ち切り)。古い→新しい順で返す。
 
@@ -159,7 +178,20 @@ def read_jsonl_recent(path, days=60, now=None, ts_field="ts", stop_after_old=250
                     break
                 continue  # 単発(short-run)の逆行行=結果に含めず読み進める
             old_run = 0
-            out.append(r)
+            if keep_keys and type(r) is dict:
+                # ★2026-10-14(メモリ是正の本丸): keep_keys 指定時は、指定した項目だけを残す(snapshots.jsonl は1行ごとに
+                #   クラスタ・話題・出所内訳などの大きな項目を持ち、読み込むと約7GBになる。公開エクスポートが使うのは
+                #   date/timestamp/signals/day_cumulative だけ)。残した項目の値・順序・型は不変。ts_field は判定に使うため常に残す。
+                r = {k: r[k] for k in r if k in keep_keys or k == ts_field}
+            if drop_keys and type(r) is dict and (
+                    drop_keys_before is None
+                    or (isinstance(r.get(ts_field), str) and r.get(ts_field) < drop_keys_before)):
+                # drop_keys_before 指定時は、ts がその値より古い行だけ項目を落とす(直近の行は全項目を残す)。
+                # ★2026-10-14(メモリ是正・コーデ04:3x依頼): 呼び出し側が使わない重い項目(本文・理由等)を読込時に落とす。
+                #   既定(None)は従来どおり全項目。値・順序・型は残したキーについて不変。
+                for _k in drop_keys:
+                    r.pop(_k, None)
+            out.append(intern_row(r))
         out.reverse()
         return out
     except Exception:

@@ -34,6 +34,7 @@ public_export.py(Phase 1)の公開レコード(集計値のみ)から、一般�
 (実 LLM 課金しない=モック)。
 """
 import os
+import re
 import inspect
 import datetime as dt
 
@@ -146,6 +147,7 @@ def build_public_insight_context(public_record):
     trend = r.get("trend_14d") or []
     previous = r.get("previous")
     extended_hours = r.get("extended_hours")
+    us_indices = r.get("us_indices") or []
     signal_cards = r.get("signal_cards") or []
     regime = r.get("regime")
     signal_state_changes = r.get("signal_state_changes") or []
@@ -227,6 +229,18 @@ def build_public_insight_context(public_record):
             "pts": (extended_hours.get("pts") if isinstance(extended_hours, dict) else None),
             "adr": (extended_hours.get("adr") if isinstance(extended_hours, dict) else None),
         } if isinstance(extended_hours, dict) else None),
+        # ★2026-09-30追加(ユーザー依頼「米国市場の指数をおにや式にも足す」)。
+        # public_export.us_indices_summary()の集計値のみ(前日終値比のみ・相関/判定は
+        # 一切含まない=extended_hours/peerと同じホワイトリスト方式)。
+        "us_indices": [
+            {
+                "key": i.get("key"),
+                "name_ja": i.get("name_ja"),
+                "price": i.get("price"),
+                "change_pct": i.get("change_pct"),
+            }
+            for i in us_indices if isinstance(i, dict)
+        ],
         # ★2026-08-21追加(ユーザー依頼「AI考察では、ダッシュボードに記載の情報に対する
         # 考察もさせるように。シグナル発火状況とか」)。9指標カード(public_export.py
         # signal_cards・{name,value,threshold,state,note}の集計値のみ)をそのまま渡す。
@@ -456,6 +470,20 @@ def render_public_prompt(context, target_length="400〜600字程度"):
                      f" ・ADR現地値={_fmt(adr.get('price_usd'))}ドル)")
         L.append("")
 
+    # ★2026-09-30追加(ユーザー依頼「米国市場の指数をおにや式にも足す」)。285A固有の
+    # ADR/PTSとは別に、市場全体の地合いを示す代表指数(前日終値比)を参考情報として渡す。
+    # 個別銘柄との相関を主張するものではなく、断定的な予測をさせない注意書きを併記する。
+    us_idx = c.get("us_indices") or []
+    if us_idx:
+        L.append("■ 米国市場(前日終値・地合いの参考情報)")
+        for i in us_idx:
+            chg = i.get("change_pct")
+            chg_s = f"{chg:+.2f}%" if isinstance(chg, (int, float)) else _fmt(chg)
+            L.append(f"  {i.get('name_ja')}: {_fmt(i.get('price'))}({chg_s})")
+        L.append("  (285Aとの相関を示すものではなく、市場全体の地合いの参考情報です。"
+                 "この指数の動きがそのまま285Aに反映されるとは限りません。)")
+        L.append("")
+
     # ★2026-09-06追加(ユーザー指示「AI考察のプロンプト改善をメンバーに相談しては」
     # →エンジニアがCROSS_PROJECT_LOG 2026-09-06 18:13でトレPJ/モニタへ相談・
     # トレPJ18:52「段1(相関の事実)は記述可」・モニタ18:55「データ供給確定」を受け
@@ -607,6 +635,12 @@ PUBLIC_INSIGHT_MAX_TOKENS = 800
 # トークン既定値による切り詰めが起きた前例([[reference-miotts-700token-truncation-bug]]
 # 相当の教訓)があるため、余裕を持って2000に設定する。
 PUBLIC_INSIGHT_LOCAL_MAX_TOKENS = int(os.environ.get("BBS_PUBLIC_INSIGHT_LOCAL_MAX_TOKENS", "2000"))
+# ★2026-09-30追加(ユーザー指示「llm-jp-4-8bを本番導入・800文字以上の指定」)。
+# analyze_batch_with_lmstudio_hybrid(掲示板コメント分類)が使う config.LOCAL_LLM_ENDPOINTS
+# ["lmstudio"]["model"](既定gemma-4-12b-it)とは切り離す＝AI考察生成だけの専用既定値。
+# 分類経路は今回未検証(llm-jp-4-8bは"sentiment"を"sentimemt"と誤記する癖を実測確認済みで
+# JSON厳密パースには不向き)のため、共有設定は変更しない。
+PUBLIC_INSIGHT_LMSTUDIO_MODEL = os.environ.get("PUBLIC_INSIGHT_LMSTUDIO_MODEL", "llm-jp-4-8b-instruct")
 
 
 def _log(msg):
@@ -629,6 +663,20 @@ def _usage_dict(usage):
 
 
 def _call_lmstudio_insight(prompt, model=None, post_fn=None):
+    # ★2026-10-07 エンジニア(ユーザー承認): LM使用中ロックを持って本体を呼ぶ
+    # ★2026-10-08 エンジニア(ユーザー直接指示『AI考察はB(llm-jp ctx4096・並列1)・感情分類と同時起動しない』): 役割「insight」の枠を取る
+    #   (感情分類=qwen3-8bが使用中の間は待ち、開始時に相手のモデルをunloadしてllm-jpをctx4096・並列1で読み込む)
+    try:
+        import lm_role_switch
+    except Exception:  # noqa: BLE001
+        lm_role_switch = None
+    if lm_role_switch is None:
+        return _call_lmstudio_insight_impl(prompt, model=model, post_fn=post_fn)
+    with lm_role_switch.slot("insight", "oniya_public_insight", switch=(post_fn is None)):
+        return _call_lmstudio_insight_impl(prompt, model=model, post_fn=post_fn)
+
+
+def _call_lmstudio_insight_impl(prompt, model=None, post_fn=None):
     """LM Studio(ローカルLLM)へ考察文生成を1回リクエストする。analyze.py の
     _call_lmstudio_fast と同じ呼び出し規約(config.LOCAL_LLM_ENDPOINTS["lmstudio"]・
     post_fn差し替え可・timeout=config.LMSTUDIO_TIMEOUT_SEC)を踏襲するが、こちらは
@@ -650,12 +698,21 @@ def _call_lmstudio_insight(prompt, model=None, post_fn=None):
             "stream": False,
             "temperature": 0.3,   # 考察文なのでanalyzeの分類用(temperature=0)より僅かに自然な言い回しを許容
             "max_tokens": PUBLIC_INSIGHT_LOCAL_MAX_TOKENS,
+            # ★2026-09-17追加(メモリ逼迫対策)。JIT経由の再読込みは既定60分TTLになるため、
+            # ここで明示しないとkeeper側のTTLだけでは2回目以降アイドル解放されなくなる。
+            "ttl": config.LMSTUDIO_IDLE_TTL_SEC,
         },
         timeout=config.LMSTUDIO_TIMEOUT_SEC,
     )
     resp.raise_for_status()
     data = resp.json()
     text = (data["choices"][0]["message"]["content"] or "").strip()
+    # ★2026-09-30追加: llm-jp-4-8b-instructがチャネル区切りの特殊トークンを本文冒頭に
+    # 混入させる癖を実測確認したため除去する(実例 "<|channel|> final<|message|>本文…"=
+    # タグの間に"final"のような平文が挟まる・タグ自体も複数連続しうる)。冒頭付近(タグ間の
+    # 地の文は20文字以内という前提)に限定してタグ+短い地の文の繰り返しを剥がす
+    # (該当が無いモデルの通常の文章には影響しない・fail-safeな文字列処理のみ)。
+    text = re.sub(r"^(?:[^<]{0,20}<\|[^|>]*\|>)+\s*", "", text).strip()
     usage_raw = data.get("usage") or {}
     usage = {"input_tokens": usage_raw.get("prompt_tokens", 0) or 0,
              "output_tokens": usage_raw.get("completion_tokens", 0) or 0}
@@ -686,14 +743,36 @@ def generate_public_insight(public_record, *, model=None, max_tokens=None, clien
     止めない)。
 
     戻り値(成功時): {text, model, usage, generated_at, context, backend}。失敗時: None。
+    ★2026-10-01追加: lmstudio経路でlm_memory_guardが見送りと判定した時は
+    {"deferred": True, "reason": ...}(失敗ではない・textキー無し)。呼び手は必ず
+    result.get("deferred") を先に判定すること。
     """
     try:
         context = build_public_insight_context(public_record)
         use_backend = backend or config.PUBLIC_INSIGHT_BACKEND
 
         if use_backend == "lmstudio":
-            prompt = render_public_prompt(context, target_length="800字程度")
-            text, usage, use_model = _call_lmstudio_insight(prompt, model=model, post_fn=post_fn)
+            prompt = render_public_prompt(context, target_length="800字以上")
+            # ★2026-10-01追加(コーデ依頼・ユーザー決定「夜間はGAを掲示板分析より優先」09-24・
+            #   「GA0本の間は空き12GB未満なら見送る」09-26): 2026-10-01 20:35に news_summary は
+            #   night_low_free_mem で見送られたが、20:38にこのAI考察がガード無しでLM Studio(約16GB)を
+            #   読み込み家PC1の空き物理が割れた。generate_news_summary と同じ lm_memory_guard.decide を
+            #   LM呼び出し直前に挟む(種別名 "public_insight"=連続見送りカウンタは news_summary と別管理)。
+            #   夜間(night_gate窓)でGA稼働中・低空きは連続見送り上限に関係なく見送り、窓外は従来の
+            #   max_defer規則(news_summaryと同じ)。見送り時は deferred 辞書を返す(呼び手=public_export
+            #   が前回のAI考察を引き継いで表示を維持する)。ガード自体の例外は握りつぶして従来どおり実行。
+            try:
+                import lm_memory_guard
+                _g = lm_memory_guard.decide("public_insight")
+            except Exception as _ge:
+                _g = {"defer": False, "reason": "guard_error:%r" % (_ge,)}
+            if _g.get("defer"):
+                _log("public_insight DEFERRED by lm_memory_guard: %s free_avg_mb=%s margin_gb=%s "
+                     "consecutive_before=%s" % (_g.get("reason"), _g.get("free_avg_mb"),
+                                                _g.get("margin_gb"), _g.get("consecutive_before")))
+                return {"deferred": True, "reason": _g.get("reason")}
+            text, usage, use_model = _call_lmstudio_insight(
+                prompt, model=model or PUBLIC_INSIGHT_LMSTUDIO_MODEL, post_fn=post_fn)
             if not text:
                 _log("WARN empty text from LLM (lmstudio); returning None (fail-soft)")
                 return None
@@ -756,7 +835,10 @@ _NEWS_SUMMARY_SYS = (
     "見出しが混じることがある。これらは対象銘柄への影響が見込まれる周辺動向として"
     "扱い、対象銘柄自体の話であるかのように混同しない(『エヌビディアの決算は』の"
     "ように主体を明示する)。\n"
-    "(5) 日本語で150〜250字程度、簡潔にまとめる。\n"
+    # ★2026-09-30変更(ユーザー指示「より長文にしましょう」): 150〜250字→400字以上へ
+    # 引き上げ(下のrender_news_summary_prompt()の指示文と揃える・NEWS_SUMMARY_MAX_TOKENSも
+    # 合わせて引き上げ済み)。
+    "(5) 日本語で400字以上、各見出しの背景や関連性にも触れながらまとめる。\n"
     "(6) 本文の末尾で、これが『ニュース見出しの要約であり、投資助言ではない』"
     "旨を明示する。"
 )
@@ -784,24 +866,40 @@ def render_news_summary_prompt(context):
     for it in context or []:
         title = it.get("title") or ""
         source = it.get("source") or "出所不明"
-        L.append(f"・{title}({source})")
+        pub = str(it.get("published") or "")[:16].replace("T", " ")   # 2026-10-05: 配信日時を見出しに付け、モデルが日付を捏造しないようにする
+        L.append(f"・{title}({source}{('・' + pub) if pub else ''})")
     L.append("")
     L.append("■ 出力の指示(厳守)")
-    L.append("  ・日本語で150〜250字程度でまとめる。")
+    L.append("  ・日本語で400字以上でまとめる(各見出しの背景や関連性にも触れて厚みを出す)。")
     L.append("  ・個々の見出しを順番に言い換えるのでなく、全体としての動向をまとめる。")
     L.append("  ・見出しに書かれていない情報を推測で付け足さない(捏造しない)。")
+    L.append("  ・日付や時刻を書く場合は、見出しに付いた配信日時の範囲だけを使い、それ以外の日付(特に過去の月日)を書かない。")
     L.append("  ・断定的な将来予測(上がる/下がる等)や売買の推奨・煽り表現をしない。")
     L.append("  ・末尾に『ニュース見出しの要約であり、投資助言ではない』旨を明示する。")
     return "\n".join(L)
 
 
 def _call_lmstudio_news_summary(prompt, model=None, post_fn=None):
+    # ★2026-10-08 エンジニア(ユーザー直接指示): AI考察(insight)の枠を取って呼ぶ＝感情分類と同時起動しない
+    try:
+        import lm_role_switch
+    except Exception:  # noqa: BLE001
+        lm_role_switch = None
+    if lm_role_switch is None:
+        return _call_lmstudio_news_summary_impl(prompt, model=model, post_fn=post_fn)
+    with lm_role_switch.slot("insight", "oniya_news_summary", switch=(post_fn is None)):
+        return _call_lmstudio_news_summary_impl(prompt, model=model, post_fn=post_fn)
+
+
+def _call_lmstudio_news_summary_impl(prompt, model=None, post_fn=None):
     """ニュース要約専用のlmstudio呼び出し(_call_lmstudio_insight()と同じ規約・
     システムプロンプトだけ_NEWS_SUMMARY_SYSへ差し替え・max_tokensも専用値)。"""
     import requests
     poster = post_fn or requests.post
     endpoint = config.LOCAL_LLM_ENDPOINTS["lmstudio"]
-    use_model = model or endpoint["model"]
+    # ★2026-09-30変更: generate_public_insightと同じ理由でPUBLIC_INSIGHT_LMSTUDIO_MODEL
+    # (既定llm-jp-4-8b-instruct)を使う・掲示板分類の共有既定(endpoint["model"])とは分離。
+    use_model = model or PUBLIC_INSIGHT_LMSTUDIO_MODEL
     resp = poster(
         f"{endpoint['base_url']}/chat/completions",
         json={
@@ -813,12 +911,16 @@ def _call_lmstudio_news_summary(prompt, model=None, post_fn=None):
             "stream": False,
             "temperature": 0.3,
             "max_tokens": config.NEWS_SUMMARY_MAX_TOKENS,
+            # ★2026-09-17追加(メモリ逼迫対策・上の_call_lmstudio_insightと同じ理由)。
+            "ttl": config.LMSTUDIO_IDLE_TTL_SEC,
         },
         timeout=config.LMSTUDIO_TIMEOUT_SEC,
     )
     resp.raise_for_status()
     data = resp.json()
     text = (data["choices"][0]["message"]["content"] or "").strip()
+    # ★2026-09-30追加: _call_lmstudio_insightと同じ特殊トークン除去(理由も同じ)。
+    text = re.sub(r"^(?:[^<]{0,20}<\|[^|>]*\|>)+\s*", "", text).strip()
     usage_raw = data.get("usage") or {}
     usage = {"input_tokens": usage_raw.get("prompt_tokens", 0) or 0,
              "output_tokens": usage_raw.get("completion_tokens", 0) or 0}
@@ -843,6 +945,21 @@ def generate_news_summary(items, *, model=None, max_tokens=None, client=None,
         use_backend = backend or config.PUBLIC_INSIGHT_BACKEND
 
         if use_backend == "lmstudio":
+            # ★2026-09-24追加(コーデ依頼+ユーザー承認): 主線GAの計算を守るため、LM Studio(実測
+            #   15〜17.5GB)を読み込む前に空き物理メモリを測り、足りなければこのニュース要約だけ
+            #   見送る(最大連続6回・08:00〜09:05は常に実行)。要約は公開ダッシュボード表示専用で
+            #   記録データには使わない。掲示板分析(analyze.py)にはかけない。詳細=lm_memory_guard.py
+            #   ガード自体の例外は握りつぶして従来どおり実行する(要約を止めない)。
+            try:
+                import lm_memory_guard
+                _g = lm_memory_guard.decide("news_summary")
+            except Exception as _ge:
+                _g = {"defer": False, "reason": "guard_error:%r" % (_ge,)}
+            if _g.get("defer"):
+                _log("news_summary DEFERRED by lm_memory_guard: %s free_avg_mb=%s margin_gb=%s "
+                     "consecutive_before=%s" % (_g.get("reason"), _g.get("free_avg_mb"),
+                                                _g.get("margin_gb"), _g.get("consecutive_before")))
+                return {"deferred": True, "reason": _g.get("reason")}
             text, usage, use_model = _call_lmstudio_news_summary(
                 prompt, model=model, post_fn=post_fn)
             if not text:
@@ -960,6 +1077,11 @@ def _run_selftests():
     import os as _os
     _saved_log = config.LOG_PATH
     config.LOG_PATH = _os.path.join(_tempfile.mkdtemp(), "run.log")
+    # ★2026-10-01追加: lmstudio経路のモックテストが実メモリ測定(約12秒)・実night_gate・本番状態
+    # ファイルに触れないよう、このテスト中だけlm_memory_guardを無効化する(selftest.py側と同じ分離)。
+    import lm_memory_guard as _lmg_st
+    _saved_lmg_enabled = _lmg_st.ENABLED
+    _lmg_st.ENABLED = False
 
     def check(name, cond):
         print(f"[{'OK  ' if cond else 'FAIL'}] {name}")
@@ -1040,6 +1162,28 @@ def _run_selftests():
     # extended_hours未提供(None)の場合は既存動作を壊さず、そのセクション自体が現れない
     check("context: extended_hours None when absent", ctx["extended_hours"] is None)
     check("prompt: no PTS section when extended_hours absent", "PTS(私設取引システム" not in prompt)
+
+    # ---- us_indices(米国市場指数) ----
+    # ★2026-09-30追加(ユーザー依頼「米国市場の指数をおにや式にも足す」)。
+    rec_us = dict(rec)
+    rec_us["us_indices"] = [
+        {"key": "sp500", "name_ja": "S&P500", "ticker": "^GSPC",
+         "price": 6600.5, "change_pct": 0.30},
+        {"key": "sox", "name_ja": "フィラデルフィア半導体指数(SOX)", "ticker": "^SOX",
+         "price": 5800.2, "change_pct": -1.25},
+    ]
+    ctx_us = build_public_insight_context(rec_us)
+    check("context: us_indices passthrough (2 rows, order preserved)",
+          len(ctx_us["us_indices"]) == 2 and ctx_us["us_indices"][0]["key"] == "sp500")
+    prompt_us = render_public_prompt(ctx_us)
+    check("prompt: us_indices section present with name/price/change",
+          "S&P500" in prompt_us and "6600.5" in prompt_us
+          and "フィラデルフィア半導体指数(SOX)" in prompt_us and "-1.25%" in prompt_us)
+    check("prompt: us_indices caution note present",
+          "285Aとの相関を示すものではなく" in prompt_us)
+    # us_indices未提供(空リスト)の場合は既存動作を壊さず、そのセクション自体が現れない
+    check("context: us_indices [] when absent", ctx["us_indices"] == [])
+    check("prompt: no us_indices section when absent", "■ 米国市場" not in prompt)
 
     # ---- peer(海外半導体ピア動向) ----
     # ★2026-09-06追加(CROSS_PROJECT_LOG 2026-09-06 18:13/18:52/18:55参照)。
@@ -1288,17 +1432,38 @@ def _run_selftests():
     check("generate(lmstudio): returns dict on success", out_lm is not None)
     check("generate(lmstudio): text matches mock", out_lm["text"] == sample_text)
     check("generate(lmstudio): one LLM call", len(lm_calls) == 1)
-    check("generate(lmstudio): model is the configured lmstudio model",
-          out_lm["model"] == config.LOCAL_LLM_ENDPOINTS["lmstudio"]["model"])
+    # ★2026-09-30変更: AI考察のlmstudio既定モデルはconfig.LOCAL_LLM_ENDPOINTS["lmstudio"]
+    # ["model"](analyze_batch_with_lmstudio_hybridの分類経路と共有・gemma-4-12b-it)から
+    # 切り離し、PUBLIC_INSIGHT_LMSTUDIO_MODEL(既定llm-jp-4-8b-instruct)を使うよう変更した。
+    check("generate(lmstudio): model is PUBLIC_INSIGHT_LMSTUDIO_MODEL (decoupled from classification)",
+          out_lm["model"] == PUBLIC_INSIGHT_LMSTUDIO_MODEL)
     check("generate(lmstudio): system prompt is the local variant",
           lm_calls[0]["json"]["messages"][0]["content"] == _PUBLIC_INSIGHT_SYS_LOCAL)
-    check("generate(lmstudio): prompt asks for 800字程度 (not the claude 400-600字)",
-          "800字程度" in lm_calls[0]["json"]["messages"][1]["content"])
+    check("generate(lmstudio): prompt asks for 800字以上 (not the claude 400-600字)",
+          "800字以上" in lm_calls[0]["json"]["messages"][1]["content"])
     check("generate(lmstudio): usage mapped from prompt/completion_tokens",
           out_lm["usage"] == {"input_tokens": 400, "output_tokens": 200})
     check("generate(lmstudio): backend echoed back as lmstudio", out_lm.get("backend") == "lmstudio")
     check("generate(lmstudio): timeout uses config.LMSTUDIO_TIMEOUT_SEC",
           lm_calls[0]["timeout"] == config.LMSTUDIO_TIMEOUT_SEC)
+
+    # ★2026-09-30追加: llm-jp-4-8b-instructが混入させるチャネル区切りの特殊トークンを
+    # 除去する挙動の確認(実測 "<|channel|> final<|message|>本文..." 形式)。
+    def _fake_lmstudio_post_leaky(url, json=None, timeout=None):
+        class _R:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"choices": [{"message": {"content": "<|channel|> final<|message|> 本文です"}}],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+        return _R()
+
+    out_leaky = generate_public_insight(rec, backend="lmstudio", post_fn=_fake_lmstudio_post_leaky)
+    check("generate(lmstudio): leaked channel token stripped from text",
+          out_leaky["text"] == "本文です")
 
     # lmstudio経路のfail-soft(HTTPエラー等の例外) -> None
     def _raising_post(url, json=None, timeout=None):
@@ -1383,6 +1548,7 @@ def _run_selftests():
     check("generate_news_summary: fail-soft returns None on exception", news_out_fail is None)
 
     config.LOG_PATH = _saved_log
+    _lmg_st.ENABLED = _saved_lmg_enabled
     print(f"\n{'PASS' if not fails else 'FAIL'}: {len(fails)} failure(s)")
     return len(fails)
 

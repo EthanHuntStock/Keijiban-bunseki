@@ -70,6 +70,10 @@ import csv
 import sys
 
 import config
+try:
+    import oniya_phase2_paths as _p2   # Phase2: 当日ticks/boardをローカル/OneDriveのmtime新しい方で解決(ポインタ未設置なら従来パス)
+except Exception:
+    _p2 = None
 import tick_tier_classifier as ttc
 import tier_flow_manual_log as tfml
 
@@ -404,8 +408,8 @@ def run_evaluation(date_iso="2026-08-27", ticks_path=None, board_path=None):
               f"tier_flow_manual_log.csvの蓄積を待ってください。")
         return None
 
-    ticks_path = ticks_path or os.path.join(
-        config.KABU_PROTO1_285A_TICKS_DIR, f"ticks_{config.SYMBOL}_{date_iso}.csv")
+    ticks_path = ticks_path or (_p2.ticks_csv_path(config.SYMBOL, date_iso, config.KABU_PROTO1_285A_TICKS_DIR) if _p2 is not None
+                                else os.path.join(config.KABU_PROTO1_285A_TICKS_DIR, f"ticks_{config.SYMBOL}_{date_iso}.csv"))
     if not os.path.isfile(ticks_path):
         print(f"tick CSVが見つかりません: {ticks_path}")
         return None

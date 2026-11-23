@@ -171,6 +171,126 @@ def fetch_adr_pts_and_save(symbol=None):
     return len(rows)
 
 
+# ============================================================================
+# DEX(Hyperliquid xyz:KIOXIA パーペチュアル・24時間)(★2026-10-16追加・ユーザー指示『DEXも今後見ましょう』)
+# ============================================================================
+# nikkei225jp.com の ADR ページ(adr.php?a=285A)の4列目『DEX¥』のデータ元JSON2本:
+#   (1) adr/_dex_min_ADR.json  : {"fx":{"d1":[[ms,usdjpy],..]}, "items":{"285A":{"d1":[[ms,usd],..],"jpy_price":..,
+#                                  "dex_price":..,"price_time":ms,"usdjpy":..,"hl":"xyz:KIOXIA"}}, "updated":"..JST"}
+#   (2) json_us/ajax_dex_quotes.json : {"stocks":[{"sym":"KXIAY","hl":"xyz:KIOXIA","mark","prev","h24","l24",
+#                                  "ntl24","vol24","oi","fund"}, ...], "updated":"..JST"}
+def parse_dex_min(j, code="285A"):
+    """_dex_min_ADR.json(dict)から 銘柄(証券コード)の5分系列と最新値を取り出す純関数。
+    戻り値: {"series":[(ts_ms, usd, usdjpy_or_None)...], "usd","jpy","usdjpy","price_time_ms","hl"} / 取れなければ None。"""
+    try:
+        items = j.get("items") or {}
+        it = items.get(code)
+        if not it:   # 実フィードの items のキーは ADR シンボル(KXIAY)・証券コードは各要素の jp_code
+            for _k, _v in items.items():
+                if isinstance(_v, dict) and str(_v.get("jp_code")) == str(code):
+                    it = _v
+                    break
+        if not it:
+            return None
+        fx = {int(a): float(b) for a, b in ((j.get("fx") or {}).get("d1") or [])}
+        series = []
+        for a, b in (it.get("d1") or []):
+            ts = int(a)
+            series.append((ts, float(b), fx.get(ts)))
+        series.sort()
+        return {"series": series, "usd": float(it.get("dex_price")), "jpy": float(it.get("jpy_price")),
+                "usdjpy": float(it.get("usdjpy")), "price_time_ms": int(it.get("price_time")),
+                "hl": it.get("hl"), "updated": j.get("updated")}
+    except Exception:
+        return None
+
+
+def parse_dex_quote(j, sym="KXIAY"):
+    """ajax_dex_quotes.json(dict)から対象銘柄(ADRシンボル)の 価格・前日値・24h高安・売買代金・建玉・資金調達率 を取り出す純関数。"""
+    try:
+        for s in (j.get("stocks") or []):
+            if s.get("sym") == sym:
+                return {"mark": float(s["mark"]), "prev": float(s["prev"]), "h24": float(s["h24"]), "l24": float(s["l24"]),
+                        "ntl24": float(s["ntl24"]), "vol24": float(s["vol24"]), "oi": float(s["oi"]),
+                        "fund": float(s["fund"]), "hl": s.get("hl"), "updated": j.get("updated")}
+    except Exception:
+        return None
+    return None
+
+
+def _last_jsonl_row(path):
+    import os
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            sz = f.tell()
+            f.seek(max(0, sz - 4096))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+        for l in reversed(lines):
+            if l.strip().startswith("{"):
+                return json.loads(l)
+    except Exception:
+        return None
+    return None
+
+
+def fetch_dex_and_save(code=None, sym="KXIAY"):
+    """DEX(xyz:KIOXIA)の5分系列(新しい点だけ追記)と取得時点のスナップショット(変化があれば追記)を保存する。
+    fail-soft(失敗時は (0, False)・例外を投げない・既存ファイルは壊さない)。戻り値=(追記した系列点数, スナップショット追記したか)。"""
+    import os
+    if os.environ.get("BBS_INTAKE_OFF", "").strip() == "1":   # 自己テスト中は実ネットワーク・実ファイルに触れない
+        return 0, False
+    import requests
+    code = code or config.SYMBOL
+    hdr = {"User-Agent": config.CHROME_UA, "Referer": config.ADR_PTS_REFERER.format(symbol=code)}
+    n_new, snap = 0, False
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    try:
+        r = requests.get(config.DEX_MIN_URL, headers=hdr, timeout=config.HTTP_TIMEOUT)
+        if r.status_code != 200:
+            _log(f"WARN dex_min http {r.status_code}")
+            return 0, False
+        pm = parse_dex_min(r.json(), code)
+    except Exception as e:
+        _log(f"WARN dex_min fetch failed: {e!r}")
+        return 0, False
+    if not pm or not pm["series"]:
+        _log("WARN dex_min: no series parsed")
+        return 0, False
+    last = _last_jsonl_row(config.DEX_SERIES_PATH)
+    last_ts = int(last["ts_ms"]) if last else 0
+    new = [(ts, usd, fx) for ts, usd, fx in pm["series"] if ts > last_ts]
+    if new:
+        os.makedirs(os.path.dirname(config.DEX_SERIES_PATH), exist_ok=True)
+        with open(config.DEX_SERIES_PATH, "a", encoding="utf-8") as f:
+            for ts, usd, fx in new:
+                fxv = fx if fx is not None else pm["usdjpy"]
+                f.write(json.dumps({"ts_ms": ts, "t": dt.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%dT%H:%M:%S"),
+                                    "usd": usd, "usdjpy": fxv, "jpy": round(usd * fxv, 1),
+                                    "fetched_at": now}, ensure_ascii=False) + "\n")
+        n_new = len(new)
+    try:
+        r2 = requests.get(config.DEX_QUOTES_URL, headers=hdr, timeout=config.HTTP_TIMEOUT)
+        q = parse_dex_quote(r2.json(), sym) if r2.status_code == 200 else None
+    except Exception as e:
+        _log(f"WARN dex_quotes fetch failed: {e!r}")
+        q = None
+    if q:
+        row = {"fetched_at": now, "updated": q["updated"], "mark": q["mark"], "prev": q["prev"], "h24": q["h24"],
+               "l24": q["l24"], "ntl24": q["ntl24"], "vol24": q["vol24"], "oi": q["oi"], "fund": q["fund"],
+               "jpy": pm["jpy"], "usdjpy": pm["usdjpy"], "price_time_ms": pm["price_time_ms"], "hl": q["hl"]}
+        lq = _last_jsonl_row(config.DEX_QUOTES_PATH)
+        if not lq or (lq.get("mark"), lq.get("oi"), lq.get("updated")) != (row["mark"], row["oi"], row["updated"]):
+            os.makedirs(os.path.dirname(config.DEX_QUOTES_PATH), exist_ok=True)
+            with open(config.DEX_QUOTES_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            snap = True
+    _log(f"dex: series+{n_new} snapshot={snap} jpy={pm['jpy']:.0f} usd={pm['usd']}")
+    return n_new, snap
+
+
 # ---- I/O / ネットワーク ------------------------------------------------------
 def _log(msg):
     line = f"[{dt.datetime.now().isoformat(timespec='seconds')}] price: {msg}"
@@ -183,20 +303,78 @@ def _log(msg):
         pass
 
 
-def _fetch(params):
+def _fetch_url(url, label=None):
+    """Yahoo chart API(任意URL)をJSONで取得する下位共通関数。285A専用の_fetch(params)
+    と米国市場指数(fetch_us_indices_and_save)の両方から呼ばれる(★2026-09-30・
+    URL全体を渡せるよう_fetchから切り出し。既存の_fetch(params)の挙動は不変)。"""
     import requests
-    url = f"{config.PRICE_CHART_URL}?{params}"
     try:
         r = requests.get(url, headers={"User-Agent": config.CHROME_UA,
                                         "Accept": "application/json"},
                           timeout=config.HTTP_TIMEOUT)
         if r.status_code != 200:
-            _log(f"WARN http {r.status_code} for {params}")
+            _log(f"WARN http {r.status_code} for {label or url[:70]}")
             return None
         return r.json()
     except Exception as e:
-        _log(f"WARN fetch failed ({params}): {e!r}")
+        _log(f"WARN fetch failed ({label or url[:70]}): {e!r}")
         return None
+
+
+def _fetch(params):
+    return _fetch_url(f"{config.PRICE_CHART_URL}?{params}", label=params)
+
+
+def fetch_us_indices_and_save():
+    """config.US_INDICES(S&P500・ナスダック・SOX半導体指数)をYahoo Finance chart API
+    から取得しconfig.US_INDICES_PATHへ保存する(★2026-09-30追加・ユーザー依頼
+    「米国市場の指数をおにや式にも足す」)。285A自身の取得(_fetch/parse_chart_json)と
+    同じパース関数を再利用し、指数ごとに独立したHTTPリクエストのため1指数の失敗が
+    他指数に波及しない(fail-soft・一部だけ保存できた場合もそのまま保存する)。
+    戻り値: 保存できた指数の件数(0なら既存ファイルを保持=書き換えない)。
+    """
+    import urllib.parse
+    out = {}
+    fetched_at = dt.datetime.now().isoformat(timespec="seconds")
+    for key, meta in config.US_INDICES.items():
+        ticker = meta["ticker"]
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
+              f"{urllib.parse.quote(ticker, safe='')}?{config.US_INDICES_DAILY_PARAMS}")
+        data = _fetch_url(url, label=f"us_index:{key}({ticker})")
+        if data is None:
+            _log(f"WARN us_index {key}({ticker}): no data (skipped)")
+            continue
+        parsed = parse_chart_json(data)
+        if parsed.get("error"):
+            _log(f"WARN us_index {key}({ticker}): {parsed['error']} (skipped)")
+            continue
+        pm = parsed.get("meta") or {}
+        price = pm.get("regularMarketPrice")
+        bars = parsed.get("bars") or []
+        # ★2026-10-17修正: range=5dのchartPreviousCloseは「5営業日前の終値」で前日比にならない
+        # (SOX-11.41%等が約1週間の累計変化になっていた)。前日終値=直前バーの終値を優先する。
+        prev = pm.get("previousClose")
+        if not prev and len(bars) >= 2 and bars[-2].get("close"):
+            prev = bars[-2]["close"]
+        if not prev:
+            prev = pm.get("chartPreviousClose")
+        if price is None:
+            price = bars[-1]["close"] if bars else None
+        chg = (round((price - prev) / prev * 100.0, 2)
+              if (price is not None and prev) else None)
+        out[key] = {"ticker": ticker, "name_ja": meta.get("name_ja"),
+                   "price": price, "prev_close": prev, "change_pct": chg}
+    if not out:
+        _log("WARN us_indices: no indices fetched (kept previous file)")
+        return 0
+    import os
+    payload = {"fetched_at": fetched_at, "indices": out}
+    tmp = f"{config.US_INDICES_PATH}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    os.replace(tmp, config.US_INDICES_PATH)
+    _log(f"us_indices: saved {len(out)}/{len(config.US_INDICES)}")
+    return len(out)
 
 
 _PRICE_LOCK_STALE_SEC = 120   # このtmp秒数を超えたlockはクラッシュ残骸とみなし強制解除

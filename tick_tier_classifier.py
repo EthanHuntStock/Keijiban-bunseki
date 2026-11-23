@@ -45,7 +45,8 @@ tick_tier_classifier.py - kabu APIのtickデータ(price,tickvol,bid,ask)から
 純関数(ネット/pandas非依存 = selftest対象):
   infer_direction / classify_tick_tier / classify_tick_tiers / aggregate_tier_flow /
   filter_ticks_window / aggregate_tier_amount / estimate_tier_size_shares /
-  estimate_tier_size_shares_v2 / _decompose_tick_amount
+  estimate_tier_size_shares_v2 / _decompose_tick_amount /
+  unit_lot_for_date(2026-10-02新設・285A株式分割の日付別ロット: 分割前1000株/分割後3000株)
 I/O補助(純関数ではないがネット非依存):
   load_ticks_csv
 
@@ -67,6 +68,9 @@ I/O補助(純関数ではないがネット非依存):
 ============================================================================
 """
 import csv
+import datetime as _dt
+import importlib.util as _ilu
+import os as _os
 
 
 # ============================================================================
@@ -100,6 +104,83 @@ TIER_ORDER = ("super", "big", "mid", "small")
 # v1より改善)、9点全体への過学習ではないことを確認済み(n=9は依然極小サンプルで
 # 確定的な最適値ではない・継続校正が前提)。
 DEFAULT_UNIT_LOT_SHARES = 1000
+
+# ============================================================================
+# 株式分割(285A・2026-09-29 権利落ち・1→3)への日付別ロット対応(2026-10-02)
+# ============================================================================
+# DEFAULT_UNIT_LOT_SHARES=1000株は分割前(約6万円台)に「1000株≒6千万円≒mid閾値(5千万円)付近」
+# となるよう校正した値。分割後(約1.9万円)は同じ1000株が約1,890万円=経済的に1/3の大きさに
+# なり、全tickがsmall側へ寄ってmid比率が0.30〜0.33→0.000へ崩れた。金額閾値(円建て)は
+# 名目で不変のため触らず、仮想小口の株数だけを分割比率ぶん掛ける(1000株→3000株)。
+# ★DEFAULT_UNIT_LOT_SHARES自体は変えない(分割前の過去結果をビット一致で再現するため)。
+# 分割基準日・比率は claudecode-ap\index_event_flag\split_flag.py が正本。取得できない場合のみ
+# 同値のフォールバック(2026-09-29・3)に後退する(SPLIT_SOURCEで取得元を確認できる・
+# selftestが正本との一致を検査する)。
+_FALLBACK_SPLIT_DATE_ISO = "2026-09-29"
+_FALLBACK_SPLIT_RATIO = 3
+
+
+def _load_split_constants():
+    """split_flag.py(正本)から (SPLIT_DATE_ISO, SPLIT_RATIO, source) を返す。
+    候補パス: 環境変数 ONIYA_SPLIT_FLAG_PATH → 本ファイルの兄弟フォルダ
+    ..\\claudecode-ap\\index_event_flag\\split_flag.py。読めなければフォールバック値。"""
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    candidates = []
+    env_path = _os.environ.get("ONIYA_SPLIT_FLAG_PATH")
+    if env_path:
+        candidates.append(env_path)
+    candidates.append(_os.path.join(_os.path.dirname(here), "claudecode-ap",
+                                    "index_event_flag", "split_flag.py"))
+    for path in candidates:
+        try:
+            if not _os.path.isfile(path):
+                continue
+            spec = _ilu.spec_from_file_location("_oniya_split_flag_ref", path)
+            mod = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            date_iso = mod.SPLIT_DATE.isoformat()
+            ratio = mod.SPLIT_RATIO
+            ratio = int(ratio) if float(ratio).is_integer() else float(ratio)
+            _dt.date.fromisoformat(date_iso)
+            if ratio <= 0:
+                continue
+            return date_iso, ratio, "split_flag"
+        except Exception:
+            continue
+    return _FALLBACK_SPLIT_DATE_ISO, _FALLBACK_SPLIT_RATIO, "fallback"
+
+
+SPLIT_DATE_ISO, SPLIT_RATIO, SPLIT_SOURCE = _load_split_constants()
+
+
+def unit_lot_for_date(date_iso, base=None):
+    """
+    対象日に応じた仮想小口ロット株数を返す純関数(分割の権利落ち日で株数を掛け替える)。
+
+      date_iso < SPLIT_DATE  -> base(省略時 DEFAULT_UNIT_LOT_SHARES=1000)をそのまま
+      date_iso >= SPLIT_DATE -> base * SPLIT_RATIO(既定 1000 -> 3000)
+      date_iso が None/不正 -> base(従来どおり・例外を投げない)
+
+    date_iso: 'YYYY-MM-DD'(先頭10文字を日付として読む=時刻付き文字列可)または
+    datetime.date/datetime。日付はここで判定するだけで datetime.now() は使わない。
+    base が None/0以下でも素通し(0以下は _decompose_tick_amount 側で「分解しない」扱い)。
+    """
+    b = DEFAULT_UNIT_LOT_SHARES if base is None else base
+    d = None
+    if isinstance(date_iso, _dt.datetime):
+        d = date_iso.date()
+    elif isinstance(date_iso, _dt.date):
+        d = date_iso
+    elif isinstance(date_iso, str):
+        try:
+            d = _dt.date.fromisoformat(date_iso.strip()[:10])
+        except ValueError:
+            d = None
+    if d is None:
+        return b
+    if d.isoformat() < SPLIT_DATE_ISO:
+        return b
+    return b * SPLIT_RATIO
 
 
 def _to_float(x):
@@ -137,9 +218,14 @@ def infer_direction(tick, prev_price=None):
     price = _to_float((tick or {}).get("price"))
     if price is None:
         return None
-    # ★列名を入れ替えて解釈(上のdocstring参照): tick['ask']が真のbid、tick['bid']が真のask。
-    true_bid = _to_float((tick or {}).get("ask"))
-    true_ask = _to_float((tick or {}).get("bid"))
+    # ★2026-09-24変更(コーデ提案): 列の向きに依存しない解釈=真のask=max(bid列,ask列)・真のbid=min(bid列,ask列)。
+    #   現行の反転記録では従来の固定入れ替えと同じ結果(bid列>ask列)。記録側が将来直っても誤りにならない。
+    _c1 = _to_float((tick or {}).get("bid"))
+    _c2 = _to_float((tick or {}).get("ask"))
+    if _c1 is not None and _c2 is not None:
+        true_ask, true_bid = max(_c1, _c2), min(_c1, _c2)
+    else:
+        true_ask = true_bid = None
     if true_bid is not None and true_ask is not None and true_ask > 0 and true_bid > 0:
         if price >= true_ask:
             return "BUY"

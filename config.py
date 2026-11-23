@@ -42,6 +42,30 @@ ADR_PTS_URL      = "https://nikkei225jp.com/_data/_nfsDATA/adr/{symbol}.json"
 ADR_PTS_REFERER  = "https://nikkei225jp.com/adr/adr.php?a={symbol}"
 ADR_PTS_PATH     = os.path.join(DATA_DIR, "adr_pts.json")
 
+# ---- DEX(Hyperliquid の xyz 銘柄パーペチュアル『xyz:KIOXIA』=24時間取引)の価格・建玉(price_fetch.fetch_dex_and_save) ----
+#   ★2026-10-16追加(ユーザー指示『DEXも今後見ましょう』・nikkei225jp.com の ADR ページの4列目『DEX¥』)。
+#   東証・PTS・ADRの閉じている時間帯(昼休み・夜間・休場日)にも動く24時間の価格＝翌営業日の寄り・夜間の手がかり。
+#   同サイトのJSON2本(ADRフィードと同じ _nfsDATA 配下)を取得し、5分足の系列(DEX_SERIES_PATH)と
+#   取得時点のスナップショット(DEX_QUOTES_PATH=価格・前日値・24h高安・24h売買代金・建玉・資金調達率)を追記する。
+DEX_MIN_URL      = "https://nikkei225jp.com/_data/_nfsDATA/adr/_dex_min_ADR.json"
+DEX_QUOTES_URL   = "https://nikkei225jp.com/_data/_nfsDATA/json_us/ajax_dex_quotes.json"
+DEX_SERIES_PATH  = os.path.join(DATA_DIR, "dex_285A_series.jsonl")
+DEX_QUOTES_PATH  = os.path.join(DATA_DIR, "dex_285A_quotes.jsonl")
+
+# ---- 米国市場指数(price_fetch.fetch_us_indices_and_save) ---------------------
+#   ★2026-09-30追加(ユーザー依頼「米国市場の指数をおにや式にも足す」)。上のADR/PTSは
+#   285A固有の値(nikkei225jp.com)だが、こちらは市場全体の地合いを示す代表指数を
+#   285A自身と同じYahoo Finance chart API(query1.finance.yahoo.com)から直接取得する。
+#   個別銘柄との相関・予測材料ではなく、AI考察への客観的な地合い情報(前日終値比)
+#   としてのみ使う設計(peer_snapshot_summaryの統計的相関記述とは性質を分ける)。
+US_INDICES = {
+    "sp500":  {"ticker": "^GSPC", "name_ja": "S&P500"},
+    "nasdaq": {"ticker": "^IXIC", "name_ja": "ナスダック総合"},
+    "sox":    {"ticker": "^SOX",  "name_ja": "フィラデルフィア半導体指数(SOX)"},
+}
+US_INDICES_PATH = os.path.join(DATA_DIR, "us_indices.json")
+US_INDICES_DAILY_PARAMS = "interval=1d&range=5d"
+
 # ---- 点時刻票(point-in-time votes)スナップショット(votes_snapshot.py) --------
 #   raw_comments の votes_yes/no は初回取得時点の累積値のみ=先読み疑い対策として
 #   毎収集で「パース済み全件(既読含む)」の票を差分記録する台帳。記録のみ(受動)=既定ON。
@@ -78,7 +102,9 @@ YAHOO_FORUM_URL = f"https://finance.yahoo.co.jp/quote/{SYMBOL}.T/forum"  # canon
 YAHOO_BBS_URL = f"https://finance.yahoo.co.jp/quote/{SYMBOL}.T/bbs"      # HTMLフォールバック
 # 内部JSON API(深いページング取得)。要 x-jwt-token + forumで得たセッションcookie。
 YAHOO_BFF_URL = "https://finance.yahoo.co.jp/bff-quote-stocks/v1/ajax/bbs/comment"
-YAHOO_PAGE_SIZE = 100     # 1ページ取得件数(実測OK)
+# 2026-11-01修正: bff APIが size>=30 を 400「parameters invalid」で拒否するようになった(10-29 16:25〜)。
+# 実測(11-01 05:0x): size=10/20 は200、30/50/100は400。20に下げる(5分で~72件=4ページ・遅延0.7秒)。
+YAHOO_PAGE_SIZE = 20      # 1ページ取得件数(実測OK=20以下)
 # 遡りページ上限=暴走防止のバックストップ。正常な停止経路は「前回既読(seen_id)到達」。
 # 実測: 暴落日は~860投稿/h=1日1万〜1.5万件。3h間隔でも2600件/回、初回フルバックフィルは
 # 1万件級。10(=1000件)では頭打ちして取りこぼす(実測350件連続欠落)。200=最大2万件/runへ。
@@ -229,6 +255,21 @@ else:
 #   維持)。
 RESEARCH_LAYER_TIME_LIMIT_SEC = int(os.environ.get("BBS_RESEARCH_LAYER_TIME_LIMIT_SEC", "1800"))  # 30分
 
+# ★2026-09-15追加(コーデ10:07指摘対応=BBS_Sentiment_285AがMultipleInstances=IgnoreNewの
+#   ため、毎時本体の所要が60分を超えると次のトリガーがタスクスケジューラのレベルで丸ごと
+#   捨てられる実害が21時間で6回発生[15:00・18:00・23:00・02:00・07:00・10:00]、うち5回は
+#   所要60分超過が原因と実測確認)。上のRESEARCH_LAYER_TIME_LIMIT_SEC(=研究層を「呼ぶか
+#   どうか」のゲート)だけでは、08-17のコメントに残る過去の教訓のとおり「呼んだ後、研究層
+#   自身の所要時間には上限が無い」ため防げない。本定数は_run_research_layer()の内部
+#   (step5=descriptive以降の各stepの実行直前)で、run_start(runその物の開始時刻)からの
+#   経過時間がこれを超えていたら、残りのstepを丸ごとスキップするハード予算。
+#   step4(export+forward_oos=latest.json/公開ダッシュボードの根幹データ)は対象外(常に実行)。
+#   値の根拠=collect/price/analyze(最大LMSTUDIO_ANALYZE_TIME_BUDGET_SEC=15分)/snapshot等の
+#   前段に最大20分程度を見込み、60分の目標から逆算(60分-20分=40分・安全側に5分のマージンを
+#   引いて45分=2700秒とした)。
+RESEARCH_LAYER_HARD_DEADLINE_SEC = int(
+    os.environ.get("BBS_RESEARCH_LAYER_HARD_DEADLINE_SEC", "2700"))  # 45分
+
 # Haikuの1バッチに載せるコメント数(JSON安定のため中庸に)
 ANALYZE_BATCH_SIZE = 10
 HAIKU_MAX_TOKENS = 3000
@@ -274,9 +315,15 @@ LOCAL_LLM_ENDPOINTS = {
     #   ハイブリッド経路(analyze.analyze_batch_with_lmstudio_hybrid)専用エンドポイント。
     #   実測: gemma-4-12b-it で meaningful/sentimentのみの簡素化プロンプトなら
     #   10件バッチ25.6〜29.8秒(フル項目版88〜94秒の約1/3)。
+    #   ★2026-09-30変更: llm-jp-4-8b-instructへ切替(実データ15件比較で一致率86.7%・
+    #   速度1.8倍高速)。この機種は"sentiment"キーを"sentimemt"と誤字る既知バグ(温度0で
+    #   再現)があるため、analyze._call_lmstudio_fast側で寛容パース(誤字も拾う)を実装済み。
     "lmstudio": {
         "base_url": os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234/v1"),
-        "model": os.environ.get("LMSTUDIO_MODEL", "gemma-4-12b-it"),
+        # ★2026-10-08変更(ユーザー直接指示『感情分類はH(Qwen3-8B・思考オフ)を採用』): 感情分類のモデルを qwen3-8b へ。
+        #   AI考察(public_insight/ai_insight)は別設定(PUBLIC_INSIGHT_LMSTUDIO_MODEL=llm-jp・ctx4096・並列1)で、同時起動しない切替は lm_role_switch.py。
+        #   ★2026-10-29変更(ユーザー指示『Qwenを全てアンインストール』・エンジニア経由): 既定を benchmark/gemma-4-12b-it へ(ベンチJ構成・感情一致0.688・全100件解釈)。
+        "model": os.environ.get("LMSTUDIO_MODEL", "benchmark/gemma-4-12b-it"),
     },
 }
 # ローカルLLM呼び出しのタイムアウト秒(7B級・CPU/内蔵GPU実行を想定しやや長め)。
@@ -287,6 +334,16 @@ LOCAL_LLM_TIMEOUT_SEC = int(os.environ.get("BBS_LOCAL_LLM_TIMEOUT", "120"))
 #   (2026-08-17 実測・CROSS_PROJECT_LOG参照)。n=400級(曖昧最大320件程度)でも実測スループット
 #   (3.95秒/件)からの外挿で最大21分程度に収まる見込みのため、安全マージンを見て30分とする。
 LMSTUDIO_TIMEOUT_SEC = int(os.environ.get("BBS_LMSTUDIO_TIMEOUT", "1800"))
+# ★2026-09-17 追加(ユーザー決定・優先度1番・メモリ逼迫対策)。LM Studioを「使う時だけ
+# モデルを載せる」設定にするためのアイドルTTL(秒)。JITは既にON(http-server-config.json
+# の justInTimeModelLoading=true・確認済み)のため、このTTLでアイドル解放すれば次の
+# APIリクエストで自動的に再読込みされる。JIT経由の再読込みには既定で60分TTLが付く
+# ため、ここで各リクエストのペイロードにも明示的に ttl を渡す(lm_studio_keeper.py
+# 側の初回読込みだけにTTLを付けても2回目以降は既定60分に戻ってしまう見落とし対策)。
+# lm_studio_keeper.py は依存を増やさない方針のためconfigをimportせず、同じ環境変数名
+# LMSTUDIO_IDLE_TTL_SEC を自前で読む(値は共有・定義は2箇所)。
+# 詳細=LM_Studio_オンデマンド化_手順書_20260917.md。
+LMSTUDIO_IDLE_TTL_SEC = int(os.environ.get("LMSTUDIO_IDLE_TTL_SEC", "60"))
 # ★2026-08-17 追加: analyze_batch_with_lmstudio_hybrid の内部チャンク分割。
 #   曖昧アイテム全件を1回のバッチ呼び出しに集約する設計だと、n=400級(曖昧268件・
 #   プロンプト長14,893文字≒約9,650トークン)でLM Studio側のコンテキスト長上限
@@ -378,6 +435,14 @@ SIG_OTHER_FIRE = 0.11         # 他銘柄混入率 発火(旧ハードコード0
 SIG_AORI_WARN = 4.0           # 暴落煽り語彙(aori index)警戒(旧ハードコード15)
 SIG_AORI_FIRE = 5.0           # 暴落煽り語彙 発火(旧ハードコード30)
 SIG_NAMED_MIN_N = 30          # ネームド集中の最低標本数(未満は非表示)
+# ★2026-09-14追加(おにやGO・エンジニア発見の是正②): 話題枯れ/投稿サージは
+# signals.pyのbuild_signal_cards()内でWARN/FIREともハードコード値(-1.0/-0.5・
+# 1.0/2.0)のままだった。他7指標と同じくconfig定数化し、カード表示側で
+# WARN閾値も条件欄に併記できるようにする(値そのものは変更しない)。
+SIG_POST_DEARTH_WARN = -0.5   # 話題枯れ警戒(投稿数z値・旧ハードコード)
+SIG_POST_DEARTH_FIRE = -1.0   # 話題枯れ発火(投稿数z値・旧ハードコード)
+SIG_POST_SURGE_WARN = 1.0     # 投稿サージ警戒(投稿数z値・旧ハードコード)
+SIG_POST_SURGE_FIRE = 2.0     # 投稿サージ発火(投稿数z値・旧ハードコード)
 SIG_BEAR_EXTREME = 0.70       # bear率極値
 SIG_BULL_EXTREME = 0.70       # bull率極値
 
@@ -685,7 +750,10 @@ NEWS_RELATED_KEYWORD_GROUPS = {
 NEWS_MAX_PER_RELATED_GROUP = int(os.environ.get("BBS_NEWS_MAX_PER_RELATED_GROUP", "3"))
 NEWS_SEEN_STATE_PATH = os.path.join(DATA_DIR, "news_seen_state.json")
 NEWS_FETCH_TIMEOUT_SEC = int(os.environ.get("BBS_NEWS_FETCH_TIMEOUT_SEC", "8"))
-NEWS_SUMMARY_MAX_TOKENS = int(os.environ.get("BBS_NEWS_SUMMARY_MAX_TOKENS", "400"))
+# ★2026-09-30変更(ユーザー指示「より長文にしましょう」): 150〜250字目安→400字以上へ
+# 引き上げたためmax_tokensも比例して引き上げ(400文字/1.5文字トークンの目安で約270
+# トークン相当だったが、余裕を持って800に)。
+NEWS_SUMMARY_MAX_TOKENS = int(os.environ.get("BBS_NEWS_SUMMARY_MAX_TOKENS", "800"))
 
 # ★2026-08-21追加(おにや提案・連携ログ01:38投稿=エンジニアの深堀質問③への回答で発覚)。
 # analyze_lock/export_lockの取得失敗(busy)は従来WARN単発ログのみで、連続回数・累積占有を

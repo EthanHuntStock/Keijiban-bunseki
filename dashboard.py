@@ -527,6 +527,8 @@ LLM_BACKEND_LABELS = {
     "claude": "Claude API",
     "ollama": "ローカルLLM(Ollama)",
     "lemonade": "ローカルLLM(Lemonade)",
+    # 2026-10-16: LM Studio全廃(LM_ABOLISHED)に伴い、旧名lmstudioの表示は現行の機械分類(辞書＋軽量モデルM3)に読み替える。
+    "lmstudio": "機械分類(辞書＋軽量モデルM3)",
 }
 
 
@@ -669,11 +671,14 @@ def main():
     #   (Streamlit 1.59で利用可能・既定のon_change="ignore"だと全タブが毎回計算される)。
     #   タブに固有ウィジェットが無いため@st.fragmentは(仕組み上)ここでは実効性が薄く、
     #   こちらの方が「タブ切替時の全体再計算を抑える」という狙いに直接効く。
+    # ★2026-11-23(ユーザー指示「おにやの公開ダッシュボードもタブの再整理・分割」): 並びを「見る順」に変更
+    #   (AI考察→コックピット→価格×センチメント→板→シグナル&前向きOOS→分析→コメント→moomoo→北極星(研究))。
+    #   各タブの中身・with-ブロックは変更しない(変数の割り当てだけ入れ替え)。
     tabs = st.tabs([
-        "🎯 コックピット", "📈 価格×センチメント", "🔬 分析",
-        "🚦 シグナル&前向きOOS", "🏦 moomoo", "🕵️ 北極星(研究)", "🧠 AI考察",
-        f"💬 コメント ({meaningful_n})", "🪧 板"], on_change="rerun")
-    t1, t2, t3, t4, t5, t6, t7, t8, t9 = tabs
+        "🧠 AI考察", "🎯 コックピット", "📈 価格×センチメント", "🪧 板",
+        "🚦 シグナル&前向きOOS", "🔬 分析", f"💬 コメント ({meaningful_n})",
+        "🏦 moomoo", "🕵️ 北極星(研究)"], on_change="rerun")
+    t7, t1, t2, t9, t4, t3, t8, t5, t6 = tabs
     with t1:
         if t1.open:
             tab_cockpit(S, latest_export, analyzed, raw_f, ctrl)
@@ -854,7 +859,13 @@ def status_ribbon(S, latest_export, snaps, ctrl):
     label, color = state_badge(state)
     px = price.get("last")
     chg = price.get("change_pct")
-    px_txt = f"{px:,.0f}円 ({chg:+.2f}%)" if px is not None else "現値 -"
+    # 2026-11-23修正: 休場日は change_pct が None になり書式エラーで画面が止まったため、None を分けて扱う
+    if px is None:
+        px_txt = "現値 -"
+    elif chg is None:
+        px_txt = f"{px:,.0f}円 (前日比 -)"
+    else:
+        px_txt = f"{px:,.0f}円 ({chg:+.2f}%)"
     nxt = _next_schtask()
 
     parts = [
@@ -941,6 +952,46 @@ def render_alerts(snaps, latest_export):
 # ============================================================================
 # タブ1: コックピット
 # ============================================================================
+@st.cache_data(ttl=30, show_spinner=False)
+def _screen_flow_today_cached(date_iso):
+    import screen_flow_summary as SF
+    return SF.load_today(date_iso)
+
+
+def _screen_flow_panel():
+    """★2026-10-16追加: 層別フロー・板の増減・価格まわり・見立ての機械採点(ローカル専用・公開側へは出さない)。
+    層別フローの出所=moomoo証券の画面を読み取った参考情報(遅延あり)。売買推奨ではない。"""
+    try:
+        import screen_flow_summary as SF
+        d = _screen_flow_today_cached(dt.date.today().isoformat())
+    except Exception as e:  # noqa: BLE001
+        st.caption(f"層別フロー等: 取得できず（{e!r}）")
+        return
+    st.markdown("#### 🧭 層別フロー・板の増減・価格まわり（参考）")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**層別フロー**（億円）")
+        st.markdown(chr(10).join("- " + x for x in SF.lines_layer(d.get("layer"))))
+        st.markdown("**価格まわり**")
+        st.markdown(chr(10).join("- " + x for x in SF.lines_price(d.get("price"))))
+    with c2:
+        st.markdown("**板の増減**")
+        st.markdown(chr(10).join("- " + x for x in SF.lines_board(d.get("board"))))
+        st.markdown("**見立ての採点（" + SF.REF_LABEL + "）**")
+        st.markdown(chr(10).join("- " + x for x in SF.lines_score(d.get("grades"))))
+        g = d.get("grades")
+        if g:
+            st.caption(" ".join(f"#{x['no']}{x['mark'] or '未'}{'(暫定)' if x['provisional'] else ''}" for x in g["items"]))
+    st.caption("出所: 層別フロー＝moomoo証券の画面を読み取った参考情報(遅延あり・ローカル専用) ／ 価格まわり・板の増減・見立ての採点＝kabuステーションの板情報・約定ティック(遅延あり)と見立ての記録。売買の推奨ではありません。")
+    try:  # ★2026-10-16追加: 見立ての評価(幅・自動見立て・基準との比較)。ローカル専用
+        import forecast_auto as FA
+        ev = FA.build_eval(dt.date.today().isoformat())
+        with st.expander("📏 見立ての評価（幅・自動見立て・基準との比較）", expanded=False):
+            st.markdown(chr(10).join("- " + x for x in FA.lines_eval(ev)))
+    except Exception as e:  # noqa: BLE001
+        st.caption(f"見立ての評価: 取得できず（{e!r}）")
+
+
 def tab_cockpit(S, latest_export, analyzed, raw, ctrl):
     if not S:
         st.info("データ蓄積中。run_once.py 実行で表示されます。")
@@ -969,6 +1020,7 @@ def tab_cockpit(S, latest_export, analyzed, raw, ctrl):
     else:
         _ext_supply_freshness_ribbon()
 
+    _screen_flow_panel()
     st.markdown("#### 🎭 おにや式・逆張り目線（上げ / 下げ / 中立）")
     _direction_view(S)
     _kpi_row(S, dss)
@@ -982,18 +1034,35 @@ def tab_cockpit(S, latest_export, analyzed, raw, ctrl):
     _glossary()
 
 
-def _gauge(value, title, fire_th, colors):
+def _gauge_zone_color(value, fire_th, warn_th, colors):
+    """現在値がOK/警戒/発火のどのゾーンかに応じてcolors[0]/[1]/[2]を返す。
+
+    ★2026-09-14追加(おにやGO・22:36エンジニア発見の是正③・
+    generate_static_dashboard.pyのgauge_zone_color()と同型)。
+    warn_th省略時は既存のsteps境界(min(50,fire_th))をそのまま使う(後方互換=
+    ctrl["th_overheat"]等のwhat-if可変閾値を渡す内部tab_cockpit呼び出しは無変更で動く)。
+    """
+    warn_bound = warn_th if warn_th is not None else min(50, fire_th)
+    if value >= fire_th:
+        return colors[2]
+    if value >= warn_bound:
+        return colors[1]
+    return colors[0]
+
+
+def _gauge(value, title, fire_th, colors, warn_th=None):
     value = value or 0
     if HAS_PLOTLY:
+        warn_bound = warn_th if warn_th is not None else min(50, fire_th)
         f = go.Figure(go.Indicator(
             mode="gauge+number", value=value,
             number={"suffix": " /100", "font": {"size": 21, "color": COL["text"]}},
             title={"text": title, "font": {"size": 14, "color": COL["text"]}},
             gauge={"axis": {"range": [0, 100], "tickcolor": COL["muted"]},
-                   "bar": {"color": colors[-1]},
+                   "bar": {"color": _gauge_zone_color(value, fire_th, warn_th, colors)},
                    "bgcolor": COL["bg"], "borderwidth": 0,
-                   "steps": [{"range": [0, min(50, fire_th)], "color": _rgba(colors[0], 0.5)},
-                             {"range": [min(50, fire_th), fire_th], "color": _rgba(colors[1], 0.62)},
+                   "steps": [{"range": [0, warn_bound], "color": _rgba(colors[0], 0.5)},
+                             {"range": [warn_bound, fire_th], "color": _rgba(colors[1], 0.62)},
                              {"range": [fire_th, 100], "color": _rgba(colors[2], 0.78)}],
                    "threshold": {"line": {"color": COL["text"], "width": 3}, "value": fire_th}}))
         # ★2026-08-20修正(ユーザー指摘「100の目盛りが見切れている」): 右マージン18pxでは
@@ -2178,7 +2247,11 @@ def _cluster_trend_section(analyzed, price_d):
         return
     st.markdown("##### 🔥 話題トレンド(クラスタ盛衰・記述)")
     try:
-        ct = cluster_trend.cluster_trends(analyzed)
+        # ★2026-09-16修正(作業キューおにや列⑭対応)=cluster_trends()(話題×全日数の
+        # series本体を構築)ではなくcluster_trends_lite()を使う。本セクションは
+        # momentum/total/first_seen/last_seenのみ参照しseriesを使っていないため
+        # 出力は不変・cluster_labelが59万種類規模のためメモリ効率が大幅改善する。
+        ct = cluster_trend.cluster_trends_lite(analyzed)
     except Exception as e:
         _fail_note("話題トレンドの算出に失敗しました。", e)
         return

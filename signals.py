@@ -445,9 +445,19 @@ def compute_signals(analyzed_rows, raw_rows=None, price_daily=None,
     posts_z = trailing_zscore(counts_series)
 
     # 日別語彙指数系列(生データ・カバレッジ日のみ)
+    # ★2026-09-16修正(コーデ00:27指摘のメモリ調査で自己発見・run_study.pyが
+    # 2026-09-15に修正したのと同型のO(日数×累積全行数)バグ)。従来はcov_daysの
+    # 各日についてraw全体(累積全件)を毎回フィルタしており、cov_daysの日数が
+    # 増えるほど計算量が線形に悪化していた。rawを日付でグループ化する辞書を
+    # 1回だけ(O(N))構築してから、各日はその辞書を引くだけ(O(1))にする設計へ変更
+    # (フィルタ条件・結果は完全に同一・計算量のみO(D×N)→O(N)へ改善)。
+    raw_by_day = {}
+    for r in raw:
+        d = (r.get("ts") or "")[:10]
+        raw_by_day.setdefault(d, []).append(r)
     cap_series, eup_series = [], []
     for d in cov_days:
-        dtexts = [r.get("text", "") for r in raw if (r.get("ts") or "")[:10] == d]
+        dtexts = [r.get("text", "") for r in raw_by_day.get(d, [])]
         lx = lexicon_counts(dtexts)
         cap_series.append(lx["capitulation"]["index"])
         eup_series.append(lx["euphoria"]["index"])
@@ -517,6 +527,22 @@ def raw_hourly_volume(rows, day=None):
     return out
 
 
+def _threshold_label(op, fire_th, warn_th, state, suffix=""):
+    """条件欄(threshold)の文字列を組み立てる。
+
+    ★2026-09-14追加(おにやGO・22:36エンジニア発見の是正②): 従来は常にFIRE閾値
+    しか表示されず、例えば「阿鼻叫喚スコア22.4・条件>30・状態=警戒」のように、
+    数字だけ見ると閾値を超えていないのに警戒と出て一見矛盾して見えた
+    (実際はWARN閾値15超で警戒・その数字が画面のどこにも出ていなかった)。
+    state="警戒"の時だけWARN閾値も併記する(OK/発火では従来どおりFIRE閾値のみ
+    =境目を跨いでいない状態なら1値で判断ロジックが完結して見えるため)。
+    """
+    fire_label = f"{op}{fire_th}"
+    if state == "警戒":
+        return f"{fire_label}(発火)/{op}{warn_th}(警戒){suffix}"
+    return f"{fire_label}{suffix}"
+
+
 def build_signal_cards(*, ratios, lex, votes, named, other, posts_z, gauges,
                        pph, in_low_zone):
     """9シグナルのカード(現在値/閾値/状態/1行根拠)。純関数。"""
@@ -529,20 +555,24 @@ def build_signal_cards(*, ratios, lex, votes, named, other, posts_z, gauges,
     oh = gauges["overheat"]
     st = ("発火" if oh > config.SIG_OVERHEAT_TH
           else ("警戒" if oh > config.SIG_OVERHEAT_WARN else "OK"))
-    cards.append(card("灼熱メーター(過熱)", oh, f">{config.SIG_OVERHEAT_TH}", st,
-                      f"過熱スコア{oh} (閾値{config.SIG_OVERHEAT_TH})"))
+    cards.append(card("灼熱メーター(過熱)", oh,
+                      _threshold_label(">", config.SIG_OVERHEAT_TH, config.SIG_OVERHEAT_WARN, st),
+                      st, f"過熱スコア{oh} (閾値{config.SIG_OVERHEAT_TH})"))
     # 2 そう思う大量票
     mv = votes.get("max_bullish_votes", 0)
     st = ("発火" if mv >= config.SIG_ONIYA_VOTES_MAX
           else ("警戒" if mv >= config.SIG_ONIYA_VOTES_WARN else "OK"))
-    cards.append(card("そう思う大量票", mv, f">={config.SIG_ONIYA_VOTES_MAX}", st,
-                      f"そう思う最大{mv}票 ({config.SIG_ONIYA_VOTES_MAX}超=過熱)"))
+    cards.append(card("そう思う大量票", mv,
+                      _threshold_label(">=", config.SIG_ONIYA_VOTES_MAX, config.SIG_ONIYA_VOTES_WARN, st),
+                      st, f"そう思う最大{mv}票 ({config.SIG_ONIYA_VOTES_MAX}超=過熱)"))
     # 3 🚀イナゴ語彙
     ei = lex["euphoria"]["index"]
     st = ("発火" if ei >= config.SIG_EUPHORIA_FIRE
           else ("警戒" if ei >= config.SIG_EUPHORIA_WARN else "OK"))
-    cards.append(card("イナゴ語彙(euphoria)", ei, f">={config.SIG_EUPHORIA_FIRE}/100投稿", st,
-                      f"euphoria指数{ei}/100投稿"))
+    cards.append(card("イナゴ語彙(euphoria)", ei,
+                      _threshold_label(">=", config.SIG_EUPHORIA_FIRE, config.SIG_EUPHORIA_WARN, st,
+                                       suffix="/100投稿"),
+                      st, f"euphoria指数{ei}/100投稿"))
     # 4 ネームド集中
     ts5 = named.get("top5_share")
     if ts5 is None:
@@ -551,20 +581,24 @@ def build_signal_cards(*, ratios, lex, votes, named, other, posts_z, gauges,
     else:
         st = ("発火" if ts5 >= config.SIG_NAMED_FIRE
               else ("警戒" if ts5 >= config.SIG_NAMED_WARN else "OK"))
-        cards.append(card("ネームド集中", ts5, f">={config.SIG_NAMED_FIRE}", st,
-                          f"上位5人シェア{ts5:.0%}"))
+        cards.append(card("ネームド集中", ts5,
+                          _threshold_label(">=", config.SIG_NAMED_FIRE, config.SIG_NAMED_WARN, st),
+                          st, f"上位5人シェア{ts5:.0%}"))
     # 5 他銘柄混入
     orr = other.get("ratio", 0.0)
     st = ("発火" if orr >= config.SIG_OTHER_FIRE
           else ("警戒" if orr >= config.SIG_OTHER_WARN else "OK"))
-    cards.append(card("他銘柄混入率", orr, f">={config.SIG_OTHER_FIRE}", st,
-                      f"他銘柄言及{orr:.0%} (関心離散のサイン)"))
+    cards.append(card("他銘柄混入率", orr,
+                      _threshold_label(">=", config.SIG_OTHER_FIRE, config.SIG_OTHER_WARN, st),
+                      st, f"他銘柄言及{orr:.0%} (関心離散のサイン)"))
     # 6 暴落煽り
     ai = lex["aori"]["index"]
     st = ("発火" if ai >= config.SIG_AORI_FIRE
           else ("警戒" if ai >= config.SIG_AORI_WARN else "OK"))
-    cards.append(card("暴落煽り語彙", ai, f">={config.SIG_AORI_FIRE}/100投稿", st,
-                      f"煽り指数{ai}/100投稿"))
+    cards.append(card("暴落煽り語彙", ai,
+                      _threshold_label(">=", config.SIG_AORI_FIRE, config.SIG_AORI_WARN, st,
+                                       suffix="/100投稿"),
+                      st, f"煽り指数{ai}/100投稿"))
     # 7 阿鼻叫喚セリクラ
     # ★2026-08-19 おにやキャリブレーション: 安値圏(in_low_zone)とのAND要件を撤廃。
     # capitulationスコア自体に当日騰落率ベースのc_shockが直接反映されるため、
@@ -573,21 +607,26 @@ def build_signal_cards(*, ratios, lex, votes, named, other, posts_z, gauges,
     st = ("発火" if cp > config.SIG_CAPITULATION_FIRE
           else ("警戒" if cp > config.SIG_CAPITULATION_WARN else "OK"))
     cards.append(card("阿鼻叫喚(セリクラ)", cp,
-                      f">{config.SIG_CAPITULATION_FIRE}", st,
+                      _threshold_label(">", config.SIG_CAPITULATION_FIRE, config.SIG_CAPITULATION_WARN, st),
+                      st,
                       f"阿鼻叫喚スコア{cp}"
                       + (" 安値圏" if in_low_zone else " 安値圏外" if in_low_zone is not None else " 価格無し")))
-    # 8 話題枯れ
+    # 8 話題枯れ (z値が小さいほど発火=不等号の向きが他と逆)
     if posts_z is None:
-        cards.append(card("話題枯れ", None, "z<-1", "OK", "履歴不足(較正中)"))
+        cards.append(card("話題枯れ", None, f"z<{config.SIG_POST_DEARTH_FIRE}", "OK", "履歴不足(較正中)"))
     else:
-        st = "発火" if posts_z < -1.0 else ("警戒" if posts_z < -0.5 else "OK")
-        cards.append(card("話題枯れ", posts_z, "z<-1", st,
-                          f"投稿数z={posts_z} (負=閑散)"))
+        st = ("発火" if posts_z < config.SIG_POST_DEARTH_FIRE
+              else ("警戒" if posts_z < config.SIG_POST_DEARTH_WARN else "OK"))
+        cards.append(card("話題枯れ", posts_z,
+                          _threshold_label("z<", config.SIG_POST_DEARTH_FIRE, config.SIG_POST_DEARTH_WARN, st),
+                          st, f"投稿数z={posts_z} (負=閑散)"))
     # 9 投稿サージ
     if posts_z is None:
-        cards.append(card("投稿サージ", None, "z>2", "OK", "履歴不足(較正中)"))
+        cards.append(card("投稿サージ", None, f"z>{config.SIG_POST_SURGE_FIRE}", "OK", "履歴不足(較正中)"))
     else:
-        st = "発火" if posts_z > 2.0 else ("警戒" if posts_z > 1.0 else "OK")
-        cards.append(card("投稿サージ", posts_z, "z>2", st,
-                          f"投稿数z={posts_z} (量→ボラ予測が文献の主結果)"))
+        st = ("発火" if posts_z > config.SIG_POST_SURGE_FIRE
+              else ("警戒" if posts_z > config.SIG_POST_SURGE_WARN else "OK"))
+        cards.append(card("投稿サージ", posts_z,
+                          _threshold_label("z>", config.SIG_POST_SURGE_FIRE, config.SIG_POST_SURGE_WARN, st),
+                          st, f"投稿数z={posts_z} (量→ボラ予測が文献の主結果)"))
     return cards

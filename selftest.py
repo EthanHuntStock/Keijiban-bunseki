@@ -7,6 +7,10 @@ import os
 import sys
 import datetime as dt
 
+# 表示用LM生成の保留ファイル(運用の保留)がテスト結果に影響しないよう、テストでは存在しないパスへ向ける(2026-10-07)
+os.environ["BBS_INTAKE_OFF"] = "1"   # 2026-10-15: Claude考察の取り込み(claude_commentary_intake)は実ファイルを書くためテストでは無効化(専用テストは selftest_claude_intake.py)
+os.environ["BBS_LM_GUARD_NO_DEFER_KINDS"] = ""   # 2026-10-08: AI考察の見送り撤廃(既定)の影響を受けず、従来の見送りロジックをテストする(2026-10-10: 保留ファイル機構の撤去に伴い BBS_LM_HOLD_FILE の設定は削除)
+
 import config
 import collect_yahoo as C
 import collect_5ch as C5
@@ -18,6 +22,13 @@ import price_fetch as PF
 import jsonl_window as JW
 import mojibake_cache as MC
 import news_fetch as NF
+import lm_memory_guard as _LMG0
+_LMG0.ENABLED = False   # 2026-09-24: 既存テストは実メモリ測定・本番状態ファイルに触れない(専用テストだけ有効化)
+import night_gate as _NG0
+_NG0.HOLD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__selftest_no_such_hold_file__")   # 2026-09-24 21:38: 実運用の保留ファイル(data\.night_hold_until)がある夜にselftestを走らせても、時刻固定のnightテストが保留で誤って落ちないようにする
+import lm_in_use as _LMU0
+_LMU0.others_in_use = lambda *a, **k: []   # 2026-10-09 テストを実機のLM使用中ロック(AISM/おにやの生成中ロック)から独立させる(ロックありだと unload 系5テストが誤って落ちた・おにや依頼)。本体はlm_in_use自身の selftest で検証
+_NG0.ENABLED = False    # 2026-09-24 17:38: 実運用の夜間(GA稼働中)にselftestを走らせるとmain()が見送りで早期returnし、ロック取得系のテストが誤って落ちた。night専用テストは enabled=True を明示して呼ぶ
 
 
 FAILS = []
@@ -569,6 +580,459 @@ def test_pending_raw_newest_first():
         config.ANALYZED_PATH = orig_analyzed
 
 
+def test_pending_raw_auto_and_preopen_label():
+    """★2026-09-24追加(ユーザー承認): newest_first='auto'=分析待ちが閾値超なら新しい順・以下なら古い順。
+    preopen_label.budget_seconds=09:00:00前の締切(08:57:30)までの残り秒。実データ書込みなし。"""
+    import json, tempfile, os as _os, datetime as _dt
+    orig_raw, orig_an = config.RAW_COMMENTS_PATH, config.ANALYZED_PATH
+    orig_env = _os.environ.get("BBS_BACKLOG_NEWEST_FIRST_THRESHOLD")
+    d = tempfile.mkdtemp()
+    try:
+        config.RAW_COMMENTS_PATH = _os.path.join(d, "raw.jsonl")
+        config.ANALYZED_PATH = _os.path.join(d, "analyzed.jsonl")
+        with open(config.RAW_COMMENTS_PATH, "w", encoding="utf-8") as f:
+            for i in range(5):
+                f.write(json.dumps({"id": f"y{i}", "source": "yahoo", "text": "t", "ts": f"2026-09-24T08:0{i}:00"}) + "\n")
+        _os.environ["BBS_BACKLOG_NEWEST_FIRST_THRESHOLD"] = "3"   # 5件>3 → 新しい順
+        auto_hi = A._pending_raw(newest_first="auto")
+        check("pending-raw auto: backlog(5)>threshold(3) -> newest-first", [r["id"] for r in auto_hi] == ["y4", "y3", "y2", "y1", "y0"])
+        _os.environ["BBS_BACKLOG_NEWEST_FIRST_THRESHOLD"] = "10"  # 5件<=10 → 古い順(従来どおり)
+        auto_lo = A._pending_raw(newest_first="auto")
+        check("pending-raw auto: backlog(5)<=threshold(10) -> oldest-first (drain fully)", [r["id"] for r in auto_lo] == ["y0", "y1", "y2", "y3", "y4"])
+        import preopen_label as PL
+        b = PL.budget_seconds(_dt.datetime(2026, 9, 24, 8, 47, 0))
+        check("preopen_label: 08:47:00 -> budget 180s (deadline 08:50:00・2026-09-25 朝の区切り)", b == 180)
+        check("preopen_label: 08:49:30 -> budget <= MIN (skipped)", PL.budget_seconds(_dt.datetime(2026, 9, 24, 8, 49, 30)) < PL.MIN_BUDGET_SEC)
+        src = open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "preopen_label.py"), encoding="utf-8").read()
+        check("preopen_label: uses newest_first=True and both locks", "newest_first=True" in src and "_acquire_heavy_cycle_lock" in src and "_acquire_analyze_lock" in src)
+        check("preopen_label: unloads LM after the 08:50 cut (after lock release)", "_unload_lm_after_cut()" in src and src.index("_release_heavy_cycle_lock(heavy)") < src.index("_unload_lm_after_cut()"))
+    finally:
+        config.RAW_COMMENTS_PATH, config.ANALYZED_PATH = orig_raw, orig_an
+        if orig_env is None:
+            _os.environ.pop("BBS_BACKLOG_NEWEST_FIRST_THRESHOLD", None)
+        else:
+            _os.environ["BBS_BACKLOG_NEWEST_FIRST_THRESHOLD"] = orig_env
+
+
+def test_early_heavy_lock_release_and_backlog_budget():
+    """★2026-09-24追加(コーデ13:2x承認 (a)(b)): 毎時本体は分析後にheavy_cycle_lockを早期解放し(finallyで二重に消さない)、
+    分析待ちが閾値超の毎時本体だけ分析予算を延ばす(catchup/preopen=明示予算は不変)。実データ書込みなし。"""
+    import tempfile, os as _os, inspect, datetime as _dt_early
+    orig_dir = config.DATA_DIR
+    config.DATA_DIR = tempfile.mkdtemp()
+    try:
+        # GAの窓(15:40以降・07:30前)では早期解放しない
+        _lp0 = RO._acquire_heavy_cycle_lock(timeout_sec=2)
+        RO._HEAVY_LOCK_PATH = _lp0
+        RO._release_heavy_cycle_lock_early("selftest-ga-window", now=_dt_early.datetime(2026, 9, 24, 16, 0))
+        check("early-release: NOT released in the GA window (16:00)", _os.path.exists(_lp0) and RO._HEAVY_LOCK_PATH == _lp0)
+        RO._release_heavy_cycle_lock_early("selftest-night", now=_dt_early.datetime(2026, 9, 25, 3, 0))
+        check("early-release: NOT released at night (03:00)", _os.path.exists(_lp0) and RO._HEAVY_LOCK_PATH == _lp0)
+        RO._release_heavy_cycle_lock(_lp0)
+        RO._HEAVY_LOCK_PATH = None
+        lp = RO._acquire_heavy_cycle_lock(timeout_sec=2)
+        RO._HEAVY_LOCK_PATH = lp
+        check("early-release: lock file exists while held", lp is not None and _os.path.exists(lp))
+        RO._release_heavy_cycle_lock_early("selftest", now=_dt_early.datetime(2026, 9, 24, 12, 0))
+        check("early-release: lock file removed after early release", not _os.path.exists(lp))
+        check("early-release: path cleared (finally becomes a no-op)", RO._HEAVY_LOCK_PATH is None)
+        # 他プロセスが取り直したロックを、mainのfinally相当(_release(None))が消さない
+        lp2 = RO._acquire_heavy_cycle_lock(timeout_sec=2)
+        RO._release_heavy_cycle_lock(RO._HEAVY_LOCK_PATH)   # None → 何もしない
+        check("early-release: finally-equivalent does not delete a re-acquired lock", _os.path.exists(lp2))
+        RO._release_heavy_cycle_lock(lp2)
+        RO._release_heavy_cycle_lock_early("second call", now=_dt_early.datetime(2026, 9, 24, 12, 0))     # 2回目は何も起きない
+        check("early-release: second call is a no-op", RO._HEAVY_LOCK_PATH is None)
+    finally:
+        config.DATA_DIR = orig_dir
+        RO._HEAVY_LOCK_PATH = None
+    src_main = inspect.getsource(RO.main)
+    src_body = inspect.getsource(RO._main_body)
+    check("early-release: main() finally uses _HEAVY_LOCK_PATH (not the local var)", "_release_heavy_cycle_lock(_HEAVY_LOCK_PATH)" in src_main)
+    check("early-release: hourly (not catchup) releases after analyze step", "if not catchup:" in src_body and "_release_heavy_cycle_lock_early(" in src_body)
+    src_an = inspect.getsource(A.analyze)
+    check("backlog-budget: extended only for auto+newest+no explicit budget", '_was_auto and _LAST_AUTO_NEWEST[0] and time_budget_sec is None' in src_an and "BBS_BACKLOG_ANALYZE_BUDGET_SEC" in src_an)
+    # フラグの実挙動
+    orig_raw, orig_an = config.RAW_COMMENTS_PATH, config.ANALYZED_PATH
+    orig_env = _os.environ.get("BBS_BACKLOG_NEWEST_FIRST_THRESHOLD")
+    d = tempfile.mkdtemp()
+    try:
+        import json
+        config.RAW_COMMENTS_PATH = _os.path.join(d, "raw.jsonl")
+        config.ANALYZED_PATH = _os.path.join(d, "analyzed.jsonl")
+        with open(config.RAW_COMMENTS_PATH, "w", encoding="utf-8") as f:
+            for i in range(4):
+                f.write(json.dumps({"id": f"z{i}", "source": "yahoo", "text": "t", "ts": f"2026-09-24T09:0{i}:00"}) + "\n")
+        _os.environ["BBS_BACKLOG_NEWEST_FIRST_THRESHOLD"] = "2"
+        A._pending_raw(newest_first="auto")
+        check("backlog-budget: flag True when backlog(4)>threshold(2)", A._LAST_AUTO_NEWEST[0] is True)
+        _os.environ["BBS_BACKLOG_NEWEST_FIRST_THRESHOLD"] = "10"
+        A._pending_raw(newest_first="auto")
+        check("backlog-budget: flag False when backlog(4)<=threshold(10)", A._LAST_AUTO_NEWEST[0] is False)
+    finally:
+        config.RAW_COMMENTS_PATH, config.ANALYZED_PATH = orig_raw, orig_an
+        if orig_env is None:
+            _os.environ.pop("BBS_BACKLOG_NEWEST_FIRST_THRESHOLD", None)
+        else:
+            _os.environ["BBS_BACKLOG_NEWEST_FIRST_THRESHOLD"] = orig_env
+
+
+def test_jsonl_intern_row_is_value_preserving():
+    """★2026-09-24追加(コーデ15:0x承認: python約2.6GB削減・出力不変が条件): intern_rowは値・キー順・型を変えず、
+    キー文字列とカテゴリ値だけを共有する。60日分の実データで旧版とsha256一致(n=599,488/774,657)は別途確認済み。"""
+    import json as _j, jsonl_window as JW
+    a = _j.loads('{"id": "1", "ts": "2026-09-24T09:00:00", "sentiment": "bullish", "text": "abc", "topics": ["x"], "votes_yes": 3, "confidence": 0.5, "flag": null}')
+    b = _j.loads('{"id": "2", "ts": "2026-09-24T09:00:00", "sentiment": "bullish", "text": "abc", "topics": ["x"], "votes_yes": 3, "confidence": 0.5, "flag": null}')
+    ia, ib = JW.intern_row(a), JW.intern_row(b)
+    check("intern_row: equal to the original (values)", ia == a and ib == b)
+    check("intern_row: key order preserved", list(ia.keys()) == list(a.keys()))
+    check("intern_row: json.dumps output identical", _j.dumps(ia, ensure_ascii=False) == _j.dumps(a, ensure_ascii=False))
+    check("intern_row: key objects shared across rows", all(ka is kb for ka, kb in zip(ia.keys(), ib.keys())))
+    check("intern_row: categorical value shared (sentiment/ts)", ia["sentiment"] is ib["sentiment"] and ia["ts"] is ib["ts"])
+    check("intern_row: non-dict returned as-is", JW.intern_row([1, 2]) == [1, 2] and JW.intern_row("s") == "s" and JW.intern_row(None) is None)
+    check("intern_row: numeric/None/list values untouched", ia["votes_yes"] == 3 and ia["flag"] is None and ia["topics"] == ["x"] and ia["confidence"] == 0.5)
+
+
+def test_preopen_label_night_gate():
+    """★2026-09-26追加: 寄り前ラベル付与(08:47)も休場日はnight_gate(GA稼働中・保留・空き12GB未満)に従って見送る。立会日の08:47は従来どおり実行。判定失敗はfail-open。"""
+    import datetime as _d, preopen_label as _pl, night_gate as _ng
+    sat = _d.datetime(2026, 9, 26, 8, 47, 0)
+    mon = _d.datetime(2026, 9, 28, 8, 47, 0)
+    kw = dict(holidays=set(), ga_fn=lambda: [(1, "verify_settings --mode ga")], enabled=True, min_free_gb=0)
+    s, why = _pl.night_gate_skip(sat, decide_fn=lambda n: _ng.decide(n, **kw))
+    check("preopen: 土曜08:47×GA稼働中→見送る", s is True and "ga_running" in why)
+    s, why = _pl.night_gate_skip(mon, decide_fn=lambda n: _ng.decide(n, **kw))
+    check("preopen: 月曜08:47(立会日)×GA稼働中→実行(窓の外)", s is False)
+    kw2 = dict(holidays=set(), ga_fn=lambda: [], enabled=True, min_free_gb=12, free_fn=lambda: 3000, sleep_fn=lambda s: None)
+    s, why = _pl.night_gate_skip(sat, decide_fn=lambda n: _ng.decide(n, **kw2))
+    check("preopen: 土曜08:47×GAなし×空き3GB→見送る(12GB規則)", s is True and "low_free_mem" in why)
+    kw3 = dict(holidays=set(), ga_fn=lambda: [], enabled=True, min_free_gb=12, free_fn=lambda: 20000, sleep_fn=lambda s: None)
+    s, why = _pl.night_gate_skip(sat, decide_fn=lambda n: _ng.decide(n, **kw3))
+    check("preopen: 土曜08:47×GAなし×空き20GB→実行", s is False)
+    def _boom(n):
+        raise RuntimeError("x")
+    s, why = _pl.night_gate_skip(sat, decide_fn=_boom)
+    check("preopen: 判定失敗→fail-open(実行)", s is False and "fail_open" in why)
+
+
+def test_preopen_lock_conflict_countermeasures():
+    """★2026-10-02追加(寄り前ラベル付与のロック競合対策・設計提案(b)・コーデ承認)。実データ/実LM/実ロックに触れない(一時DATA_DIR・時刻注入・スタブ)。
+    (2) catchupのanalyze締切キャップ(_catchup_preopen_cap) (3) preopen_labelの待機を08:49:00打切りに明示+busy時の保持者診断ログ。
+    ((1)のLM生成見送りは test_lm_memory_guard_premarket_window_and_load_gb 側で検証)"""
+    import tempfile, types, inspect
+    import preopen_label as PLm
+    d = dt.datetime
+    fri = lambda hh, mm, ss=0: d(2026, 10, 2, hh, mm, ss)   # 2026-10-02 は金曜(立会日)
+    cap = lambda start, now, base=240, hol=set(): RO._catchup_preopen_cap(base, start, now=now, holidays=hol)
+    # ---- (2) キャップ: 境界 07:59 / 08:30 / 08:40 / 08:44 / 08:46 / 09:05 / 09:06
+    check("cap: start 07:59 -> no cap", cap(fri(7, 59), fri(7, 59, 30)) == (240, None))
+    check("cap: start 08:29:59 (just before range) -> no cap even if now 08:43", cap(fri(8, 29, 59), fri(8, 43)) == (240, None))
+    b, note = cap(fri(8, 30), fri(8, 31))
+    check("cap: start 08:30:00, now 08:31 (780s left>=240) -> no cap", (b, note) == (240, None))
+    b, note = cap(fri(8, 30), fri(8, 40, 30))
+    check("cap: start 08:30, now 08:40:30 -> 210s (<240) capped", b == 210 and note is not None and "210" in note)
+    b, note = cap(fri(8, 40, 4), fri(8, 41, 35))
+    check("cap: start 08:40:04, now 08:41:35 (10-02 real) -> 145s", b == 145 and note is not None)
+    b, note = cap(fri(8, 30), fri(8, 43))
+    check("cap: start 08:30, now 08:43:00 -> 60s", b == 60)
+    b, note = cap(fri(8, 40), fri(8, 44, 0))
+    check("cap: now 08:44:00 -> 0s (skip analyze)", b == 0 and note is not None)
+    b, note = cap(fri(8, 40), fri(8, 45))
+    check("cap: now 08:45 -> negative (skip analyze)", b < 0)
+    b, note = cap(fri(8, 46, 59), fri(8, 47, 20))
+    check("cap: start 08:46:59 (last in range) -> negative (skip)", b < 0)
+    check("cap: start 08:47:00 (out of range) -> no cap", cap(fri(8, 47), fri(8, 47, 5)) == (240, None))
+    check("cap: start 09:05 -> no cap", cap(fri(9, 5), fri(9, 6)) == (240, None))
+    check("cap: start 09:06 -> no cap", cap(fri(9, 6), fri(9, 7)) == (240, None))
+    check("cap: base budget smaller than remaining stays unchanged", cap(fri(8, 30), fri(8, 31), base=120) == (120, None))
+    check("cap: Saturday (non trading day) -> no cap", cap(d(2026, 10, 3, 8, 40), d(2026, 10, 3, 8, 44, 30)) == (240, None))
+    check("cap: holiday date -> no cap", cap(fri(8, 40), fri(8, 44, 30), hol={"2026-10-02"}) == (240, None))
+    check("cap: epoch-seconds run_start accepted", cap(fri(8, 40).timestamp(), fri(8, 41, 35))[0] == 145)
+    # ワイヤリング: catchupだけが対象・analyze前にキャップ・予算0以下はanalyzeを呼ばない
+    src_body = inspect.getsource(RO._main_body)
+    check("cap wiring: catchup branch calls _catchup_preopen_cap(run_start) before analyze.analyze",
+          "_catchup_preopen_cap(_budget, run_start)" in src_body
+          and src_body.index("_catchup_preopen_cap(_budget, run_start)") < src_body.index("analyze.analyze(time_budget_sec=_budget"))
+    check("cap wiring: budget<=0 skips analyze for catchup only", "if catchup and _budget is not None and _budget <= 0:" in src_body)
+    check("cap wiring: hourly body unchanged (early release stays hourly-only, no early release for catchup)",
+          "if not catchup:" in src_body and "_release_heavy_cycle_lock_early(" in src_body)
+    # ---- (3) preopen_label: 待機は 08:49:00(=締切-最小予算) で打ち切り
+    lw = PLm.lock_wait_seconds
+    check("preopen wait: 08:47:00 -> 120s", lw(fri(8, 47, 0)) == 120)
+    check("preopen wait: 08:47:01 (real start) -> 119s", lw(fri(8, 47, 1)) == 119)
+    check("preopen wait: 08:48:59 -> 1s", lw(fri(8, 48, 59)) == 1)
+    check("preopen wait: 08:49:00 -> 0s", lw(fri(8, 49, 0)) == 0)
+    check("preopen wait: 08:49:30 / 09:00 -> 0s (never negative)", lw(fri(8, 49, 30)) == 0 and lw(fri(9, 0)) == 0)
+    check("preopen wait: early manual start capped at 300s", lw(fri(8, 44, 0)) == 300 and lw(fri(8, 0, 0)) == 300)
+    # ---- ダミーロックの診断(describe_lock_owner): 読み取り専用・壊れたファイルでも例外なし
+    orig_dir = config.DATA_DIR
+    config.DATA_DIR = tempfile.mkdtemp()
+    try:
+        lp = os.path.join(config.DATA_DIR, ".heavy_cycle.lock")
+        check("owner diag: no lock file -> unreadable(no exception)", PLm.describe_lock_owner(now=fri(8, 49)).startswith("owner=unreadable"))
+        with open(lp, "w", encoding="utf-8") as f:
+            f.write("99999999 2026-10-02T08:40:04\n")
+        before = open(lp, encoding="utf-8").read()
+        s = PLm.describe_lock_owner(now=fri(8, 49, 4), alive_fn=lambda p: False)
+        check("owner diag: pid/acquired/held_for/pid_alive in one line",
+              "owner_pid=99999999" in s and "acquired=2026-10-02T08:40:04" in s and "held_for=540s" in s and "pid_alive=False" in s)
+        check("owner diag: alive pid reported", "pid_alive=True" in PLm.describe_lock_owner(now=fri(8, 49), alive_fn=lambda p: True))
+        check("owner diag: read-only (lock file unchanged)", open(lp, encoding="utf-8").read() == before)
+        with open(lp, "w", encoding="utf-8") as f:
+            f.write("garbage\n")
+        check("owner diag: corrupted lock -> owner_pid=None, no exception", "owner_pid=None" in PLm.describe_lock_owner(now=fri(8, 49)))
+        # ---- main(): 時刻注入(dt差替)+ロック関数スタブで 打切り・busyログ・重複なし を検証(実待機なし・LM/analyze非接触)
+        class _FakeDT(d):
+            _now = None
+            @classmethod
+            def now(cls, tz=None):
+                return cls._now
+        calls = {"heavy": [], "unload": 0, "analyze_lock": 0}
+        saved = (PLm.dt, RO._acquire_heavy_cycle_lock, RO._acquire_analyze_lock, RO._release_heavy_cycle_lock,
+                 RO._release_analyze_lock, PLm._unload_lm_after_cut, config.LOG_PATH, PLm.night_gate_skip)
+        config.LOG_PATH = os.path.join(config.DATA_DIR, "run.log")
+        try:
+            PLm.dt = types.SimpleNamespace(datetime=_FakeDT)
+            PLm.night_gate_skip = lambda now=None, decide_fn=None: (False, "test")
+            PLm._unload_lm_after_cut = lambda: calls.__setitem__("unload", calls["unload"] + 1)
+            RO._acquire_heavy_cycle_lock = lambda timeout_sec=15: (calls["heavy"].append(timeout_sec) or None)   # 常にbusy
+            _FakeDT._now = fri(8, 47, 1)
+            with open(lp, "w", encoding="utf-8") as f:
+                f.write("%d 2026-10-02T08:40:04\n" % os.getpid())
+            rc = PLm.main()
+            log = open(config.LOG_PATH, encoding="utf-8").read()
+            check("preopen main: busy -> rc 0 and waited 119s (08:49:00 cutoff), not 120",
+                  rc == 0 and calls["heavy"] == [119])
+            check("preopen main: busy log keeps the legacy phrase + owner diagnostics (pid/acquired/pid_alive)",
+                  "heavy_cycle_lock busy for 119s" in log and "skipped (another run holds it)" in log
+                  and ("owner_pid=%d" % os.getpid()) in log and "pid_alive=True" in log)
+            check("preopen main: busy skip does not unload LM (no analyze ran)", calls["unload"] == 0)
+            calls["heavy"].clear()
+            _FakeDT._now = fri(8, 49, 30)
+            PLm.main()
+            check("preopen main: 08:49:30 start -> skipped by budget before touching the lock", calls["heavy"] == [])
+            # ロックが取れた場合: analyze lockがbusyなら両ロックを解放して終わる(二重実行防止の既存挙動の回帰)
+            rel = []
+            RO._acquire_heavy_cycle_lock = lambda timeout_sec=15: (calls["heavy"].append(timeout_sec) or "HEAVY")
+            RO._acquire_analyze_lock = lambda timeout_sec=15: None
+            RO._release_heavy_cycle_lock = lambda p: rel.append(("heavy", p))
+            RO._release_analyze_lock = lambda p: rel.append(("analyze", p))
+            _FakeDT._now = fri(8, 48, 30)
+            rc = PLm.main()
+            check("preopen main: lock acquired after waiting (08:48:30) then analyze lock busy -> both released, rc 0",
+                  rc == 0 and ("heavy", "HEAVY") in rel and calls["heavy"] == [30])
+        finally:
+            (PLm.dt, RO._acquire_heavy_cycle_lock, RO._acquire_analyze_lock, RO._release_heavy_cycle_lock,
+             RO._release_analyze_lock, PLm._unload_lm_after_cut, config.LOG_PATH, PLm.night_gate_skip) = saved
+    finally:
+        config.DATA_DIR = orig_dir
+
+
+def test_tier_flow_ledger_mark_rule():
+    """★2026-09-26追加(Phase2対応): 日次台帳(15:35以降・1日1回マーク)は skipped(当日tick未到着)の間は18:30までマークを書かず再試行、
+    18:30以降は諦めて書く。ok なら時刻によらず書く。"""
+    import run_once as _ro
+    m = _ro._tier_flow_should_mark
+    check("tier_flow_mark: skipped×18:29→書かない(再試行)", m(True, 18 * 60 + 29) is False)
+    check("tier_flow_mark: skipped×18:30→書く(give up)", m(True, 18 * 60 + 30) is True)
+    check("tier_flow_mark: skipped×15:35→書かない", m(True, 15 * 60 + 35) is False)
+    check("tier_flow_mark: ok×15:35→書く", m(False, 15 * 60 + 35) is True)
+    check("tier_flow_mark: ok×19:00→書く", m(False, 19 * 60) is True)
+    src = open(_ro.__file__, encoding="utf-8").read()
+    check("tier_flow_mark: run_once本体が判定関数を使っている", "if _tier_flow_should_mark(bool(lres.get(\"skipped\")), _hm_tfl):" in src)
+
+
+def test_night_gate_ga_priority():
+    """★2026-09-24追加(ユーザー決定15:4x「夜間はGAを優先」・コーデ15:5x依頼): 夜間の窓(平日16:00〜翌07:30・休場日は終日)でGA(verify_settings.py)が
+    動いている間だけ分析サイクルを見送る。窓の外(場中・寄り前)は必ず走る。GA無しなら夜間でも走る。判定失敗はfail-open。collect-onlyは対象外。"""
+    import datetime as _d, inspect, night_gate as NG
+    hol = {"2026-09-21", "2026-09-22", "2026-09-23"}
+    ga_on = lambda: [(4242, "verify_settings.py --mode ga")]
+    ga_off = lambda: []
+    def boom():
+        raise OSError("cim failed")
+    def dec(y, mo, d, h, mi, fn, holidays=hol):
+        return NG.decide(now=_d.datetime(y, mo, d, h, mi), holidays=holidays, ga_fn=fn, enabled=True, min_free_gb=0)   # 空き物理の判定(2026-09-26追加)は実機の状態に依存するので既存テストでは無効・専用テストで別途検証
+    # 平日(09-24は木曜)
+    check("night: weekday 16:00 + GA -> skip", dec(2026, 9, 24, 16, 0, ga_on)["skip"] is True)
+    check("night: weekday 23:30 + GA -> skip", dec(2026, 9, 24, 23, 30, ga_on)["skip"] is True)
+    check("night: weekday 07:29 + GA -> skip", dec(2026, 9, 25, 7, 29, ga_on)["skip"] is True)
+    check("night: weekday 07:30 + GA -> NOT skip (window ends)", dec(2026, 9, 25, 7, 30, ga_on)["skip"] is False)
+    check("night: pre-open 08:47 + GA -> NOT skip", dec(2026, 9, 25, 8, 47, ga_on)["skip"] is False)
+    check("night: market hours 10:00 + GA -> NOT skip", dec(2026, 9, 25, 10, 0, ga_on)["skip"] is False)
+    # 2026-10-10: NIGHT_STARTを16:00→15:40にした(ユーザー直接確認「昼=LM・夜=GA」)ためテストを更新: 15:39=窓の外(見送らない)・15:40=窓の中(GAがあれば見送る)
+    # 2026-10-10 毎時本体の09:05待ち(案2)
+    import run_once as _ro
+    _H = {"2026-10-12"}
+    _hw = lambda y, m, d, hh, mm, ss=0: __import__("datetime").datetime(y, m, d, hh, mm, ss)
+    check("hourly wait: 09:00:00 weekday -> 300s", _ro._hourly_wait_0905_seconds(_hw(2026, 10, 13, 9, 0, 0), _H) == 300)
+    check("hourly wait: 09:02:30 weekday -> 150s", _ro._hourly_wait_0905_seconds(_hw(2026, 10, 13, 9, 2, 30), _H) == 150)
+    check("hourly wait: 09:04:59 weekday -> 1s", _ro._hourly_wait_0905_seconds(_hw(2026, 10, 13, 9, 4, 59), _H) == 1)
+    check("hourly wait: 09:05:00 -> 0", _ro._hourly_wait_0905_seconds(_hw(2026, 10, 13, 9, 5, 0), _H) == 0)
+    check("hourly wait: 08:59:59 -> 0", _ro._hourly_wait_0905_seconds(_hw(2026, 10, 13, 8, 59, 59), _H) == 0)
+    check("hourly wait: Saturday 09:01 -> 0", _ro._hourly_wait_0905_seconds(_hw(2026, 10, 10, 9, 1, 0), _H) == 0)
+    check("hourly wait: holiday Monday 09:01 -> 0", _ro._hourly_wait_0905_seconds(_hw(2026, 10, 12, 9, 1, 0), _H) == 0)
+    check("hourly wait: holidays unreadable(None) weekday 09:01 -> waits", _ro._hourly_wait_0905_seconds(_hw(2026, 10, 13, 9, 1, 0), None) > 0)
+    check("night: weekday 15:39 + GA -> NOT skip", dec(2026, 9, 24, 15, 39, ga_on)["skip"] is False)
+    check("night: weekday 15:40 + GA -> skip", dec(2026, 9, 24, 15, 40, ga_on)["skip"] is True)
+    check("night: weekday 16:00 no GA -> NOT skip (runs normally)", dec(2026, 9, 24, 16, 0, ga_off)["skip"] is False)
+    check("night: reason when no GA", dec(2026, 9, 24, 16, 0, ga_off)["reason"] == "night_window_no_ga")
+    # 休場日・週末は終日
+    check("night: holiday 10:00 + GA -> skip", dec(2026, 9, 22, 10, 0, ga_on)["skip"] is True)
+    check("night: Saturday 12:00 + GA -> skip", dec(2026, 9, 26, 12, 0, ga_on)["skip"] is True)
+    check("night: Sunday 09:00 no GA -> NOT skip", dec(2026, 9, 27, 9, 0, ga_off)["skip"] is False)
+    check("night: holidays unreadable(None) -> weekend still all-day, weekday follows clock", dec(2026, 9, 26, 12, 0, ga_on, holidays=None)["skip"] is True and dec(2026, 9, 24, 12, 0, ga_on, holidays=None)["skip"] is False)
+    # 朝の区切り(2026-09-25 ユーザー決定18:5x): 立会日08:50:00〜09:05:00(終端含まず)はGAの有無に関わらず見送る・休場日と窓の外は対象外
+    def dec_m(y, mo, d, h, mi, s=0, holidays=hol, **kw):
+        return NG.decide(now=_d.datetime(y, mo, d, h, mi, s), holidays=holidays, ga_fn=ga_off, enabled=True, min_free_gb=0, **kw)
+    check("morning cut: weekday 08:49:59 -> NOT skip", dec_m(2026, 9, 28, 8, 49, 59)["skip"] is False)
+    check("morning cut: weekday 08:50:00 -> skip (no GA)", dec_m(2026, 9, 28, 8, 50)["skip"] is True and dec_m(2026, 9, 28, 8, 50)["reason"] == "morning_cut_0850_0905")
+    check("morning cut: weekday 08:57 -> skip", dec_m(2026, 9, 28, 8, 57)["skip"] is True)
+    check("morning cut: weekday 09:04:59 -> skip", dec_m(2026, 9, 28, 9, 4, 59)["skip"] is True)
+    check("morning cut: weekday 09:05:00 -> NOT skip (window ends)", dec_m(2026, 9, 28, 9, 5)["skip"] is False)
+    check("morning cut: holiday 08:55 -> not the morning-cut reason (holiday rule governs)", dec_m(2026, 9, 22, 8, 55)["reason"] != "morning_cut_0850_0905")
+    check("morning cut: Saturday 08:55 no GA -> not the morning-cut reason", dec_m(2026, 9, 26, 8, 55)["reason"] != "morning_cut_0850_0905")
+    check("morning cut: disabled by morning_cut=False", dec_m(2026, 9, 28, 8, 55, morning_cut=False)["skip"] is False)
+    check("morning cut: BBS_NIGHT_GATE off (enabled=False) disables it too", NG.decide(now=_d.datetime(2026, 9, 28, 8, 55), holidays=hol, ga_fn=ga_off, enabled=False)["skip"] is False)
+    check("morning cut: holidays unreadable(None) -> weekday still cut", dec_m(2026, 9, 28, 8, 55, holidays=None)["skip"] is True)
+    # 夜間・休場日でGA0本の間の空き物理ガード(2026-09-26 ユーザー選択式『空き平均12GB未満なら見送る』): 5回平均・fail-open・GA稼働中/窓の外/保留は測らない
+    def dec_f(y, mo, d, h, mi, free_mb, fn=ga_off, holidays=hol, **kw):
+        calls = []
+        def _free():
+            calls.append(1)
+            return free_mb(len(calls)) if callable(free_mb) else free_mb
+        r = NG.decide(now=_d.datetime(y, mo, d, h, mi), holidays=holidays, ga_fn=fn, enabled=True, free_fn=_free, sleep_fn=lambda s: None, **kw)
+        return r, len(calls)
+    r_, n_ = dec_f(2026, 9, 26, 4, 0, 6 * 1024)     # 土曜04:00・GA0本・空き6GB
+    check("free guard: holiday GA0 free 6GB<12GB -> skip (night_low_free_mem)", r_["skip"] is True and r_["reason"].startswith("night_low_free_mem") and n_ == 5)
+    r_, n_ = dec_f(2026, 9, 26, 4, 0, 20 * 1024)    # 空き20GB
+    check("free guard: holiday GA0 free 20GB>=12GB -> NOT skip", r_["skip"] is False and r_["reason"] == "night_window_no_ga")
+    seq_ = [1024, 40 * 1024, 40 * 1024, 40 * 1024, 40 * 1024]
+    r_, n_ = dec_f(2026, 9, 26, 4, 0, lambda k: seq_[k - 1])   # 単発の谷1GB+高い4本(平均32GB)
+    check("free guard: uses 5-sample average (one dip does not skip)", r_["skip"] is False)
+    # ★2026-10-10(ユーザー選択式17:5x・案D-1): 既定の閾値は12→10.7GB(LM載り8.7GB+床2GB)
+    check("free guard: default MIN_FREE_GB is 10.7 (2026-10-10)", abs(NG.MIN_FREE_GB - 10.7) < 1e-9 or "BBS_NIGHT_MIN_FREE_GB" in os.environ)
+    r_, n_ = dec_f(2026, 9, 24, 23, 0, 10 * 1024)   # 平日夜
+    check("free guard: weekday night GA0 free 10GB -> skip", r_["skip"] is True and r_["reason"].startswith("night_low_free_mem"))
+    r_, n_ = dec_f(2026, 9, 24, 23, 0, 11 * 1024)   # 10.7GB以上は実行(旧12GB規則なら見送り)
+    check("free guard: weekday night GA0 free 11GB -> NOT skip (10.7GB rule)", r_["skip"] is False)
+    r_, n_ = dec_f(2026, 9, 25, 10, 0, 1 * 1024)    # 場中は対象外(測らない)
+    check("free guard: market hours never measured/skipped by it", r_["skip"] is False and n_ == 0 and r_["reason"] == "outside_night_window")
+    r_, n_ = dec_f(2026, 9, 26, 4, 0, 1 * 1024, fn=ga_on)   # GA稼働中は従来どおり見送り・測らない
+    check("free guard: GA running -> skip by GA rule without measuring", r_["skip"] is True and r_["reason"] == "night_window_and_ga_running" and n_ == 0)
+    def _boom_free():
+        raise OSError("x")
+    r_ = NG.decide(now=_d.datetime(2026, 9, 26, 4, 0), holidays=hol, ga_fn=ga_off, enabled=True, free_fn=_boom_free, sleep_fn=lambda s: None)
+    check("free guard: measure failure -> fail-open (NOT skip)", r_["skip"] is False and "fail_open" in r_["reason"])
+    r_, n_ = dec_f(2026, 9, 26, 4, 0, 1 * 1024, min_free_gb=0)
+    check("free guard: min_free_gb=0 disables it", r_["skip"] is False and n_ == 0)
+    r_, n_ = dec_f(2026, 9, 26, 4, 0, 10.7 * 1024)    # ちょうど10.7GBは実行(未満のみ見送り)
+    check("free guard: exactly 10.7GB runs (only <10.7GB skips)", r_["skip"] is False)
+    r_, n_ = dec_f(2026, 9, 26, 4, 0, 10.6 * 1024)
+    check("free guard: 10.6GB skips", r_["skip"] is True and r_["reason"].startswith("night_low_free_mem"))
+    # GA起動待ちの保留ファイル(2026-09-24 20:18): 有効な間は夜間の窓でGA未起動でも見送る・期限切れ/不正/無しは従来どおり
+    import tempfile as _tfh
+    _oldhold = NG.HOLD_PATH
+    _hd = _tfh.mkdtemp()
+    NG.HOLD_PATH = os.path.join(_hd, ".night_hold_until")
+    try:
+        _rh0 = dec(2026, 9, 24, 20, 30, ga_off)
+        check("night: no hold file -> unchanged (no GA -> NOT skip)", _rh0["skip"] is False and _rh0["reason"] == "night_window_no_ga")
+        with open(NG.HOLD_PATH, "w", encoding="utf-8") as _f:
+            _f.write("2026-09-24T20:50:00\n# note\n")
+        _rh1 = dec(2026, 9, 24, 20, 30, ga_off)
+        check("night: valid hold -> skip even without GA", _rh1["skip"] is True and "night_hold_for_ga_launch" in _rh1["reason"])
+        _rh2 = dec(2026, 9, 24, 20, 51, ga_off)
+        check("night: expired hold is ignored", _rh2["skip"] is False)
+        _rh3 = dec(2026, 9, 24, 14, 0, ga_off)
+        check("night: hold never affects market hours", _rh3["skip"] is False and _rh3["reason"] == "outside_night_window")
+        with open(NG.HOLD_PATH, "w", encoding="utf-8") as _f:
+            _f.write("garbage\n")
+        check("night: broken hold file is ignored", dec(2026, 9, 24, 20, 30, ga_off)["skip"] is False)
+    finally:
+        NG.HOLD_PATH = _oldhold
+    # 検出の一過性失敗は1回やり直す・空出力は失敗扱い(2026-09-24 17:24 ai_insight判定でGA不検出の疑い)
+    _old_sleep = NG.RETRY_SLEEP_SEC
+    NG.RETRY_SLEEP_SEC = 0
+    try:
+        _calls = []
+        def _flaky():
+            _calls.append(1)
+            if len(_calls) == 1:
+                raise OSError("cim slow")
+            return [(7, "verify_settings.py --mode ga")]
+        _rf = dec(2026, 9, 24, 17, 0, _flaky)
+        check("night: transient GA detection failure is retried once and then skips", _rf["skip"] is True and len(_calls) == 2)
+        _calls2 = []
+        def _dead():
+            _calls2.append(1)
+            raise OSError("cim dead")
+        _rd = dec(2026, 9, 24, 17, 0, _dead)
+        check("night: detection failing twice -> fail-open after exactly 2 attempts", _rd["skip"] is False and len(_calls2) == 2 and "fail_open" in _rd["reason"])
+        import unittest.mock as _um
+        class _P:
+            stdout = b""
+            returncode = 0
+        with _um.patch.object(NG.subprocess, "run", return_value=_P()):
+            try:
+                NG.list_ga_processes()
+                _empty_raises = False
+            except RuntimeError:
+                _empty_raises = True
+        check("night: empty CIM output is treated as a detection failure (not as 'no GA')", _empty_raises)
+    finally:
+        NG.RETRY_SLEEP_SEC = _old_sleep
+    # 段階R(verify_settings.pyを使わない)も検出対象: 名前の一覧はNG.COMPUTE_MARKERSの1か所
+    _cl = {
+        "std7": "python -B C:\\x\\exit_replay_stageR_run_20260924.py --set std7 --prereg-file a.md --workers 2",
+        "sizing": "python -B C:\\x\\sizing_replay_20260924.py --mode run --prereg-file b.md",
+        "launcher": "python -B guard.py --launcher run_stageR_K_sizing_20260924.ps1:K --workers 2",
+        "ga": "python verify_settings.py --mode ga",
+    }
+    check("night: stage R std7/K cmdline detected", "--set std7" in (NG.compute_tag(_cl["std7"]) or ""))
+    check("night: stage R sizing cmdline detected", NG.compute_tag(_cl["sizing"]) is not None)
+    check("night: stage R launcher guard cmdline detected", NG.compute_tag(_cl["launcher"]) is not None)
+    check("night: GA cmdline detected with mode", "--mode ga" in (NG.compute_tag(_cl["ga"]) or ""))
+    check("night: unrelated python not detected", NG.compute_tag("python run_once.py --catchup") is None and NG.compute_tag("python dashboard.py") is None and NG.compute_tag("") is None and NG.compute_tag(None) is None)
+    check("night: markers listed in one place (GA + stage R + sizing)", all(k in NG.COMPUTE_MARKERS for k in ("verify_settings", "exit_replay_stageR_run_", "sizing_replay_")))
+    # GAの複製版(接頭辞verify_settings)も検出: 今夜のa4rf区間3・4=regimefloor版・23時以降のRNDP=rndp版(2026-09-24 21:37コーデ指摘)
+    check("night: regimefloor GA copy detected", "--mode ga" in (NG.compute_tag("python -u -B verify_settings_regimefloor_20260924.py --symbol 285A --mode ga --seed 20261404") or ""))
+    check("night: rndp GA copy detected", "--mode ga" in (NG.compute_tag("python -u -B verify_settings_rndp_20260924.py --symbol 285A --mode ga --seed 20261500") or ""))
+    check("night: standard verify_settings.py still detected", NG.compute_tag("python -u -B verify_settings.py --symbol 285A --mode ga --seed 1") is not None)
+    check("night: only regimefloor copy running (no standard GA) -> skip at night", dec(2026, 9, 24, 22, 0, lambda: [(5, NG.compute_tag("python verify_settings_regimefloor_20260924.py --mode ga"))])["skip"] is True)
+    check("night: unrelated names starting differently not detected", NG.compute_tag("python my_verify_tool.py --mode ga") is None and NG.compute_tag("python settings_verify.py") is None)
+    _src_lp = inspect.getsource(NG.list_ga_processes)
+    check("night: list_ga_processes has no hard-coded script name", "verify_settings.py" not in _src_lp and "compute_tag(" in _src_lp)
+    check("night: stage R alone (no GA) -> skip at night", dec(2026, 9, 24, 17, 0, lambda: [(9, NG.compute_tag(_cl["std7"]))])["skip"] is True)
+    # fail-open・無効化
+    r = dec(2026, 9, 24, 16, 0, boom)
+    check("night: GA detection error -> fail-open (NOT skip)", r["skip"] is False and "fail_open" in r["reason"])
+    check("night: disabled flag -> NOT skip", NG.decide(now=_d.datetime(2026, 9, 24, 16, 0), holidays=hol, ga_fn=ga_on, enabled=False)["skip"] is False)
+    check("night: log line names skip/reason/ga", "skip=True" in NG.log_line(dec(2026, 9, 24, 16, 0, ga_on)) and "4242" in NG.log_line(dec(2026, 9, 24, 16, 0, ga_on)))
+    # アンロード: 他のrunがロックを持つ間は触らない
+    called = []
+    ok, msg = NG.unload_lm_if_idle(run_fn=lambda: called.append(1), exists_fn=lambda p: p.endswith(".heavy_cycle.lock"))
+    check("night: unload skipped while another run holds the lock", ok is False and not called)
+    class _R: stdout = "unloaded"; stderr = ""
+    ok2, _m = NG.unload_lm_if_idle(run_fn=lambda: (called.append(1), _R())[1], exists_fn=lambda p: False)
+    check("night: unload runs when idle", ok2 is True and called == [1])
+    # 配線: main()はcollect_only早期returnの後・重いロック取得の前で判定する
+    src = inspect.getsource(RO.main)
+    i_c, i_n, i_l = src.find("if collect_only:"), src.find("night_gate.decide()"), src.find("_acquire_heavy_cycle_lock(timeout_sec")
+    check("night: wired in main() after collect-only return and before the heavy lock", 0 <= i_c < i_n < i_l)
+    # ニュース要約(lm_memory_guard)も夜間は見送る・窓の外は従来どおり
+    import lm_memory_guard as G
+    _prev_en = G.ENABLED
+    G.ENABLED = True
+    night_dec = lambda now: {"skip": True, "reason": "night_window_and_ga_running", "ga": [(1, "x")]}
+    day_dec = lambda now: {"skip": False, "reason": "outside_night_window", "ga": []}
+    d1 = G.decide("news_summary", now=_d.datetime(2026, 9, 24, 17, 0), free_fn=lambda: 30000, loaded_fn=lambda: False, state={"news_summary": {"consecutive_defers": 99}}, persist=False, night_fn=night_dec)
+    check("night: news_summary deferred while GA runs (even past the consecutive cap)", d1["defer"] is True and d1["reason"] == "night_ga_running")
+    d2 = G.decide("news_summary", now=_d.datetime(2026, 9, 24, 12, 0), free_fn=lambda: 30000, loaded_fn=lambda: False, state={}, persist=False, night_fn=day_dec)
+    check("night: news_summary not deferred outside the window with ample memory", d2["defer"] is False)
+    G.ENABLED = _prev_en
+
+
 def test_dedupe_analyzed_by_id():
     rows = [
         {"id": "a", "sentiment": "bullish"},
@@ -667,6 +1131,26 @@ def _make_fake_post(arr, calls):
     return _post
 
 
+class _FakeLmstudioRawResp:
+    """_FakeLmstudioRespと違い、JSON配列でなく生テキストをそのまま応答本文にする
+    (特殊トークン漏れなど、モデル出力の非JSON前置きを再現するためのフェイク)。"""
+    def __init__(self, raw_text):
+        self._raw_text = raw_text
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._raw_text}}]}
+
+
+def _make_fake_post_raw(raw_text, calls):
+    def _post(url, json=None, timeout=None):
+        calls.append(json)
+        return _FakeLmstudioRawResp(raw_text)
+    return _post
+
+
 def test_lmstudio_hybrid():
     # ケース1: 全件「辞書だけで確信を持って判定できる」または「明確に無内容」-> LLM不呼び出し
     calls = []
@@ -720,10 +1204,31 @@ def test_lmstudio_hybrid():
     check("hybrid: all-ambiguous sentiment passthrough",
           res3[0]["sentiment"] == "neutral" and res3[5]["sentiment"] == "bullish")
 
+    # ★2026-09-30: llm-jp-4-8b-instruct切替に伴う2つの既知バグへの耐性
+    # (1) "sentiment"キーを"sentimemt"と誤字る -> 寛容パースで拾う
+    calls = []
+    batch_typo = [{"i": 0, "text": "今日は決算発表があるらしい"}]
+    llm_arr_typo = [{"i": 0, "meaningful": True, "sentimemt": "bearish"}]
+    res_typo, _ = A.analyze_batch_with_lmstudio_hybrid(batch_typo, post_fn=_make_fake_post(llm_arr_typo, calls))
+    check("hybrid: sentimemt typo tolerated -> sentiment filled",
+          res_typo[0]["sentiment"] == "bearish" and res_typo[0]["meaningful"] is True)
+
+    # (2) 応答冒頭にHarmony形式风の特殊トークンを漏らす -> JSON解析前に除去してから通常通り処理
+    calls = []
+    batch_leaky = [{"i": 0, "text": "今日は決算発表があるらしい"}]
+    leaky_raw = ('<|channel|> final<|message|> '
+                 '[{"i": 0, "meaningful": true, "sentiment": "neutral"}]')
+    res_leaky, _ = A.analyze_batch_with_lmstudio_hybrid(batch_leaky, post_fn=_make_fake_post_raw(leaky_raw, calls))
+    check("hybrid: leaked channel token stripped -> parses normally",
+          res_leaky[0]["sentiment"] == "neutral" and res_leaky[0]["meaningful"] is True)
+
     # config.LOCAL_LLM_ENDPOINTS["lmstudio"] のエントリ存在確認(base_url/model)
     ep = config.LOCAL_LLM_ENDPOINTS.get("lmstudio", {})
     check("config: lmstudio endpoint has base_url/model", bool(ep.get("base_url")) and bool(ep.get("model")))
     check("config: lmstudio is a valid BBS_LLM_BACKEND choice", "lmstudio" in config._BBS_LLM_BACKEND_CHOICES)
+    # ★2026-10-08: 感情分類のモデルを qwen3-8b(思考オフ)へ(ユーザー直接指示)。AI考察は PUBLIC_INSIGHT_LMSTUDIO_MODEL=llm-jp のまま。
+    check("config: lmstudio default model is benchmark/gemma-4-12b-it (2026-10-29 Qwen撤去で切替・感情分類)",
+          ep.get("model") == "benchmark/gemma-4-12b-it")
 
     # ---- ★2026-08-17: チャンク分割(config.LMSTUDIO_HYBRID_CHUNK_SIZE)の検証 --------
     # 曖昧アイテム全件を1回のバッチ呼び出しに集約すると、実運用規模(n=400級)で
@@ -1355,6 +1860,77 @@ def test_sig_cap_shock_and_price_freeze_guard():
           s_fresh["price"]["change_pct"] is not None)
 
 
+def test_sig_threshold_labels():
+    """
+    ★2026-09-14追加(おにやGO②・22:36エンジニア発見の是正)。
+    9指標カードのthreshold欄が、従来はFIRE閾値のみで警戒状態の根拠(WARN閾値)が
+    どこにも表示されず「阿鼻叫喚22.4・条件>30・状態=警戒」のように数字が矛盾して
+    見える問題への対応。state="警戒"の時だけWARN閾値も併記されることを確認する。
+    """
+    # _threshold_label 単体
+    check("_threshold_label: OK状態はFIRE閾値のみ",
+          SG._threshold_label(">", 30, 15, "OK") == ">30")
+    check("_threshold_label: 発火状態もFIRE閾値のみ(境目を跨いでいないので1値で足りる)",
+          SG._threshold_label(">", 30, 15, "発火") == ">30")
+    check("_threshold_label: 警戒状態はFIRE/WARN両方を併記",
+          SG._threshold_label(">", 30, 15, "警戒") == ">30(発火)/>15(警戒)")
+    check("_threshold_label: suffixは末尾に1回だけ付く(重複しない)",
+          SG._threshold_label(">=", 5.5, 4.0, "警戒", suffix="/100投稿")
+          == ">=5.5(発火)/>=4.0(警戒)/100投稿")
+    check("_threshold_label: OK+suffixも末尾に1回",
+          SG._threshold_label(">=", 5.5, 4.0, "OK", suffix="/100投稿") == ">=5.5/100投稿")
+
+    # build_signal_cards統合: 阿鼻叫喚22.4(実機で確認した実例=WARN15超FIRE30未満=警戒)
+    ratios = {"n": 10, "bull_ratio": 0.4, "bear_ratio": 0.3, "neutral_ratio": 0.3}
+    lex = SG.lexicon_counts(["普通のコメント"] * 10)
+    votes = {"bull_bear_ratio": 1.0, "max_bullish_votes": 3, "bear_votes_share": 0.3,
+             "bull_votes": 5, "bear_votes": 5}
+    named = {"top5_share": 0.02}
+    other = {"ratio": 0.01}
+
+    g_warn = {"overheat": 15.1, "capitulation": 22.4}
+    cards_warn = SG.build_signal_cards(ratios=ratios, lex=lex, votes=votes, named=named,
+                                       other=other, posts_z=0.64, gauges=g_warn,
+                                       pph=1.0, in_low_zone=False)
+    cap_warn = next(c for c in cards_warn if c["name"] == "阿鼻叫喚(セリクラ)")
+    check("cards: 阿鼻叫喚22.4(警戒・実機で確認した実例の再現)はthresholdに"
+          "FIRE/WARN両方(>30(発火)/>15(警戒))が併記される",
+          cap_warn["state"] == "警戒" and cap_warn["threshold"] == ">30(発火)/>15(警戒)")
+    oh_ok = next(c for c in cards_warn if c["name"] == "灼熱メーター(過熱)")
+    check("cards: 灼熱15.1(OK)はthresholdにWARN閾値が出ない(従来どおり1値のまま)",
+          oh_ok["state"] == "OK" and oh_ok["threshold"] == ">36" and "警戒" not in oh_ok["threshold"])
+
+    g_fire = {"overheat": 15.1, "capitulation": 35.0}
+    cards_fire = SG.build_signal_cards(ratios=ratios, lex=lex, votes=votes, named=named,
+                                       other=other, posts_z=0.0, gauges=g_fire,
+                                       pph=1.0, in_low_zone=False)
+    cap_fire = next(c for c in cards_fire if c["name"] == "阿鼻叫喚(セリクラ)")
+    check("cards: 阿鼻叫喚35(発火)はthresholdにFIRE閾値のみ(境目を跨がないので1値のまま)",
+          cap_fire["state"] == "発火" and cap_fire["threshold"] == ">30")
+
+    # 話題枯れ/投稿サージ(★2026-09-14 configへ定数化・値は不変)の回帰確認
+    g_neutral = {"overheat": 0.0, "capitulation": 0.0}
+    cards_dearth_warn = SG.build_signal_cards(ratios=ratios, lex=lex, votes=votes, named=named,
+                                              other=other, posts_z=-0.6, gauges=g_neutral,
+                                              pph=1.0, in_low_zone=False)
+    dearth = next(c for c in cards_dearth_warn if c["name"] == "話題枯れ")
+    check("cards: 話題枯れ z=-0.6(WARN=-0.5超過)は警戒・WARN閾値-0.5が併記される",
+          dearth["state"] == "警戒" and dearth["threshold"] == "z<-1.0(発火)/z<-0.5(警戒)")
+    surge_same = next(c for c in cards_dearth_warn if c["name"] == "投稿サージ")
+    check("cards: 話題枯れが警戒でも投稿サージ側は無関係にOKのまま(閾値混線なし)",
+          surge_same["state"] == "OK")
+
+    cards_surge_warn = SG.build_signal_cards(ratios=ratios, lex=lex, votes=votes, named=named,
+                                             other=other, posts_z=1.5, gauges=g_neutral,
+                                             pph=1.0, in_low_zone=False)
+    surge_warn = next(c for c in cards_surge_warn if c["name"] == "投稿サージ")
+    check("cards: 投稿サージ z=1.5(WARN=1.0超過)は警戒・WARN閾値1.0が併記される",
+          surge_warn["state"] == "警戒" and surge_warn["threshold"] == "z>2.0(発火)/z>1.0(警戒)")
+
+    check("cards: 全9カード・state値は従来どおり3値のみ(判定ロジック自体は無変更の回帰確認)",
+          len(cards_warn) == 9 and all(c["state"] in ("OK", "警戒", "発火") for c in cards_warn))
+
+
 def test_sig_compute_and_cards():
     rows = [
         _mk("2026-07-08T09:10:00", "bearish", "損切りして退場します", votes=30, author="a"),
@@ -1480,7 +2056,9 @@ def _run_pillar_selftests():
                      ("peer_lead_read(米ピア→寄り予測)", PEERLEADRO._run_selftests),
                      ("feed_health(収集鮮度)", FEEDHEALTH._selftest),
                      ("public_insight(公開用AI考察)", PINS._run_selftests),
-                     ("reversal_signals(折り返し極値自動検出)", REVSIG._run_selftests)]:
+                     ("reversal_signals(折り返し極値自動検出)", REVSIG._run_selftests),
+                     ("screen_flow_summary(層別フロー・板増減・見立て採点)", lambda: __import__("screen_flow_summary")._run_selftests()),
+                     ("forecast_auto(10分見立て・採点・基準比較)", lambda: __import__("forecast_auto")._run_selftests())]:
         print(f"\n----- {name} -----")
         try:
             total += int(fn() or 0)
@@ -2163,6 +2741,29 @@ def test_public_export_extended_hours_summary():
     check("extended_hours: no tse rows at all -> None (no boundary to anchor on)",
           PE.extended_hours_summary({"rows": [{"ts": 1, "tse": None, "pts": 100.0,
                                                "adr_yen": None, "adr_usd": None}]}) is None)
+
+
+def test_public_export_us_indices_summary():
+    """★2026-09-30追加(ユーザー依頼「米国市場の指数をおにや式にも足す」)。
+    us_indices_summary()が(a)config.US_INDICESの定義順で並べる(b)フィードに無い指数は
+    スキップする(捏造しない)(c)空/None入力でもクラッシュせず空リストを返す、ことを検証する。"""
+    data = {
+        "fetched_at": "2026-09-30T05:00:00",
+        "indices": {
+            "sox": {"ticker": "^SOX", "name_ja": "フィラデルフィア半導体指数(SOX)",
+                    "price": 5800.0, "prev_close": 5700.0, "change_pct": 1.75},
+            "sp500": {"ticker": "^GSPC", "name_ja": "S&P500",
+                      "price": 6600.0, "prev_close": 6580.0, "change_pct": 0.30},
+            # nasdaqは欠測(取得失敗を模す)
+        },
+    }
+    out = PE.us_indices_summary(data)
+    check("us_indices: only fetched indices returned (nasdaq missing skipped)", len(out) == 2)
+    check("us_indices: ordered by config.US_INDICES definition order (sp500 before sox)",
+          [r["key"] for r in out] == ["sp500", "sox"])
+    check("us_indices: change_pct passthrough", out[0]["change_pct"] == 0.30)
+    check("us_indices: empty feed -> []", PE.us_indices_summary(None) == [])
+    check("us_indices: no indices key -> []", PE.us_indices_summary({}) == [])
 
 
 def test_public_export_price_sentiment_series():
@@ -2850,6 +3451,308 @@ def test_news_fetch_pure_functions():
           == 5 + min(10, config.NEWS_MAX_PER_RELATED_GROUP) + min(5, config.NEWS_MAX_PER_RELATED_GROUP))
 
 
+
+def test_lm_memory_guard_and_news_deferral():
+    """★2026-09-24追加(lm_memory_guard・コーデ依頼+ユーザー承認)。ニュース要約だけを空きメモリ
+    不足時に見送り、掲示板分析(analyze.py)にはかけない。実LLM/実ネットワークは使わない(モック)。"""
+    import tempfile
+    import lm_memory_guard as G
+    _prev_enabled, _prev_state = G.ENABLED, G.STATE_PATH
+    G.ENABLED = True
+    G.STATE_PATH = os.path.join(tempfile.mkdtemp(), 'lm_guard_state.json')
+    noon = dt.datetime(2026, 9, 24, 12, 0)
+    nosleep = lambda s: None
+
+    def run(free_mb, st, now=noon, loaded=lambda: False):
+        return G.decide("news_summary", now=now, free_fn=lambda: free_mb, sleep_fn=nosleep,
+                        loaded_fn=loaded, load_gb=17.0, headroom_gb=8, max_defer=6, state=st)
+    st = {}
+    check("guard: free 24GB defers (margin 7<8)", run(24 * 1024, st)["defer"] is True)
+    check("guard: free 26GB runs (margin 9>=8)", run(26 * 1024, st)["defer"] is False)
+    st = {}
+    seq = [run(10 * 1024, st)["defer"] for _ in range(7)]
+    check("guard: 6 consecutive defers then 7th forced run", seq == [True] * 6 + [False])
+    # 2026-10-02改訂: 窓内のnews_summaryは未ロードなら見送り(新規ロード禁止)・ロード済みなら相乗り実行
+    # ★2026-10-05(ユーザー選択「08:00〜08:40は通常どおり更新」): 08:00〜08:39は通常のメモリ余裕判定(未ロード+低メモリは通常の見送り・ロード済みは実行)
+    check("guard: premarket 08:00-08:39 news_summary not loaded + low memory -> normal low_memory_defer",
+          all(run(2 * 1024, {}, now=dt.datetime(2026, 9, 24, h, m))["defer"] is True
+              and run(2 * 1024, {}, now=dt.datetime(2026, 9, 24, h, m))["reason"] == "low_memory_defer"
+              for h, m in ((8, 0), (8, 30), (8, 39))))
+    check("guard: premarket 08:00-08:39 news_summary loaded -> normal run (model_already_loaded)",
+          all(run(2 * 1024, {}, now=dt.datetime(2026, 9, 24, h, m), loaded=lambda: True)["reason"] == "model_already_loaded"
+              and run(2 * 1024, {}, now=dt.datetime(2026, 9, 24, h, m), loaded=lambda: True)["defer"] is False
+              for h, m in ((8, 0), (8, 30), (8, 39))))
+    # ★2026-10-02 窓の後半は未ロード/ロード済みを問わず見送り(premarket_window_tail_0840)
+    # ★2026-10-10(案A): 尾部の開始は08:40→08:44。08:40〜08:43は通常の判定に戻った
+    check("guard: premarket tail 08:44-09:05 news_summary always defers (loaded or not)",
+          all(run(2 * 1024, {}, now=dt.datetime(2026, 9, 24, h, m), loaded=ld)["defer"] is True
+              and run(2 * 1024, {}, now=dt.datetime(2026, 9, 24, h, m), loaded=ld)["reason"] == "premarket_window_tail_0840"
+              for h, m in ((8, 44), (8, 50), (9, 5)) for ld in (lambda: True, lambda: False)))
+    check("guard: 08:40-08:43 news_summary is normal again (loaded -> run)",
+          all(run(2 * 1024, {}, now=dt.datetime(2026, 9, 24, 8, m), loaded=lambda: True)["reason"] == "model_already_loaded"
+              for m in (40, 41, 43)))
+    check("guard: 09:06 and 07:59 are guarded",
+          run(2 * 1024, {}, now=dt.datetime(2026, 9, 24, 9, 6))["defer"] is True
+          and run(2 * 1024, {}, now=dt.datetime(2026, 9, 24, 7, 59))["defer"] is True)
+    check("guard: model already loaded -> no deferral", run(2 * 1024, {}, loaded=lambda: True)["defer"] is False)
+    # 掲示板分析(analyze.py)にはガードが入っていない(見送らない)ことを構造的に確認
+    import inspect as _insp
+    check("guard: NOT wired into analyze.py (data recording never deferred)",
+          "lm_memory_guard" not in _insp.getsource(A))
+    # generate_news_summary: ガードが見送りを返したらLLMを呼ばず deferred を返す
+    orig = G.decide
+    calls = []
+    try:
+        G.decide = lambda kind, **kw: {"defer": True, "reason": "low_memory_defer", "free_avg_mb": 1000,
+                                       "margin_gb": -16.0, "consecutive_before": 0}
+        def _post(*a, **k):
+            calls.append(1)
+            raise AssertionError("LLM must not be called when deferred")
+        out = PINS.generate_news_summary([{"title": "テスト", "link": "https://x/1", "source": "s",
+                                           "published": "2026-09-24T05:00:00"}],
+                                         backend="lmstudio", post_fn=_post)
+        check("generate_news_summary: deferred dict returned, LLM not called",
+              isinstance(out, dict) and out.get("deferred") is True and not calls)
+    finally:
+        G.decide = orig
+    # collect_news: 見送り時は既読リンクを更新せず、次サイクルで再試行される
+    saved_path = config.NEWS_SEEN_STATE_PATH
+    config.NEWS_SEEN_STATE_PATH = os.path.join(tempfile.mkdtemp(), "news_seen_state.json")
+    try:
+        now = dt.datetime(2026, 9, 24, 12, 0, 0, tzinfo=dt.timezone.utc)
+        import email.utils as eut
+        recent = eut.format_datetime(now - dt.timedelta(hours=1))
+        xml_text = ("<?xml version='1.0'?><rss><channel><item><title>見送りテスト</title><link>https://x/d</link>"
+                    "<pubDate>%s</pubDate><source>テスト</source></item></channel></rss>" % recent)
+
+        def _get_fn(url, timeout=None, headers=None):
+            class _R:
+                def raise_for_status(self): pass
+                text = xml_text
+            return _R()
+        n = []
+
+        def _defer(items):
+            n.append("d"); return {"deferred": True, "reason": "low_memory_defer"}
+
+        def _ok(items):
+            n.append("ok"); return {"text": "要約。投資助言ではありません。", "generated_at": "2026-09-24T12:00:00"}
+        o1 = NF.collect_news(now_utc=now.replace(tzinfo=None), get_fn=_get_fn, summarizer=_defer)
+        check("collect_news: deferred -> summary stays None (no overwrite)", o1["summary"] is None and o1["has_new"] is True)
+        o2 = NF.collect_news(now_utc=now.replace(tzinfo=None), get_fn=_get_fn, summarizer=_ok)
+        check("collect_news: retried next cycle after deferral (still has_new)", o2["has_new"] is True and n == ["d", "ok"])
+        check("collect_news: summary generated once guard passes", o2["summary"] and o2["summary"]["text"].startswith("要約"))
+        o3 = NF.collect_news(now_utc=now.replace(tzinfo=None), get_fn=_get_fn, summarizer=_ok)
+        check("collect_news: no retry after success", o3["has_new"] is False and n == ["d", "ok"])
+    finally:
+        config.NEWS_SEEN_STATE_PATH = saved_path
+        G.ENABLED, G.STATE_PATH = _prev_enabled, _prev_state
+
+
+def test_lm_memory_guard_premarket_window_and_load_gb():
+    """★2026-10-02追加(モニタ・コーデ依頼+おにや判断)。寄り前窓(08:00〜09:05)の扱いをkindごとに分ける:
+    news_summary/public_insight(表示専用)は窓内に新規ロードしない(ロード済み=相乗り実行/未ロード・不明=見送り・
+    強制実行なし)。ai_insight等は従来どおり素通り。LOAD_GB既定17.0→11.5(llm-jp-4-8b実測約11.3GB)・床8GB不変。
+    実メモリ測定の待ちは無し・状態ファイル/run.logに触れない(state渡し・night_fn・モック)。"""
+    import lm_memory_guard as G
+    _prev_enabled = G.ENABLED
+    G.ENABLED = True
+    nosleep = lambda s: None
+    nonight = lambda now: {"skip": False, "reason": "outside_night_window", "ga": []}
+    win = dt.datetime(2026, 10, 2, 8, 30)   # ★2026-10-02: 相乗り可の前半(08:00〜08:39:59)。後半(08:40〜09:05)は下の tail テストで別に検証
+
+    def run(kind, free_mb, st, now=win, loaded=lambda: False, **kw):
+        return G.decide(kind, now=now, free_fn=lambda: free_mb, sleep_fn=nosleep, loaded_fn=loaded,
+                        state=st, night_fn=nonight, **kw)
+    try:
+        for kind in ("news_summary", "public_insight"):
+            # ★2026-10-05: 08:00〜08:39は通常の判定(ロード済み=実行・未ロード=メモリ余裕で判定・max_deferで強制)
+            r = run(kind, 7580, {}, loaded=lambda: True)
+            check("window %s: loaded -> normal run (model_already_loaded, even at free 7.58GB)" % kind,
+                  r["defer"] is False and r["reason"] == "model_already_loaded")
+            r = run(kind, 7580, {}, loaded=lambda: False)
+            check("window %s: not loaded + low memory -> normal low_memory_defer" % kind,
+                  r["defer"] is True and r["reason"] == "low_memory_defer")
+            r = run(kind, 90 * 1024, {}, loaded=lambda: None)
+            check("window %s: query impossible(None) + ample memory -> run (enough_memory)" % kind,
+                  r["defer"] is False and r["reason"] == "enough_memory")
+            st = {kind: {"consecutive_defers": 99}}
+            r = run(kind, 2 * 1024, st, loaded=lambda: False, max_defer=6)
+            check("window %s: counter at/over max_defer -> normal forced run; counter reset" % kind,
+                  r["defer"] is False and r["reason"] == "max_defer_reached_run" and st[kind]["consecutive_defers"] == 0)
+            for hh, mm, exp in ((7, 59, "low_memory_defer"), (9, 6, "low_memory_defer")):
+                r = run(kind, 2 * 1024, {}, now=dt.datetime(2026, 10, 2, hh, mm), loaded=lambda: False,
+                        load_gb=17.0, headroom_gb=8, max_defer=6)
+                check("outside window %s %02d:%02d unchanged (normal guard)" % (kind, hh, mm),
+                      r["defer"] is True and r["reason"] == exp)
+        # 窓外のmax_defer強制実行・loadedスキップは従来どおり
+        noon = dt.datetime(2026, 10, 2, 12, 0)
+        r = run("public_insight", 2 * 1024, {"public_insight": {"consecutive_defers": 6}}, now=noon, max_defer=6)
+        check("outside window: max_defer forced run unchanged", r["defer"] is False and r["reason"] == "max_defer_reached_run")
+        r = run("news_summary", 2 * 1024, {}, now=noon, loaded=lambda: True)
+        check("outside window: already loaded -> run unchanged", r["defer"] is False and r["reason"] == "model_already_loaded")
+        # ai_insightは窓内で従来どおり素通り(ロード状態・空きに関係なく)
+        for ld in (lambda: True, lambda: False, lambda: None):
+            r = run("ai_insight", 2 * 1024, {}, loaded=ld)
+            check("window ai_insight: unchanged premarket_window_no_guard", r["defer"] is False and r["reason"] == "premarket_window_no_guard")
+        # ★2026-10-02 窓の後半 08:40〜09:05(両端含む): 相乗り可否に関わらず常に見送り(premarket_window_tail_0840)・強制なし・カウンタ不変
+        def _no_query():
+            raise AssertionError("loaded_fn must not be queried in the tail window")
+        # ★2026-10-10(ユーザー選択式17:5x・案A): 尾部は08:44〜09:05。public_insightは載り済みなら尾部でも実行(premarket_tail_piggyback)・
+        #   未ロード/不能は見送り。news_summaryは尾部で常に見送り(ロード状態も問い合わせない)。08:40〜08:43は通常判定。
+        for kind in ("news_summary", "public_insight"):
+            for hh, mm, ss in ((8, 39, 59), (8, 40, 0), (8, 43, 59)):
+                r = run(kind, 90 * 1024, {}, now=dt.datetime(2026, 10, 2, hh, mm, ss), loaded=lambda: True)
+                check("tail: %s %02d:%02d:%02d still normal run (loaded)" % (kind, hh, mm, ss),
+                      r["defer"] is False and r["reason"] == "model_already_loaded")
+            for hh, mm, ss in ((8, 44, 0), (8, 47, 0), (8, 50, 0), (9, 5, 0)):
+                for ld_name, ld in (("True", lambda: True), ("False", lambda: False), ("None", lambda: None)):
+                    r = run(kind, 90 * 1024, {}, now=dt.datetime(2026, 10, 2, hh, mm, ss), loaded=ld)
+                    if kind == "public_insight" and ld_name == "True":
+                        check("tail: public_insight %02d:%02d:%02d loaded -> piggyback run" % (hh, mm, ss),
+                              r["defer"] is False and r["reason"] == "premarket_tail_piggyback")
+                    else:
+                        check("tail: %s %02d:%02d:%02d defer tail_0840 (loaded=%s)" % (kind, hh, mm, ss, ld_name),
+                              r["defer"] is True and r["reason"] == "premarket_window_tail_0840")
+            st = {kind: {"consecutive_defers": 99}}
+            r = run(kind, 90 * 1024, st, now=dt.datetime(2026, 10, 2, 8, 45),
+                    loaded=(_no_query if kind == "news_summary" else (lambda: False)), max_defer=6)
+            check("tail: %s never forced (counter past max_defer) / counter untouched" % kind,
+                  r["defer"] is True and r["reason"] == "premarket_window_tail_0840" and st[kind]["consecutive_defers"] == 99)
+            r = run(kind, 2 * 1024, {}, now=dt.datetime(2026, 10, 2, 9, 5, 1), loaded=lambda: True)
+            check("tail: %s 09:05:01 outside window -> normal guard (loaded -> run)" % kind,
+                  r["defer"] is False and r["reason"] == "model_already_loaded")
+        for ld in (lambda: True, lambda: False, lambda: None):
+            r = run("ai_insight", 2 * 1024, {}, now=dt.datetime(2026, 10, 2, 8, 45), loaded=ld)
+            check("tail: ai_insight unchanged (no_guard) even at 08:45", r["defer"] is False and r["reason"] == "premarket_window_no_guard")
+        # 夜間ゲートが窓判定より先に走る既存順序は不変(窓内でも夜間GA稼働なら見送り)
+        r = G.decide("news_summary", now=win, free_fn=lambda: 90 * 1024, sleep_fn=nosleep, loaded_fn=lambda: True,
+                     state={}, night_fn=lambda now: {"skip": True, "reason": "night_window_and_ga_running", "ga": [(1, "x")]})
+        check("night gate still runs before the window rule", r["defer"] is True and r["reason"] == "night_ga_running")
+        # LOAD_GB既定8.0(2026-10-08: AI考察はllm-jp ctx4096・並列1で実測約7.5GB。環境変数で上書き可)・HEADROOM 2
+        check("LOAD_GB default 8.0, HEADROOM_GB default 2 (2026-10-08)", G.LOAD_GB == 8.0 and G.HEADROOM_GB == 2)
+        r = run("news_summary", 20 * 1024, {}, now=noon)
+        check("LOAD_GB 8.0: free 20GB -> margin 12>=2 runs", r["defer"] is False and r["reason"] == "enough_memory" and r["margin_gb"] == 12.0)
+        r = run("news_summary", 11 * 1024, {}, now=noon)
+        check("LOAD_GB 8.0: free 11GB -> margin 3.0>=2 runs (HEADROOM 2)", r["defer"] is False and r["reason"] == "enough_memory" and r["margin_gb"] == 3.0)
+        r = run("news_summary", 9 * 1024, {}, now=noon)
+        check("LOAD_GB 8.0: free 9GB -> margin 1.0<2 defers (HEADROOM 2)", r["defer"] is True and r["reason"] == "low_memory_defer" and r["margin_gb"] == 1.0)
+    finally:
+        G.ENABLED = _prev_enabled
+
+
+def test_public_insight_lm_memory_guard_deferral():
+    """★2026-10-01追加(コーデ依頼・ユーザー決定「夜間はGAを掲示板分析より優先」09-24/「GA0本の間は
+    空き12GB未満なら見送る」09-26)。20:38のAI考察がガード無しでLM Studioを読み込み空き物理が割れた
+    事故の再発防止: generate_public_insight(lmstudio経路)も news_summary と同じ lm_memory_guard を通る。
+    夜間GA稼働中・低空きなら見送り(LM呼び出し無し)、窓外・十分な空きなら従来どおり生成。実LM/実メモリ測定/
+    本番状態ファイルは使わない(decideへテスト用の引数を注入するラッパー+post_fnモック)。"""
+    import tempfile
+    import lm_memory_guard as G
+    _prev_enabled, _prev_decide, _prev_log = G.ENABLED, G.decide, config.LOG_PATH
+    G.ENABLED = True
+    config.LOG_PATH = os.path.join(tempfile.mkdtemp(), "run.log")
+    rec = PINS._sample_public_record()
+    noon = dt.datetime(2026, 10, 1, 12, 0)
+    night_dec = lambda now: {"skip": True, "reason": "night_window_and_ga_running", "ga": [(1, "x")]}
+    day_dec = lambda now: {"skip": False, "reason": "outside_night_window", "ga": []}
+    calls = []
+
+    def _post(url, json=None, timeout=None):
+        calls.append(json)
+
+        class _R:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self):
+                return {"choices": [{"message": {"content": "AI考察のテスト本文です。"}}],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+        return _R()
+
+    def run(free_mb, state, night_fn, loaded=False):
+        # 実decideへ時刻/空きメモリ/夜間判定/ロード状態を注入(state渡し=ファイルを読み書きしない)
+        G.decide = lambda kind, **kw: _prev_decide(
+            kind, now=noon, free_fn=lambda: free_mb, sleep_fn=lambda s: None,
+            loaded_fn=lambda: loaded, load_gb=17.0, headroom_gb=8, max_defer=6,
+            state=state, night_fn=night_fn)
+        del calls[:]
+        return PINS.generate_public_insight(rec, backend="lmstudio", post_fn=_post)
+    try:
+        # 夜間GA稼働中: 空きが十分でも・連続見送り上限(99回)を超えていても見送る(LM呼び出し無し)
+        st = {"public_insight": {"consecutive_defers": 99}}
+        out = run(30000, st, night_dec)
+        check("insight guard: night+GA running -> deferred dict, LLM not called",
+              isinstance(out, dict) and out.get("deferred") is True
+              and out.get("reason") == "night_ga_running" and not calls and "text" not in out)
+        check("insight guard: night defer does not touch the consecutive counter",
+              st["public_insight"]["consecutive_defers"] == 99)
+        # 窓外・空き3GB(余裕不足) -> 見送り・カウンタ+1
+        st = {}
+        out = run(3 * 1024, st, day_dec)
+        check("insight guard: outside window + low free memory -> deferred, LLM not called",
+              isinstance(out, dict) and out.get("deferred") is True
+              and out.get("reason") == "low_memory_defer" and not calls)
+        check("insight guard: counter kind is public_insight (separate from news_summary)",
+              st.get("public_insight", {}).get("consecutive_defers") == 1 and "news_summary" not in st)
+        # 窓外・十分な空き(40GB) -> 従来どおり生成・LM呼び出し1回・カウンタ0
+        out = run(40 * 1024, st, day_dec)
+        check("insight guard: outside window + ample memory -> generated as before",
+              isinstance(out, dict) and not out.get("deferred") and out.get("text") == "AI考察のテスト本文です。"
+              and out.get("backend") == "lmstudio" and len(calls) == 1)
+        check("insight guard: counter reset after run", st["public_insight"]["consecutive_defers"] == 0)
+        # 窓外で連続見送り上限(6)に達していれば news_summary と同じく強制実行
+        st = {"public_insight": {"consecutive_defers": 6}}
+        out = run(3 * 1024, st, day_dec)
+        check("insight guard: outside window, at max_defer -> forced run (same as news_summary)",
+              isinstance(out, dict) and not out.get("deferred") and len(calls) == 1)
+        # 他種別(news_summary)のカウンタ上限は public_insight を強制実行にしない
+        st = {"news_summary": {"consecutive_defers": 6}}
+        out = run(3 * 1024, st, day_dec)
+        check("insight guard: news_summary counter does not force insight",
+              isinstance(out, dict) and out.get("deferred") is True and not calls)
+        # モデルが既にロード済みなら追加の読込は起きない -> 通す
+        out = run(3 * 1024, {}, day_dec, loaded=True)
+        check("insight guard: model already loaded -> runs", isinstance(out, dict)
+              and not out.get("deferred") and len(calls) == 1)
+        # claude経路(課金API・ローカルメモリに無関係)はガードを通らない
+        def _boom(kind, **kw):
+            raise AssertionError("guard must not be consulted for claude backend")
+        G.decide = _boom
+        fc = PINS._FakeClient("クラウド経路の考察本文。")
+        out = PINS.generate_public_insight(rec, backend="claude", client=fc)
+        check("insight guard: claude backend never consults the guard",
+              isinstance(out, dict) and out.get("backend") == "claude" and not out.get("deferred"))
+        # ガード自体が例外 -> fail-open で従来どおり生成(AI考察を止めない)
+        def _raise(kind, **kw):
+            raise RuntimeError("guard broken")
+        G.decide = _raise
+        del calls[:]
+        out = PINS.generate_public_insight(rec, backend="lmstudio", post_fn=_post)
+        check("insight guard: guard exception -> fail-open, generated",
+              isinstance(out, dict) and not out.get("deferred") and len(calls) == 1)
+    finally:
+        G.ENABLED, G.decide, config.LOG_PATH = _prev_enabled, _prev_decide, _prev_log
+
+    # 呼び手(public_export): 見送り時は前回のAI考察を引き継ぐ(表示維持・generated_at据え置き)
+    latest_ok = {"ai_commentary": {"text": "前回の考察", "generated_at": "2026-10-01T20:20:00"}}
+    carried = PE.previous_commentary_for_carryover(latest_ok, [])
+    check("insight carry-over: latest.json commentary carried with original generated_at",
+          carried == {"text": "前回の考察", "generated_at": "2026-10-01T20:20:00"})
+    hist = [{"ai_commentary": {"text": "古い考察", "generated_at": "2026-10-01T18:00:00"}},
+            {"x": 1},
+            {"ai_commentary": {"text": "やや新しい考察", "generated_at": "2026-10-01T19:00:00"}}, {"y": 2}]
+    carried = PE.previous_commentary_for_carryover({"generated_at": "t"}, hist)
+    check("insight carry-over: falls back to newest history commentary when latest has none",
+          carried is not None and carried["text"] == "やや新しい考察")
+    check("insight carry-over: blank text / no source -> None",
+          PE.previous_commentary_for_carryover({"ai_commentary": {"text": "  "}}, []) is None
+          and PE.previous_commentary_for_carryover(None, None) is None)
+    import inspect as _insp2
+    src = _insp2.getsource(PE._build_from_live_data)
+    check("insight carry-over: _build_from_live_data checks deferred before using result.get('text')",
+          0 <= src.find('result.get("deferred")') < src.find('result.get("text")'))
+
+
 def test_news_fetch_collect_news_io():
     """news_fetch.collect_news()のI/O部分をモック(get_fn/summarizer差し替え)で検証する
     (実ネットワーク接続・実LLM呼び出しはしない)。状態ファイルは一時ディレクトリへ
@@ -3430,18 +4333,19 @@ def test_public_export_board_totals_60s_series():
           "15:35" not in [p["time"] for p in out])
 
     b1 = out[0]
-    # 行1: buy=100*10+1000+10=2010 / sell=50*10+2000+20=2520
-    # 行2: buy=200*10+3000+30=5030 / sell=150*10+4000+40=5540
-    # 平均: buy=(2010+5030)/2=3520.0 / sell=(2520+5540)/2=4030.0
+    # ★2026-11-20修正: 成行は板10本(最良気配)の数量に含まれる=別に足さない(二重加算の訂正)
+    # 行1: buy=100*10+1000=2000 / sell=50*10+2000=2500
+    # 行2: buy=200*10+3000=5000 / sell=150*10+4000=5500
+    # 平均: buy=(2000+5000)/2=3500.0 / sell=(2500+5500)/2=4000.0
     check("board-totals: 11:30 bucket averages buy_total across its 2 rows",
-          b1["buy_total"] == 3520.0)
+          b1["buy_total"] == 3500.0)
     check("board-totals: 11:30 bucket averages sell_total across its 2 rows",
-          b1["sell_total"] == 4030.0)
+          b1["sell_total"] == 4000.0)
 
     b2 = out[1]
-    # 行3(唯一): buy=50*10+500+5=1005 / sell=50*10+500+5=1005
+    # 行3(唯一): buy=50*10+500=1000 / sell=50*10+500=1000
     check("board-totals: 11:31 bucket (single row) buy_total/sell_total",
-          b2["buy_total"] == 1005.0 and b2["sell_total"] == 1005.0)
+          b2["buy_total"] == 1000.0 and b2["sell_total"] == 1000.0)
 
     check("board-totals: no rows -> empty list (fail-soft)",
           PE.board_totals_60s_series([], today=today) == [])
@@ -3872,9 +4776,12 @@ def test_run_once_public_export_refresh_lmstudio_bypasses_gate():
     gate_calls = []
     PE._build_from_live_data = lambda **kw: (calls.append(kw) or {"generated_at": "x"})
     PE.should_generate_commentary_today = lambda *a, **kw: (gate_calls.append(1) or False)
+    import lm_role_switch as _LRS   # ★2026-10-08: 市場中は起動時刻(スロット)規則が効くため、時刻に依らず検証できるよう insight_due を差し替える
+    _orig_due = _LRS.insight_due
     try:
         config.PUBLIC_EXPORT_AUTO_REFRESH = True
         config.PUBLIC_INSIGHT_BACKEND = "lmstudio"
+        _LRS.insight_due = lambda *a, **kw: None      # 市場外＝従来どおり(毎回生成)
 
         # COMMENTARY_DAILY=Trueでも、gateがFalse(今日生成済み)を返しても、lmstudioなら無視される
         config.PUBLIC_EXPORT_COMMENTARY_DAILY = True
@@ -3888,7 +4795,18 @@ def test_run_once_public_export_refresh_lmstudio_bypasses_gate():
         RO._run_public_export_refresh_step()
         check("pexp-lmstudio: with_commentary=True even when COMMENTARY_DAILY=False",
               calls[-1]["with_commentary"] is True)
+
+        # ★2026-10-08: 市場中でスロット待ち(due=False)なら生成せず前回の考察を引き継ぐ・スロットに当たれば(True)生成する
+        _LRS.insight_due = lambda *a, **kw: False
+        RO._run_public_export_refresh_step()
+        check("pexp-lmstudio(slot): due=False -> with_commentary=False and carry_commentary=True",
+              calls[-1]["with_commentary"] is False and calls[-1].get("carry_commentary") is True)
+        _LRS.insight_due = lambda *a, **kw: True
+        RO._run_public_export_refresh_step()
+        check("pexp-lmstudio(slot): due=True -> with_commentary=True",
+              calls[-1]["with_commentary"] is True and not calls[-1].get("carry_commentary"))
     finally:
+        _LRS.insight_due = _orig_due
         config.PUBLIC_EXPORT_AUTO_REFRESH = orig_auto
         config.PUBLIC_EXPORT_COMMENTARY_DAILY = orig_daily
         config.PUBLIC_INSIGHT_BACKEND = orig_backend
@@ -3903,7 +4821,7 @@ def test_run_once_public_export_refresh_runs_before_gsheets_sync():
     と収集・LLM分析等の重い/ネットワーク依存stepまで走ってしまうため、他stepと同様
     副作用のないソース順序検査で確認する(=依存順序の回帰を軽量に捕捉)。"""
     import inspect
-    src = inspect.getsource(RO.main)
+    src = inspect.getsource(RO._main_body)
     i_export = src.index("_run_public_export_refresh_step()")
     i_gsheets = src.index("_run_gsheets_sync_step()")
     check("order: public_export_refresh call present in main()", i_export >= 0)
@@ -3921,16 +4839,20 @@ def test_run_once_catchup_mode():
     コードパスで実行される(2026-08-19以前はここも早期returnで省いていたが、公開
     更新サイクルの10分化のため変更)、の3点が壊れていないことが要点。"""
     import inspect
-    src = inspect.getsource(RO.main)
+    src = inspect.getsource(RO._main_body)
     i_catchup_param = src.index("catchup=False")
     i_analyze_call = src.index("analyze.analyze(time_budget_sec=")
     # "if collect_only:" は関数内に2箇所ある(①analyzeスキップ判定②snapshot後の早期
     # return)。①より後ろから検索して②(早期return)だけを確実に拾う。
     i_collect_only_return = src.index("if collect_only:\n", i_analyze_call)
     i_catchup_skip = src.index("if catchup:\n")
-    # "_run_research_layer()" は関数内に2箇所現れる(①その少し上のコメントでの言及
+    # ★2026-09-15更新(コーデ10:07指摘対応でresearch_layerにハード予算を追加した際、
+    # 呼び出しシグネチャが_run_research_layer()→_run_research_layer(run_start)に
+    # 変わったため検索文字列を追随)。関数内に2箇所現れる(①その少し上のコメントでの言及
     # ②実際の呼び出し)。①より後ろから検索して②(実呼び出し)だけを確実に拾う。
-    i_research = src.index("_run_research_layer()", i_catchup_skip)
+    # ★2026-10-02更新(メモリピーク対策・研究層の2分割): step4は part="signal" として元の位置(公開エクスポートより前)に残る
+    #   (step5-13=part="ledgers" は最後へ回る・順序は test_memory_peak_* で別途検証)。
+    i_research = src.index('_run_research_layer(run_start, part="signal")', i_catchup_skip)
     i_export_call = src.index("_run_public_export_refresh_step()")
     check("catchup: main() accepts catchup parameter", i_catchup_param >= 0)
     check("catchup: analyze() call exists (LLM analysis is NOT skipped for catchup)",
@@ -3945,8 +4867,9 @@ def test_run_once_catchup_mode():
           "config.CATCHUP_ANALYZE_TIME_BUDGET_SEC if catchup else None" in src)
     # ★2026-08-19追加(ユーザー承認済み): catchupはnewest_first=catchup(=True)を渡し、
     # 新しい投稿を優先して短い予算でも直近の空気感を公開更新に反映する。
-    check("catchup: newest_first=catchup is passed to analyze.analyze()",
-          "newest_first=catchup" in src)
+    # ★2026-09-24更新: catchupは常にTrue・毎時フル実行は'auto'(分析待ち>閾値で新しい順)
+    check("catchup: newest_first=(True if catchup else 'auto') is passed to analyze.analyze()",
+          'newest_first=(True if catchup else "auto")' in src)
     check("catchup: dedicated 'if catchup:' branch exists to skip research layer",
           i_catchup_skip >= 0)
     check("catchup: that branch comes BEFORE the research layer call",
@@ -4148,6 +5071,363 @@ def test_run_once_export_lock():
         config.DATA_DIR = orig_data_dir
 
 
+def test_run_once_heavy_cycle_lock():
+    """★2026-09-15追加(コーデ04:21依頼・05:23指摘②対応=家PC1メモリ逼迫の恒久対策)。
+    毎時フル実行とcatchupが同時に生存しないためのサイクル全体ロック
+    (_acquire_heavy_cycle_lock/_release_heavy_cycle_lock)の直接検証。
+    排他性・no-lock-file-after-releaseは他3ロックと同型のテストで検証する。
+    stale判定は経過時間でなくPID生存が主判定(05:23指摘②)のため、_pid_is_alive()を
+    モンキーパッチして「生きている/死んでいる」を確定的に作り、実PIDの生死に
+    依存しない形で(a)生きているPIDは古くても奪わない(b)死んでいるPIDは新しくても
+    即座に奪う(c)PIDが読み取れない壊れたlockファイルは経過時間でフォールバックする、
+    の3パターンを検証する。"""
+    import threading, time as _time, tempfile, os as _os
+    orig_data_dir = config.DATA_DIR
+    orig_pid_is_alive = RO._pid_is_alive
+    config.DATA_DIR = _os.path.join(tempfile.mkdtemp())
+    try:
+        max_concurrent = [0]
+        active = [0]
+        guard = threading.Lock()
+        results = []
+
+        def worker():
+            lp = RO._acquire_heavy_cycle_lock(timeout_sec=5)
+            with guard:
+                active[0] += 1
+                max_concurrent[0] = max(max_concurrent[0], active[0])
+            _time.sleep(0.2)
+            with guard:
+                active[0] -= 1
+            RO._release_heavy_cycle_lock(lp)
+            results.append(lp is not None)
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        check("heavy-cycle-lock: mutual exclusion holds (max_concurrent==1)", max_concurrent[0] == 1)
+        check("heavy-cycle-lock: all 5 threads eventually acquired it", all(results))
+        check("heavy-cycle-lock: no lock file left behind after release",
+              not _os.path.exists(_os.path.join(config.DATA_DIR, ".heavy_cycle.lock")))
+
+        lock_path = _os.path.join(config.DATA_DIR, ".heavy_cycle.lock")
+
+        # (a) 所有者PIDが生きている -> 経過時間が_HEAVY_CYCLE_LOCK_STALE_SECを超えて
+        #     古くても絶対に奪わない(このロックは最大約90分の正常な寿命を持つため)。
+        with open(lock_path, "w", encoding="utf-8") as f:
+            f.write("12345 old\n")
+        very_old = _time.time() - (RO._HEAVY_CYCLE_LOCK_STALE_SEC + 10)
+        _os.utime(lock_path, (very_old, very_old))
+        RO._pid_is_alive = lambda pid: True
+        got_alive_owner = RO._acquire_heavy_cycle_lock(timeout_sec=0.3)
+        check("heavy-cycle-lock: alive-owner PID is NEVER taken, even if very old",
+              got_alive_owner is None)
+
+        # (b) 所有者PIDが死んでいる -> mtimeが今この瞬間でも即座に奪う。
+        RO._pid_is_alive = lambda pid: False
+        _os.utime(lock_path, (_time.time(), _time.time()))
+        got_dead_owner = RO._acquire_heavy_cycle_lock(timeout_sec=5)
+        check("heavy-cycle-lock: dead-owner PID is taken immediately, even if fresh",
+              got_dead_owner is not None)
+        RO._release_heavy_cycle_lock(got_dead_owner)
+
+        # (c) PIDが読み取れない(壊れたlockファイル) -> 経過時間フォールバックのみ有効。
+        with open(lock_path, "w", encoding="utf-8") as f:
+            f.write("not-a-pid garbage\n")
+        got_busy_garbage = RO._acquire_heavy_cycle_lock(timeout_sec=0.3)
+        check("heavy-cycle-lock: unreadable-PID lock -> None within short timeout (not yet stale by age)",
+              got_busy_garbage is None)
+        old_time2 = _time.time() - (RO._HEAVY_CYCLE_LOCK_STALE_SEC + 10)
+        _os.utime(lock_path, (old_time2, old_time2))
+        got_garbage_stale = RO._acquire_heavy_cycle_lock(timeout_sec=5)
+        check("heavy-cycle-lock: unreadable-PID lock falls back to age-based stale-clear",
+              got_garbage_stale is not None)
+        RO._release_heavy_cycle_lock(got_garbage_stale)
+    finally:
+        RO._pid_is_alive = orig_pid_is_alive
+        config.DATA_DIR = orig_data_dir
+
+
+def test_run_once_pid_is_alive():
+    """★2026-09-15追加(コーデ05:23指摘②対応)。_pid_is_alive()自体の直接検証。
+    自プロセス(os.getpid())は確実に生きているのでTrue、短命の子プロセスを
+    起動してwait()で確実に終了させた直後のPIDは確実に死んでいるのでFalseに
+    なることを実プロセスで確認する(モックでなく実際のWindows APIの挙動を検証)。"""
+    import os as _os
+    import subprocess as _sp
+    check("pid-is-alive: own PID is alive", RO._pid_is_alive(_os.getpid()) is True)
+
+    proc = _sp.Popen(["cmd.exe", "/c", "exit", "0"])
+    proc.wait(timeout=10)
+    check("pid-is-alive: PID of an already-exited process is not alive",
+          RO._pid_is_alive(proc.pid) is False)
+
+
+def test_run_once_heavy_cycle_lock_wiring():
+    """★2026-09-15追加・05:23指摘①対応で main()/_main_body() へ分離した後の構造検証。
+    main()(薄いラッパー)が(1)collect_onlyなら即座に_main_bodyへ委譲し
+    heavy_cycle_lockに一切触れない(2)非collect_onlyならいかなるstepよりも前で
+    heavy_cycle_lockを取得し(3)busyならログして即return 0し(4)取得できれば
+    try/finallyで_main_bodyを包み確実に解放する、ことをソース検査で確認する。
+    あわせて_main_body()自体はheavy_cycle_lockに一切言及しないことも確認する
+    (責務が完全に分離されていることの保証)。main()を実際に実行すると重い処理まで
+    走るため、他stepと同型の副作用のないソース検査で確認する。"""
+    import inspect
+    src_main = inspect.getsource(RO.main)
+    src_body = inspect.getsource(RO._main_body)
+
+    i_collect_only_delegate = src_main.index(
+        "if collect_only:\n        return _main_body(collect_only=collect_only, catchup=catchup)")
+    # ★2026-09-15追記=コーデ07:16指摘対応でtimeout_secを可変にしたため、呼び出し
+    # シグネチャが引数なしから timeout_sec=_timeout_sec 付きへ変わった(実装側の変更に
+    # 追随・test_run_once_hourly_body_waits_longer_than_catchupでtimeout_secの値
+    # 自体は別途検証する)。
+    i_heavy_acquire = src_main.index("heavy_lock = _acquire_heavy_cycle_lock(timeout_sec=_timeout_sec)")
+    # ★2026-09-15追記=i_heavy_acquire以降を検索開始位置にする(コーデ07:05指摘対応で
+    # 追加したcatchup時刻ガードの見送りログにも"skipping this cycle entirely"という
+    # 部分文字列が含まれ、こちらの方がheavy_cycle_lock取得より前に出現するため、検索
+    # 開始位置を指定しないと誤って前者にマッチしテストが壊れる[実際に発生し発見・修正済み])。
+    i_heavy_busy_return = src_main.index("skipping this cycle entirely", i_heavy_acquire)
+    i_try = src_main.index("try:\n        return _main_body(")
+    # ★2026-09-24更新(早期解放の追加): finallyは _HEAVY_LOCK_PATH を解放する形に変わった
+    i_finally = src_main.index("finally:\n        # 分析後に早期解放済みなら")
+
+    check("heavy-cycle-lock wiring: main() delegates collect_only BEFORE acquiring the lock",
+          i_collect_only_delegate >= 0 and i_collect_only_delegate < i_heavy_acquire)
+    check("heavy-cycle-lock wiring: lock acquired BEFORE the busy-skip check",
+          i_heavy_acquire < i_heavy_busy_return)
+    check("heavy-cycle-lock wiring: successful path wraps _main_body in try/finally",
+          i_try < i_finally and i_heavy_busy_return < i_try)
+    # ★2026-09-24更新: 取得はmain()のみ。_main_body()は分析後の『早期解放ヘルパ』を呼ぶだけ(取得/直接解放はしない)
+    check("heavy-cycle-lock wiring: _main_body() never acquires the lock (only the early-release helper is called)",
+          "_acquire_heavy_cycle_lock" not in src_body and "heavy_lock" not in src_body
+          and "_release_heavy_cycle_lock(" not in src_body)
+
+
+def test_run_once_catchup_defer_window():
+    """★2026-09-15追加(コーデ07:05指摘対応・07:16指摘で窓を55→45分開始へ拡張)。
+    _in_hourly_priority_window()の境界値と、main()がcatchup時にこの判定を使って
+    heavy_cycle_lock取得自体を回避する配線を検証する。
+    07:00の実運用でcatchup(毎時0分にもトリガーされ毎時本体より約1秒早く起動)が
+    heavy_cycle_lockを先取りし、毎時本体(研究層含む)が丸ごとskipされる実害が発生した
+    (run.log実測=07:00:01 catchup開始→07:00:17毎時本体busy-skip・連携ログ07:05/07:10投稿)。
+    さらに55分開始では、実測所要7〜13分のcatchupが50分に起動すると00分をまたいで
+    ロックを保持し続けるケースが残ると指摘され(コーデ07:16)、開始を45分へ拡張した。"""
+    import inspect
+
+    # --- 境界値(純関数・now引数で時刻を注入) ---
+    check("priority-window: 44分はFalse(通常どおり)",
+          RO._in_hourly_priority_window(dt.datetime(2026, 9, 15, 6, 44)) is False)
+    check("priority-window: 45分はTrue(境界=開始・07:16指摘で55から拡張)",
+          RO._in_hourly_priority_window(dt.datetime(2026, 9, 15, 6, 45)) is True)
+    check("priority-window: 50分はTrue(コーデ07:16が指摘した実際の見送り対象時刻)",
+          RO._in_hourly_priority_window(dt.datetime(2026, 9, 15, 6, 50)) is True)
+    check("priority-window: 59分はTrue",
+          RO._in_hourly_priority_window(dt.datetime(2026, 9, 15, 6, 59)) is True)
+    check("priority-window: 00分はTrue(時をまたぐ)",
+          RO._in_hourly_priority_window(dt.datetime(2026, 9, 15, 7, 0)) is True)
+    check("priority-window: 05分はTrue(境界=終了)",
+          RO._in_hourly_priority_window(dt.datetime(2026, 9, 15, 7, 5)) is True)
+    check("priority-window: 06分はFalse(通常どおりに戻る)",
+          RO._in_hourly_priority_window(dt.datetime(2026, 9, 15, 7, 6)) is False)
+
+    # --- main()の配線(ソース検査): catchup時刻ガードがheavy_cycle_lock取得より前 ---
+    src_main = inspect.getsource(RO.main)
+    i_collect_only_delegate = src_main.index(
+        "if collect_only:\n        return _main_body(collect_only=collect_only, catchup=catchup)")
+    i_defer_check = src_main.index("if catchup and _in_hourly_priority_window():")
+    i_defer_return = src_main.index("catchup deferred (hourly-priority window")
+    i_timeout_calc = src_main.index("_timeout_sec = 15 if catchup else _HOURLY_BODY_LOCK_WAIT_TIMEOUT_SEC")
+    i_heavy_acquire = src_main.index("heavy_lock = _acquire_heavy_cycle_lock(timeout_sec=_timeout_sec)")
+    check("catchup-defer wiring: collect_only委譲の後・heavy_cycle_lock取得の前に時刻ガードがある",
+          i_collect_only_delegate < i_defer_check < i_heavy_acquire)
+    check("catchup-defer wiring: 見送りログの直後にreturn 0がある",
+          i_defer_check < i_defer_return < i_heavy_acquire)
+    check("catchup-defer wiring: timeout_secの算出が時刻ガードの後・heavy_cycle_lock取得の前にある",
+          i_defer_check < i_timeout_calc < i_heavy_acquire)
+
+    # --- main()実行テスト: 時刻ガードが実際にheavy_cycle_lock取得を回避する(モックで実測) ---
+    orig_window_fn = RO._in_hourly_priority_window
+    orig_acquire = RO._acquire_heavy_cycle_lock
+    acquire_called = []
+    RO._in_hourly_priority_window = lambda now=None: True  # 常に優先時間帯とみなす
+    RO._acquire_heavy_cycle_lock = lambda *a, **kw: (acquire_called.append(1), None)[1]
+    try:
+        result = RO.main(collect_only=False, catchup=True)
+    finally:
+        RO._in_hourly_priority_window = orig_window_fn
+        RO._acquire_heavy_cycle_lock = orig_acquire
+    check("★catchup-defer: 優先時間帯ではmain(catchup=True)がheavy_cycle_lock取得を一切試みない",
+          len(acquire_called) == 0)
+    check("★catchup-defer: 優先時間帯のcatchupはreturn 0(fail-soft)", result == 0)
+
+    # revert-and-confirm-fail: 優先時間帯でない(通常)ケースでは_acquire_heavy_cycle_lockが
+    # 呼ばれることを確認する(ガードが常にTrueを返す壊れた実装でないことの検算)。
+    acquire_called2 = []
+    RO._in_hourly_priority_window = lambda now=None: False  # 優先時間帯でない
+    RO._acquire_heavy_cycle_lock = lambda *a, **kw: (acquire_called2.append(1), None)[1]
+    try:
+        RO.main(collect_only=False, catchup=True)
+    finally:
+        RO._in_hourly_priority_window = orig_window_fn
+        RO._acquire_heavy_cycle_lock = orig_acquire
+    check("★revert-and-confirm-fail: 優先時間帯でなければ通常どおりheavy_cycle_lock取得が呼ばれる"
+          "(ガードが常時発動する偽実装でないことの検算)",
+          len(acquire_called2) == 1)
+
+    # ★毎時本体(catchup=False)には一切影響しないことも確認(こちらは優先時間帯判定を
+    # 呼び出しさえしない設計・main()のcatchup=Falseパスにガードが混入していないことの検算)。
+    acquire_called3 = []
+    RO._in_hourly_priority_window = lambda now=None: True  # 優先時間帯でもcatchup=Falseなら無関係のはず
+    RO._acquire_heavy_cycle_lock = lambda *a, **kw: (acquire_called3.append(1), None)[1]
+    try:
+        RO.main(collect_only=False, catchup=False)
+    finally:
+        RO._in_hourly_priority_window = orig_window_fn
+        RO._acquire_heavy_cycle_lock = orig_acquire
+    check("★catchup-defer: 毎時本体(catchup=False)は優先時間帯判定に関係なく通常どおり"
+          "heavy_cycle_lock取得を試みる(ガードはcatchup限定であることの検算)",
+          len(acquire_called3) == 1)
+
+
+def test_run_once_hourly_body_waits_longer_than_catchup():
+    """★2026-09-15追加(コーデ07:16指摘(2)対応)。時刻窓による予測(45分〜05分)だけに
+    頼らず、毎時本体(catchup=False)はheavy_cycle_lockがbusyでも即座に諦めず、
+    catchupの実測最長(7〜13分)を上回る20分間(_HOURLY_BODY_LOCK_WAIT_TIMEOUT_SEC)
+    リトライを続けることを検証する。catchup自体は従来どおり短いtimeout_sec=15の
+    ままであることも合わせて確認する(粘るのは毎時本体だけ)。"""
+    check("★_HOURLY_BODY_LOCK_WAIT_TIMEOUT_SECは1200秒(20分・catchup実測最長7-13分を上回る)",
+          RO._HOURLY_BODY_LOCK_WAIT_TIMEOUT_SEC == 1200)
+
+    orig_acquire = RO._acquire_heavy_cycle_lock
+    orig_window_fn = RO._in_hourly_priority_window
+
+    # --- catchup=Falseのとき、timeout_sec=1200(20分)で_acquire_heavy_cycle_lockが
+    # 呼ばれることをモックで実測する ---
+    captured_body = []
+    RO._acquire_heavy_cycle_lock = lambda timeout_sec=15: (captured_body.append(timeout_sec), None)[1]
+    try:
+        RO.main(collect_only=False, catchup=False)
+    finally:
+        RO._acquire_heavy_cycle_lock = orig_acquire
+    check("★毎時本体(catchup=False)はtimeout_sec=1200(20分)でheavy_cycle_lock取得を呼ぶ"
+          "(catchupより長く待つ)",
+          captured_body == [1200])
+
+    # --- catchup=Trueかつ優先時間帯の外(通常経路)では、従来どおりtimeout_sec=15の
+    # ままであることを確認する(catchup自体を長く待たせる偽実装でないことの検算) ---
+    captured_catchup = []
+    RO._acquire_heavy_cycle_lock = lambda timeout_sec=15: (captured_catchup.append(timeout_sec), None)[1]
+    RO._in_hourly_priority_window = lambda now=None: False
+    try:
+        RO.main(collect_only=False, catchup=True)
+    finally:
+        RO._acquire_heavy_cycle_lock = orig_acquire
+        RO._in_hourly_priority_window = orig_window_fn
+    check("★revert-and-confirm-fail: catchup=Trueは通常どおりtimeout_sec=15のまま"
+          "(毎時本体だけが長く待つ設計であることの検算)",
+          captured_catchup == [15])
+
+    # --- ★コーデ07:16要求の統合テスト: 「50分起動のcatchupが走っている最中に毎時の回が
+    # 起動しても、待ってから走る」ケースを、実物のheavy_cycle_lock機構(モックでなく本物の
+    # ファイルロック)で再現する。別スレッドが0.5秒後にロックを解放し、
+    # _HOURLY_BODY_LOCK_WAIT_TIMEOUT_SECをテスト用に短縮した上で、毎時本体が実際に
+    # 待ってから_main_bodyまで到達することを確認する。---
+    import threading, time as _time, tempfile, os as _os
+    orig_data_dir = config.DATA_DIR
+    orig_main_body = RO._main_body
+    orig_timeout_const = RO._HOURLY_BODY_LOCK_WAIT_TIMEOUT_SEC
+    config.DATA_DIR = _os.path.join(tempfile.mkdtemp())
+    try:
+        lock_path = _os.path.join(config.DATA_DIR, ".heavy_cycle.lock")
+        # catchup相当の「走行中ロック」を模す(自PIDで作る=生存PIDなのでstale判定で
+        # 奪われない・0.5秒後に別スレッドが解放する=catchupが終わって解放される様子)。
+        with open(lock_path, "w", encoding="utf-8") as f:
+            f.write(f"{_os.getpid()} 2026-09-15T06:50:00\n")
+
+        def _release_after_delay():
+            _time.sleep(0.5)
+            try:
+                _os.remove(lock_path)
+            except OSError:
+                pass
+
+        t = threading.Thread(target=_release_after_delay)
+        t.start()
+        RO._HOURLY_BODY_LOCK_WAIT_TIMEOUT_SEC = 3  # テスト用に短縮(0.5秒後の解放を確実に待てる)
+        RO._main_body = lambda **kw: "BODY_RAN_AFTER_WAIT"
+        result = RO.main(collect_only=False, catchup=False)
+        t.join()
+    finally:
+        config.DATA_DIR = orig_data_dir
+        RO._main_body = orig_main_body
+        RO._HOURLY_BODY_LOCK_WAIT_TIMEOUT_SEC = orig_timeout_const
+    check("★統合(実ロック機構): catchup相当のロックが走行中でも、解放されるまで待って"
+          "毎時本体が最終的に実行される(コーデ07:16の要求どおりの「待ってから走る」ケース)",
+          result == "BODY_RAN_AFTER_WAIT")
+
+
+def test_run_once_research_layer_hard_deadline():
+    """★2026-09-15追加(コーデ10:07指摘対応)。BBS_Sentiment_285AがMultipleInstances=
+    IgnoreNewのため、毎時本体の所要が60分を超えると次のトリガーが丸ごと捨てられる実害が
+    実測された(21時間で6回・うち5回が60分超過原因)。既存のRESEARCH_LAYER_TIME_LIMIT_SEC
+    (研究層を「呼ぶかどうか」のゲート)だけでは、呼んだ後の研究層自身の所要時間に上限が
+    無いため防げないと判明(過去08-17のコメントに残る同型の教訓の再来)。本テストは新設の
+    _research_layer_deadline_ok()とそのstep5-13への配線を検証する。"""
+    import inspect
+    import time as _time
+
+    # --- 境界値(純関数) ---
+    now = _time.time()
+    check("research-layer-deadline: 経過0秒(run_start=今)は予算内でTrue",
+          RO._research_layer_deadline_ok(now) is True)
+    check("research-layer-deadline: 経過=HARD_DEADLINE_SEC+10秒はFalse(予算超過)",
+          RO._research_layer_deadline_ok(now - (config.RESEARCH_LAYER_HARD_DEADLINE_SEC + 10)) is False)
+    check("research-layer-deadline: 経過=HARD_DEADLINE_SEC-10秒はTrue(境界直前はまだ予算内)",
+          RO._research_layer_deadline_ok(now - (config.RESEARCH_LAYER_HARD_DEADLINE_SEC - 10)) is True)
+
+    # --- ソース検査: step5-13の直前に全てガードがあり、かつstep4(export/forward_oos=
+    # 最重要データ)より後に配置されている(=step4はハード予算の対象外)ことを確認する。
+    # 実データ・外部モジュール依存の重い処理(analyze.analyze等)を伴うため、実行テストでは
+    # なく静的なソース検査で配線を確認する(他のresearch_layerテストと同じ安全な手法)。
+    src = inspect.getsource(RO._run_research_layer)
+    i_step4 = src.index("export/forward_oos failed")  # step4の中身(ガード対象外)
+    i_deadline_helper_def = None
+    try:
+        i_deadline_helper_def = inspect.getsource(RO._research_layer_deadline_ok)
+    except Exception:
+        pass
+    check("research-layer-deadline: _research_layer_deadline_ok()が関数として存在する",
+          i_deadline_helper_def is not None and "RESEARCH_LAYER_HARD_DEADLINE_SEC" in i_deadline_helper_def)
+    step_markers = [
+        "step5(descriptive)", "step6(cluster_trend)", "step7(linkage)",
+        "step8(retail_chase)", "step9(capit_v2_level)", "step10(votes_pit_eval)",
+        "step11(sector_peer_lead)", "step12(attention_relative)", "step13(afterhours_bearish)",
+    ]
+    prev_i = i_step4
+    for marker in step_markers:
+        # ★コードの実際の順序は (1)deadline_ok呼び出し→(2)markerを含むログメッセージ→
+        # (3)return、の順(if not deadline_ok(): _log(f"...{marker}..."); return)。
+        i_guard_call = src.index("_research_layer_deadline_ok(run_start)", prev_i)
+        i_guard = src.index(marker, i_guard_call)
+        i_return = src.index("return", i_guard)
+        check(f"research-layer-deadline wiring: {marker}のガードがstep4より後にある",
+              i_guard > i_step4)
+        check(f"research-layer-deadline wiring: {marker}は deadline_ok呼び出し→ログ→return "
+              f"の順で配線されている",
+              i_guard_call < i_guard < i_return)
+        prev_i = i_return
+
+    # ★実行テストは意図的に行わない: _run_research_layer()のstep4(export)は実データ読込+
+    # export_signal.write_from_signals()による本番latest.jsonへの実書込みを伴うため、
+    # selftestからrun_start操作だけで呼び出すと本番公開データを汚染するリスクがある
+    # (他のresearch_layer関連テスト[test_run_once_catchup_runs_export_step等]も同じ理由で
+    # 副作用のないソース検査のみに統一されている・既存の設計方針を踏襲)。動作確認は
+    # 次回以降の実運用サイクルをrun.logで確認する。
+
+
 def test_run_once_catchup_runs_export_step():
     """★2026-08-19追加: main()のソース構造検証。catchup(10分毎)は研究層(step4-13)を
     スキップしつつも、公開エクスポート再生成(_run_public_export_refresh_step)と
@@ -4155,7 +5435,7 @@ def test_run_once_catchup_runs_export_step():
     ことを確認する(おにや08:57投稿③=公開更新サイクルの10分化)。main()自体を実行すると
     重い処理まで走るため、他stepと同型の副作用のないソース検査で確認する。"""
     import inspect
-    src = inspect.getsource(RO.main)
+    src = inspect.getsource(RO._main_body)
     i_catchup_skip = src.index('_log("research_layer skipped (catchup:')
     i_export_lock = src.index("export_lock = _acquire_export_lock()")
     i_export_call = src.index("_run_public_export_refresh_step()")
@@ -4490,13 +5770,41 @@ def test_forward_oos_freeze_settle():
     FOOS.freeze_daily_row(sig, raw, price_daily, cutoff="close_consolidated", path=path)
     nrows = len(open(path, encoding="utf-8").read().strip().split("\n")) - 1
     check("foos: freeze idempotent (1 row)", nrows == 1)
-    # settle T+1
+    # settle T+1(合成価格は未調整なので分割表を空にして検証)
+    _saved_splits = FOOS.SPLITS
+    FOOS.SPLITS = ()
     filled = FOOS.settle_matured_rows(price_daily, path=path)
     check("foos: settle fills matured", filled == 1)
     import csv as _csv
     rr = list(_csv.DictReader(open(path, encoding="utf-8")))[0]
     check("foos: forward_return_1d filled", rr["forward_return_1d"] != "")
     check("foos: forward_return_1d value", abs(float(rr["forward_return_1d"]) - 0.05) < 1e-6)
+    FOOS.SPLITS = _saved_splits
+    # 分割調整: 分割日より前の行はp0を比率で割る(日足は遡って調整済み・凍結価格は未調整のため)
+    FOOS.SPLITS = (("2026-09-29", 3.0),)
+    check("foos: split factor before split=3", FOOS._split_factor("2026-09-28") == 3.0)
+    check("foos: split factor on/after split=1", FOOS._split_factor("2026-09-29") == 1.0)
+    path2 = _os.path.join(d, "foos_split.csv")
+    with open(path2, "w", encoding="utf-8", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=FOOS.FIELDS)
+        w.writeheader()
+        w.writerow({"date": "2026-09-28", "price_at_cutoff": "54010", "is_oos": "True"})
+    pd2 = {"bars": [
+        {"ts": ES._epoch_day("2026-09-28"), "close": 17780.0, "volume": 55197600},
+        {"ts": ES._epoch_day("2026-09-29"), "close": 17880.0, "volume": 41572200},
+    ]}
+    FOOS.settle_matured_rows(pd2, path=path2)
+    r2 = list(_csv.DictReader(open(path2, encoding="utf-8")))[0]
+    check("foos: split-adjusted 1d return (09-28->09-29 ≈ -0.685%)",
+          abs(float(r2["forward_return_1d"]) - (17880.0 / (54010 / 3.0) - 1.0)) < 1e-6)
+    FOOS.SPLITS = _saved_splits
+    # 場中の当日足は終値未確定=settleに使わない(15:45以降だけ使う)
+    _dd = [("2026-09-28", 17780.0, 1), ("2026-09-29", 17225.0, 1)]
+    _noon = dt.datetime(2026, 9, 29, 10, 19)
+    _eve = dt.datetime(2026, 9, 29, 16, 0)
+    check("foos: intraday today bar excluded before 15:45",
+          [x[0] for x in FOOS._completed_daily(_dd, now=_noon)] == ["2026-09-28"])
+    check("foos: today bar used after 15:45", len(FOOS._completed_daily(_dd, now=_eve)) == 2)
     config.LOG_PATH = _saved_log
 
 
@@ -4536,7 +5844,9 @@ def test_descriptive_daily():
     check("desc: eup_index>0", r8["eup_index"] > 0)
     check("desc: aori_index>0", r8["aori_index"] > 0)
     check("desc: feel agree from snapshot", r8["feel_vs_llm_agree"] == 0.75)
-    # 投稿6件<SIG_MIN_DAY_COVERAGE(10) → dense=False(既存 _is_today_dense 再利用)
+    # 投稿6件<SIG_MIN_DAY_COVERAGE(10) → dense=False
+    # (★2026-09-15=_is_dense_from_clean_day_rows。旧実装 signal_engine._is_today_dense
+    # と同一ロジックだが raw 全体の再 _clean を避ける軽量版=descriptive step5の所要時間対策)
     check("desc: not dense on small day", r8["dense"] is False)
     check("desc: posts_median numeric", isinstance(r8["posts_median"], float))
     # 前日はsnapshot無し → feel None
@@ -4544,6 +5854,62 @@ def test_descriptive_daily():
     # 空入力でも落ちない
     check("desc: empty safe", RS.descriptive_daily([], [], []) == [])
     check("desc: none safe", RS.descriptive_daily([], None, None) == [])
+
+
+def test_descriptive_dense_matches_legacy():
+    """★2026-09-15追加(コーデ15:02指摘対応)。descriptive_daily() の dense 判定を
+    signal_engine._is_today_dense(raw_全体, d) の日次呼び出し(=raw全体を毎回
+    _clean()し直す旧実装=O(日数×累積全行数)で14:00サイクル61分16秒の直接原因)から
+    RS._is_dense_from_clean_day_rows(day_rows)(=事前に1回だけ_clean済みの当日分のみ
+    を見る軽量版)へ置き換えたことの等価性を検証する。関数の存在確認+dense=Trueに
+    なるケース+ランダム合成データでの新旧一致(複数日・化けコメント混在)の3点。"""
+    import random
+
+    # 1) 新ヘルパーの存在確認(配線検査)
+    check("dense: _is_dense_from_clean_day_rows exists",
+          hasattr(RS, "_is_dense_from_clean_day_rows"))
+
+    # 2) dense=True になるケース(SIG_MIN_DAY_COVERAGE=10件以上・trading hour
+    #    バケット>=SIG_MIN_HOUR_BUCKETS=4種)。descriptive_daily経由で確認。
+    raw_dense = []
+    for hh in (9, 10, 11, 12, 13):
+        for m in (0, 30):
+            raw_dense.append({"ts": f"2026-07-09T{hh:02d}:{m:02d}:00",
+                               "text": "様子見継続", "source": "yahoo"})
+    rows = RS.descriptive_daily(raw_dense, [], [])
+    by = {r["date"]: r for r in rows}
+    check("dense: True when coverage+buckets satisfied", by["2026-07-09"]["dense"] is True)
+
+    # 3) ランダム合成データ(複数日・garbled/mojibake混在)で、新実装(descriptive_daily
+    #    が返すdense)と旧ロジック(signal_engine._is_today_dense(raw全体, d)を都度呼ぶ)
+    #    が全日で完全一致することを検算する(結果不変性の直接証拠)。
+    random.seed(20260915)
+    raw_rand = []
+    days = [f"2026-08-{dd:02d}" for dd in range(1, 11)]
+    sources = ["yahoo", "5ch", "stocktwits", "reddit"]
+    for d in days:
+        n = random.randint(0, 20)
+        for i in range(n):
+            hh = random.choice(list(config.TRADING_HOURS) + [7, 8, 16, 17])  # 一部は取引時間外
+            mm = random.randint(0, 59)
+            garbled = random.random() < 0.1
+            raw_rand.append({
+                "ts": f"{d}T{hh:02d}:{mm:02d}:00",
+                "text": f"投稿{i}",
+                "source": random.choice(sources),
+                "garbled": garbled,
+            })
+    rows_rand = RS.descriptive_daily(raw_rand, [], [])
+    by_rand = {r["date"]: r["dense"] for r in rows_rand}
+    mismatch = []
+    for d in days:
+        if d not in by_rand:
+            continue  # その日の投稿が0件ならdescriptive_dailyの行自体が存在しない
+        legacy = ENG._is_today_dense(raw_rand, d)
+        if by_rand[d] != legacy:
+            mismatch.append((d, by_rand[d], legacy))
+    check("dense: new impl matches legacy _is_today_dense on all random days (n=10日)",
+          mismatch == [])
 
 
 def test_descriptive_ledger():
@@ -4580,6 +5946,613 @@ def test_descriptive_ledger():
     check("ledger: value preserved", recs[1]["bull_count"] == "2")
 
 
+# ============================================================================
+# ★2026-10-02追加: メモリピーク対策(コーデ承認(1)(4))の検証。実LM・実ロック・実データに触れない
+#   (一時DATA_DIR・時刻/LM状態/アンロード/ロックを全て注入・スタブ)。
+# ============================================================================
+def _mp_patcher():
+    """属性の一時差し替え。属性が無かった場合は復元時に削除する。戻り値=(patch, restore)。"""
+    saved = []
+    _missing = object()
+
+    def patch(obj, name, value):
+        saved.append((obj, name, getattr(obj, name, _missing)))
+        setattr(obj, name, value)
+
+    def restore():
+        for obj, name, orig in reversed(saved):
+            if orig is _missing:
+                try:
+                    delattr(obj, name)
+                except AttributeError:
+                    pass
+            else:
+                setattr(obj, name, orig)
+    return patch, restore
+
+
+def test_lm_peak_gate_unit():
+    """lm_peak_gate: unload呼び出しの有無・待ちの最大90秒・fail-open・他run使用中はアンロードしない・night_gateと同じコマンド。"""
+    import tempfile
+    import subprocess
+    import types
+    import lm_peak_gate as G
+    import night_gate as NG
+
+    def clock():
+        t = [0.0]
+        return (lambda: t[0]), (lambda s: t.__setitem__(0, t[0] + s)), t
+
+    check("gate: defaults = wait 90s / poll 2s / unload timeout 60s (same as night_gate) / enabled",
+          G.WAIT_MAX_SEC == 90 and G.POLL_SEC == 2.0 and G.UNLOAD_TIMEOUT_SEC == 60 and G.ENABLED is True)
+    # (a) 未ロード: unloadしない・待たない・1行
+    now, sleep, t = clock()
+    logs, calls = [], {"unload": 0, "sleep": 0}
+    r = G.ensure_lm_unloaded_before("research_ledgers", loaded_fn=lambda: False,
+                                    unload_fn=lambda: (calls.__setitem__("unload", calls["unload"] + 1) or (True, "ok")),
+                                    now_fn=now, sleep_fn=lambda s: calls.__setitem__("sleep", calls["sleep"] + 1),
+                                    log_fn=logs.append, enabled=True)
+    check("gate not loaded: result not_loaded, no unload, no sleep, waited 0, exactly 1 log line",
+          r["result"] == "not_loaded" and calls == {"unload": 0, "sleep": 0} and r["waited_sec"] == 0
+          and len(logs) == 1 and "mem_gate[research_ledgers]" in logs[0] and "not_loaded" in logs[0])
+    # (b) 載っている→unloadを1回→数回のポーリングで未ロード確認→開始
+    now, sleep, t = clock()
+    seq, st, logs = [], {"unloaded": False}, []
+
+    def loaded_b():
+        seq.append("loaded?")
+        return not (st["unloaded"] and t[0] >= 6.0)
+
+    def unload_b():
+        seq.append("unload")
+        st["unloaded"] = True
+        return True, "unloaded"
+    r = G.ensure_lm_unloaded_before("export_build", loaded_fn=loaded_b, unload_fn=unload_b, now_fn=now, sleep_fn=sleep,
+                                    log_fn=logs.append, enabled=True)
+    check("gate loaded->unload->confirm: result unloaded, unload exactly once and BEFORE the confirm polls",
+          r["result"] == "unloaded" and seq.count("unload") == 1 and seq[:3] == ["loaded?", "unload", "loaded?"]
+          and r["unload_executed"] is True)
+    check("gate loaded->unload->confirm: waited = 3 polls x 2s = 6s, one log line with unload_executed=True",
+          r["waited_sec"] == 6.0 and len(logs) == 1 and "unload_executed=True" in logs[0] and "result=unloaded" in logs[0])
+    # (c) ずっと載っている→最大90秒待って開始(fail-open)・unloadは1回
+    now, sleep, t = clock()
+    logs, ucalls = [], []
+    r = G.ensure_lm_unloaded_before("research_signal", loaded_fn=lambda: True,
+                                    unload_fn=lambda: (ucalls.append(1) or (True, "ok")),
+                                    now_fn=now, sleep_fn=sleep, log_fn=logs.append, enabled=True)
+    check("gate stuck loaded: waits at most ~90s then starts (fail-open: timeout_fail_open)",
+          r["result"] == "timeout_fail_open" and 90.0 <= r["waited_sec"] <= 92.0)
+    check("gate stuck loaded: unload attempted once (not hammered every poll) and 1 log line with the wait",
+          len(ucalls) == 1 and len(logs) == 1 and "timeout_fail_open" in logs[0] and "waited=90s" in logs[0])
+    now, sleep, t = clock()
+    r = G.ensure_lm_unloaded_before("x", loaded_fn=lambda: True, unload_fn=lambda: (True, "ok"), now_fn=now, sleep_fn=sleep,
+                                    wait_max=10, enabled=True)
+    check("gate: wait_max is honored (10s)", r["result"] == "timeout_fail_open" and 10.0 <= r["waited_sec"] <= 12.0)
+    # (d) 問い合わせ不能(None)は待たずに開始(fail-open)・待機中にNoneになっても開始
+    now, sleep, t = clock()
+    ucalls = []
+    r = G.ensure_lm_unloaded_before("x", loaded_fn=lambda: None, unload_fn=lambda: (ucalls.append(1) or (True, "ok")), now_fn=now,
+                                    sleep_fn=sleep, enabled=True)
+    check("gate unknown(None) at start: starts immediately, no unload, no wait",
+          r["result"] == "unknown_fail_open" and not ucalls and r["waited_sec"] == 0)
+    now, sleep, t = clock()
+    vals = iter([True, True, None])
+    r = G.ensure_lm_unloaded_before("x", loaded_fn=lambda: next(vals), unload_fn=lambda: (True, "ok"), now_fn=now, sleep_fn=sleep,
+                                    enabled=True)
+    check("gate unknown(None) during the wait: starts (fail-open)", r["result"] == "unknown_fail_open")
+    # (e) 例外はfail-open(開始)・unload=Falseは待つだけ・無効化
+    logs = []
+
+    def boom():
+        raise RuntimeError("lm query exploded")
+    r = G.ensure_lm_unloaded_before("x", loaded_fn=boom, log_fn=logs.append, enabled=True)
+    check("gate exception: error_fail_open + WARN log line (never raises)",
+          r["result"] == "error_fail_open" and len(logs) == 1 and "WARN" in logs[0])
+    now, sleep, t = clock()
+    ucalls = []
+    r = G.ensure_lm_unloaded_before("x", unload=False, loaded_fn=lambda: True, unload_fn=lambda: (ucalls.append(1) or (True, "ok")),
+                                    now_fn=now, sleep_fn=sleep, wait_max=6, enabled=True)
+    check("gate unload=False: never calls unload, still waits then fail-open", not ucalls and r["result"] == "timeout_fail_open")
+    logs, ucalls = [], []
+    r = G.ensure_lm_unloaded_before("x", loaded_fn=lambda: (ucalls.append("q") or True), unload_fn=lambda: (ucalls.append("u") or (True, "")),
+                                    log_fn=logs.append, enabled=False)
+    check("gate disabled (BBS_LM_PEAK_GATE=0): result disabled, nothing called, nothing logged", r["result"] == "disabled" and not ucalls and not logs)
+    # (f) unloadが実行できなかった場合の扱い: 他run使用中(SKIP)は待機中に再試行・実行失敗(FAIL)は再試行しない
+    now, sleep, t = clock()
+    res = [(False, "SKIP another run active (.analyze.lock held by pid=1)"), (False, "SKIP another run active (.analyze.lock held by pid=1)"), (True, "ok")]
+    n = {"u": 0}
+    st2 = {"unloaded": False}
+
+    def unload_f():
+        r_ = res[min(n["u"], len(res) - 1)]
+        n["u"] += 1
+        if r_[0]:
+            st2["unloaded"] = True
+        return r_
+    r = G.ensure_lm_unloaded_before("x", loaded_fn=lambda: not st2["unloaded"], unload_fn=unload_f, now_fn=now, sleep_fn=sleep, enabled=True)
+    check("gate: SKIP(other run active) is retried while waiting; then unload executes and the gate confirms",
+          n["u"] == 3 and r["result"] == "unloaded" and r["unload_executed"] is True)
+    now, sleep, t = clock()
+    n = {"u": 0}
+    r = G.ensure_lm_unloaded_before("x", loaded_fn=lambda: True, unload_fn=lambda: (n.__setitem__("u", n["u"] + 1) or (False, "FAIL unload failed: Timeout")),
+                                    now_fn=now, sleep_fn=sleep, wait_max=10, enabled=True)
+    check("gate: FAIL (command ran/raised) is NOT retried every poll (no lms hammering)", n["u"] == 1 and r["result"] == "timeout_fail_open")
+    # ---- other_run_active: 自PID・死PID・壊れたロック・他PID
+    d = tempfile.mkdtemp()
+    me, other = os.getpid(), 4242
+    check("other_run_active: no locks -> False", G.other_run_active(data_dir=d, my_pid=me) == (False, ""))
+
+    def put(name, text):
+        with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def clear():
+        for nm in G.LOCK_NAMES:
+            p = os.path.join(d, nm)
+            if os.path.exists(p):
+                os.remove(p)
+    put(".analyze.lock", "%d 2026-10-02T12:30:01\n" % other)
+    a, why = G.other_run_active(data_dir=d, my_pid=me, alive_fn=lambda p: True)
+    check("other_run_active: another live pid holding .analyze.lock -> True (reason names the lock)", a is True and ".analyze.lock" in why)
+    check("other_run_active: dead pid (stale lock) -> False", G.other_run_active(data_dir=d, my_pid=me, alive_fn=lambda p: False)[0] is False)
+    check("other_run_active: alive_fn raising -> treated as alive (safe side)",
+          G.other_run_active(data_dir=d, my_pid=me, alive_fn=lambda p: 1 / 0)[0] is True)
+    put(".analyze.lock", "%d 2026-10-02T12:30:01\n" % me)
+    check("other_run_active: lock held by my own pid is ignored", G.other_run_active(data_dir=d, my_pid=me, alive_fn=lambda p: True)[0] is False)
+    clear()
+    put(".heavy_cycle.lock", "garbage\n")
+    check("other_run_active: corrupted lock (pid unreadable) -> True (safe side)", G.other_run_active(data_dir=d, my_pid=me)[0] is True)
+    clear()
+    put(".export.lock", "%d 2026-10-02T12:30:01\n" % other)
+    check("other_run_active: another run's .export.lock (news/insight LM use) -> True",
+          G.other_run_active(data_dir=d, my_pid=me, alive_fn=lambda p: True)[0] is True)
+    clear()
+    put(".heavy_cycle.lock", "%d 2026-10-02T12:30:01\n" % other)
+    check("other_run_active: another run's .heavy_cycle.lock -> True", G.other_run_active(data_dir=d, my_pid=me, alive_fn=lambda p: True)[0] is True)
+    put(".heavy_cycle.lock", "%d 2026-10-02T12:30:01\n" % me)
+    check("other_run_active: my own heavy_cycle_lock (catchup keeps it) does not block my own unload",
+          G.other_run_active(data_dir=d, my_pid=me, alive_fn=lambda p: True)[0] is False)
+    clear()
+    # ---- unload_lm_now
+    runs = []
+    ok, msg = G.unload_lm_now(run_fn=lambda: runs.append(1), active_fn=lambda: (True, ".analyze.lock held by pid=9"))
+    check("unload_lm_now: other run active -> not executed, message starts with SKIP, lms not called", ok is False and msg.startswith("SKIP") and not runs)
+    ok, msg = G.unload_lm_now(run_fn=lambda: types.SimpleNamespace(stdout="Unloaded all\n", stderr=""), active_fn=lambda: (False, ""))
+    check("unload_lm_now: idle -> executed with stdout tail", ok is True and "Unloaded" in msg)
+
+    def run_boom():
+        raise subprocess.TimeoutExpired("lms", 60)
+    ok, msg = G.unload_lm_now(run_fn=run_boom, active_fn=lambda: (False, ""))
+    check("unload_lm_now: command timeout -> not raised, FAIL message", ok is False and msg.startswith("FAIL"))
+    # ---- night_gate.unload_lm_if_idle と全く同じコマンド・同じtimeout
+    rec = []
+    orig_run = subprocess.run
+    import lm_in_use as _lmi_t   # ★2026-10-16 LM全廃: 既定では lms を呼ばない。従来コマンドの同一性だけ、一時的に全廃を解除して検証する
+    _abol_t = _lmi_t.LM_ABOLISHED
+    _lmi_t.LM_ABOLISHED = False
+    subprocess.run = lambda *a, **k: (rec.append((a, k)) or types.SimpleNamespace(stdout="", stderr=""))
+    try:
+        NG.unload_lm_if_idle(exists_fn=lambda p: False)
+        G.unload_lm_now(active_fn=lambda: (False, ""))
+    finally:
+        subprocess.run = orig_run
+        _lmi_t.LM_ABOLISHED = _abol_t
+    check("unload command: identical to night_gate.unload_lm_if_idle (lms unload --all, capture_output/text, timeout=60)",
+          len(rec) == 2 and rec[0] == rec[1] and rec[0][0][0][1:] == ["unload", "--all"] and rec[0][1].get("timeout") == 60)
+
+
+def test_memory_peak_main_body_order_and_equivalence():
+    """_main_body(スタブ・時刻注入)で、gate呼び出し位置・研究層step5-13を最後へ回す順序・catchup/collect-onlyの不変・
+    soft時間制限の判定が変わらないこと(締切は『元の位置からの経過』)・analyzeしない回はgateしないこと、を検証する。"""
+    import tempfile
+    import types
+    patch, restore = _mp_patcher()
+    d = tempfile.mkdtemp()
+    clk = {"t": 1_000_000.0}
+    ev, adv, rs_args = [], {}, []
+    orig_gate = RO._lm_peak_gate
+
+    def step(name, ret=None):
+        def f(*a, **k):
+            ev.append(name)
+            clk["t"] += adv.get(name, 0)
+            return ret
+        return f
+
+    def analyze_stub(*a, **k):
+        ev.append("analyze")
+        clk["t"] += adv.get("analyze", 0)
+        if adv.get("analyze_raises"):
+            raise RuntimeError("simulated analyze failure")
+        return {"analyzed": 1}
+
+    def gate_stub(name, unload=True):
+        ev.append("gate:" + name)
+        clk["t"] += adv.get("gate:" + name, 0)
+        return {"result": "stub"}
+
+    def research_stub(run_start, part="all"):
+        ev.append("research:" + part)
+        rs_args.append((part, run_start, clk["t"]))
+        clk["t"] += adv.get("research:" + part, 0)
+
+    def snap_stub(new_count=0, path=None):
+        ev.append("snapshot")
+        return {"day_cumulative": 0, "day_meaningful": 0, "spikes": []}
+
+    state = {"analyze_lock": "ANALYZE_LOCK"}
+    try:
+        patch(config, "DATA_DIR", d)
+        patch(config, "LOG_PATH", os.path.join(d, "run.log"))
+        patch(config, "REVERSAL_DETECT_ENABLE", False)
+        patch(config, "TIER_FLOW_LEDGER_ENABLE", False)
+        patch(RO, "time", types.SimpleNamespace(time=lambda: clk["t"], sleep=lambda s: None))
+        patch(RO, "_acquire_collect_lock", lambda timeout_sec=15: None)
+        patch(PF, "fetch_and_save", step("price", (0, 0)))
+        patch(PF, "fetch_adr_pts_and_save", step("adr_pts", 0))
+        patch(PF, "fetch_us_indices_and_save", step("us_indices", 0))
+        patch(RO, "_acquire_analyze_lock", lambda timeout_sec=15: state["analyze_lock"])
+        patch(RO, "_release_analyze_lock", step("analyze_unlock"))
+        patch(RO, "_update_lock_busy_streak", lambda *a, **k: 0)
+        patch(RO, "_catchup_preopen_cap", lambda base, rs, now=None, holidays="load": (state.get("cap", base), None))
+        patch(A, "analyze", analyze_stub)
+        patch(S, "write_snapshot", snap_stub)
+        patch(RO, "_run_research_layer", research_stub)
+        patch(RO, "_acquire_export_lock", lambda timeout_sec=15: (ev.append("export_lock") or "EXPORT_LOCK"))
+        patch(RO, "_release_export_lock", lambda p: ev.append("export_unlock"))
+        patch(RO, "_run_public_export_refresh_step", step("export"))
+        patch(RO, "_run_gsheets_sync_step", step("sheets"))
+        patch(RO, "_maybe_mirror_external", step("mirror"))
+        patch(RO, "_lm_peak_gate", gate_stub)
+        patch(RO, "_release_heavy_cycle_lock_early", lambda reason="", now=None: ev.append("early_release"))
+
+        def run(**kw):
+            ev.clear()
+            rs_args.clear()
+            RO._main_body(**kw)
+            return list(ev)
+        pre = ["price", "adr_pts", "us_indices"]
+        # ---- 毎時本体: gate位置と、研究層step5-13が公開エクスポート+Sheets同期の後ろへ回る順序
+        seq = run(collect_only=False, catchup=False)
+        exp_h = pre + ["analyze", "analyze_unlock", "gate:after_analyze", "early_release", "snapshot",
+                       "gate:research_signal", "research:signal",
+                       "export_lock", "gate:export_build", "export", "sheets", "export_unlock",
+                       "gate:research_ledgers", "research:ledgers", "mirror"]
+        check("hourly order: analyze -> unload gate -> early lock release -> snapshot -> research step4 -> export+sheets -> research step5-13 -> mirror",
+              seq == exp_h)
+        # 旧順序(研究層が1回・公開エクスポートの前)との差は『step5-13の位置』だけ(gate行を除き、signal+ledgers を1つの研究層とみなして比較)
+        legacy = pre + ["analyze", "analyze_unlock", "early_release", "snapshot", "research:all", "export_lock", "export", "sheets", "export_unlock", "mirror"]
+        flat = [e for e in seq if not e.startswith("gate:")]
+        i_led = flat.index("research:ledgers")
+        moved = flat[:i_led] + flat[i_led + 1:]
+        moved = ["research:all" if e == "research:signal" else e for e in moved]
+        check("hourly equivalence: apart from moving step5-13 to just before mirror, the step set and order equal the legacy order",
+              moved == legacy and flat[i_led - 1] == "export_unlock" and flat[i_led + 1] == "mirror")
+        check("hourly: research layer called exactly twice (signal then ledgers), never as 'all'",
+              [a[0] for a in rs_args] == ["signal", "ledgers"])
+        # ---- catchup: 研究層は従来どおり省略・gateはafter_analyzeとexport_buildだけ・早期解放なし(毎時本体のみ)
+        seq = run(collect_only=False, catchup=True)
+        exp_c = pre + ["analyze", "analyze_unlock", "gate:after_analyze", "snapshot",
+                       "export_lock", "gate:export_build", "export", "sheets", "export_unlock", "mirror"]
+        check("catchup: research layer still skipped (no signal/ledgers/gates for research), early release still hourly-only", seq == exp_c)
+        # ---- collect-only: gate・研究層・analyzeなし
+        seq = run(collect_only=True, catchup=False)
+        check("collect-only: no analyze, no gate, no research, no export", seq == pre + ["snapshot", "mirror"])
+        # ---- analyzeを実際に呼ばない回はgateしない(lock busy / 予算0)・例外で落ちた回はgateする(LMが載っている可能性)
+        state["analyze_lock"] = None
+        seq = run(collect_only=False, catchup=False)
+        check("analyze lock busy: analyze not run -> no after_analyze gate (another run's LM is untouched)",
+              "analyze" not in seq and "gate:after_analyze" not in seq and "gate:export_build" in seq)
+        state["analyze_lock"] = "ANALYZE_LOCK"
+        state["cap"] = 0
+        seq = run(collect_only=False, catchup=True)
+        check("catchup with no analyze budget (preopen cap): analyze skipped -> no after_analyze gate",
+              "analyze" not in seq and "gate:after_analyze" not in seq and "gate:export_build" in seq)
+        state.pop("cap")
+        adv["analyze_raises"] = True
+        seq = run(collect_only=False, catchup=True)
+        check("analyze raised: still gates after the failed analyze (LM may be loaded) and carries on to export",
+              "gate:after_analyze" in seq and seq.index("gate:after_analyze") > seq.index("analyze_unlock") and "export" in seq)
+        adv.pop("analyze_raises")
+        # ---- soft時間制限(元の位置で判定): 超過なら step4 も step5-13 も実行しない(従来と同じ)・公開エクスポートは実行
+        adv["analyze"] = config.RESEARCH_LAYER_TIME_LIMIT_SEC + 100
+        seq = run(collect_only=False, catchup=False)
+        check("soft limit exceeded at the original position: research step4 AND step5-13 both skipped (as before), export still runs",
+              "research:signal" not in seq and "research:ledgers" not in seq and "gate:research_signal" not in seq
+              and "gate:research_ledgers" not in seq and "export" in seq)
+        adv.pop("analyze")
+        # ---- 締切の基準: step5-13を後ろへ回しても『step4直後からの経過』で測る(スキップ判定が変わらない)
+        adv.update({"analyze": 1700, "research:signal": 300, "export": 900})
+        seq = run(collect_only=False, catchup=False)
+        part, rs_arg, t_call = rs_args[-1]
+        elapsed_real = t_call - (1_000_000.0 + 0)
+        virtual = t_call - rs_arg
+        hard = config.RESEARCH_LAYER_HARD_DEADLINE_SEC
+        ref_elapsed = 1700 + 300
+        check("deadline basis: ledgers get a run_start shifted so that virtual elapsed == elapsed at the end of step4 (2000s)",
+              part == "ledgers" and abs(virtual - ref_elapsed) < 1e-6 and elapsed_real > hard)
+        saved_t = clk["t"]
+        clk["t"] = t_call
+        check("deadline basis: shifted run_start keeps research_layer_deadline_ok True where the unshifted one would have skipped (2900s>2700s)",
+              RO._research_layer_deadline_ok(rs_arg) is True and RO._research_layer_deadline_ok(1_000_000.0) is False)
+        clk["t"] = saved_t
+        adv["gate:research_ledgers"] = 60
+        seq = run(collect_only=False, catchup=False)
+        part, rs_arg, t_call = rs_args[-1]
+        check("deadline basis: the ledgers gate wait counts toward the elapsed time (conservative: virtual elapsed 2060s)",
+              abs((t_call - rs_arg) - (ref_elapsed + 60)) < 1e-6)
+        adv.clear()
+        # ---- ラッパー _lm_peak_gate は例外を握りつぶす(処理は止まらない)
+        import lm_peak_gate as G
+        orig_ens = G.ensure_lm_unloaded_before
+        G.ensure_lm_unloaded_before = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("gate blew up"))
+        try:
+            out = orig_gate("export_build")
+        finally:
+            G.ensure_lm_unloaded_before = orig_ens
+        log = open(config.LOG_PATH, encoding="utf-8").read()
+        check("_lm_peak_gate wrapper: exception swallowed (returns None) and WARN logged", out is None and "mem_gate[export_build] failed (fail-open)" in log)
+    finally:
+        restore()
+
+
+def test_research_layer_parts_equivalence():
+    """_run_research_layer(実コード)の part='signal'+'ledgers' が part='all'(従来)と同じ呼び出し・同じ引数(内容ダイジェスト)になること。
+    各stepの実体はスタブ(実データ・本番latest.jsonへ書かない)。締切超過時の挙動(step4は常に実行・ledgersは全件読込み前に見送り)も確認する。"""
+    import tempfile
+    import hashlib
+    import json
+    import time
+    from research import capit_v2_level as CAPIT
+    patch, restore = _mp_patcher()
+    d = tempfile.mkdtemp()
+    raw_p, an_p, snap_p = (os.path.join(d, n) for n in ("raw.jsonl", "analyzed.jsonl", "snapshots.jsonl"))
+    with open(raw_p, "w", encoding="utf-8") as f:
+        for i in range(3):
+            f.write(json.dumps({"id": "r%d" % i, "ts": "2026-10-02T09:0%d:00" % i, "source": "yahoo", "text": "t%d" % i}, ensure_ascii=False) + "\n")
+        f.write("{broken json line\n")
+    with open(an_p, "w", encoding="utf-8") as f:
+        for i in (0, 1, 1, 2):     # id重複(後勝ち)を含む
+            f.write(json.dumps({"id": "r%d" % i, "ts": "2026-10-02T09:0%d:00" % i, "sentiment": "bullish", "v": i}, ensure_ascii=False) + "\n")
+    with open(snap_p, "w", encoding="utf-8") as f:
+        for i in range(2):
+            f.write(json.dumps({"ts": "2026-10-02T09:0%d:00" % i, "date": "2026-10-02", "n": i}) + "\n")
+    ev = []
+    loads = {"raw": 0}
+    cutoff = {"v": "intraday_rolling"}
+
+    def dig(*args):
+        return hashlib.sha256(json.dumps(args, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
+
+    def rec(name, ret, argf=None):
+        def f(*a, **k):
+            ev.append((name, dig(a, k) if argf is None else argf(*a, **k)))
+            return ret
+        return f
+    orig_iter_raw = RO._iter_raw
+
+    def iter_raw_counted():
+        loads["raw"] += 1
+        return orig_iter_raw()
+    try:
+        patch(config, "DATA_DIR", d)
+        patch(config, "LOG_PATH", os.path.join(d, "run.log"))
+        patch(config, "RAW_COMMENTS_PATH", raw_p)
+        patch(config, "ANALYZED_PATH", an_p)
+        patch(config, "SNAPSHOTS_PATH", snap_p)
+        for flag in ("BBS_LINKAGE_DAILY", "BBS_CHASE_DAILY", "BBS_CAPIT_V2_DAILY", "BBS_VOTES_PIT_EVAL",
+                     "SECTOR_PEER_LEAD_DAILY", "ATTENTION_RELATIVE_DAILY", "BBS_AFTERHOURS_BEARISH_DAILY"):
+            patch(config, flag, True)
+        patch(RO, "_iter_raw", iter_raw_counted)
+        patch(RO, "_cutoff_kind", lambda: cutoff["v"])
+        patch(RO, "_collect_data_health", lambda: {"stale": False, "page_cap_hit": False})
+        patch(PF, "load_price", lambda p: {"price": os.path.basename(str(p))})
+        patch(SG, "compute_signals", rec("compute_signals", {"sig": 1}))
+        patch(EXP, "write_from_signals", rec("write_from_signals", {"vol_regime": "x", "calibration_status": "c", "calib_days": 1}))
+        patch(FOOS, "freeze_daily_row", rec("freeze_daily_row", None))
+        patch(FOOS, "settle_matured_rows", rec("settle_matured_rows", 0))
+        patch(RS, "descriptive_daily", rec("descriptive_daily", [{"date": "d"}]))
+        patch(RS, "write_descriptive_ledger", rec("write_descriptive_ledger", 0))
+        patch(CTREND, "save_daily", rec("save_daily", ({"date": "d"}, 0)))
+        patch(ILINK, "append_daily", rec("linkage", {"skipped": True, "row": {}}))
+        patch(RCHASE, "build_bucket_rows", rec("build_bucket_rows", {"b": 1}))
+        patch(RCHASE, "append_daily", rec("retail_chase", {"daily_appended": 0, "buckets_appended": 0, "n_days": 0}))
+        patch(CAPIT, "append_daily", rec("capit_v2", (0, 0)))
+        patch(VPIT, "append_daily", rec("votes_pit", {"skipped": True, "row": {}}))
+        patch(PEERLEAD, "append_daily", rec("sector_peer_lead", {"skipped": True, "row": {}}))
+        patch(ATTNREL, "append_daily", rec("attention_relative", {"skipped": True, "row": {}}))
+        patch(ABEAR, "append_daily", rec("afterhours_append", {"skipped": True, "row": {}}))
+        patch(ABEAR, "settle_matured_rows", rec("afterhours_settle", 0))
+        now = time.time()
+
+        def go(part=None, run_start=None):
+            ev.clear()
+            loads["raw"] = 0
+            if part is None:
+                RO._run_research_layer(run_start or now)
+            else:
+                RO._run_research_layer(run_start or now, part=part)
+            return list(ev)
+        names4 = {"compute_signals", "write_from_signals", "freeze_daily_row", "settle_matured_rows"}
+        for ck in ("intraday_rolling", "close_consolidated"):
+            cutoff["v"] = ck
+            e_all = go()
+            e_sig = go("signal")
+            e_led = go("ledgers")
+            check(f"parts[{ck}]: 'signal' + 'ledgers' == legacy single call ('all'): same calls, same argument digests, same order",
+                  e_all == e_sig + e_led and len(e_sig) > 0 and len(e_led) > 0)
+            check(f"parts[{ck}]: 'signal' contains only step4 calls; 'ledgers' contains no step4 call",
+                  {n for n, _ in e_sig if n not in ("load_price",)} <= names4 and not ({n for n, _ in e_led} & names4))
+            check(f"parts[{ck}]: freeze_daily_row only at close_consolidated (step4 behavior unchanged)",
+                  (("freeze_daily_row" in {n for n, _ in e_sig}) == (ck == "close_consolidated")))
+            check(f"parts[{ck}]: default call (no part) == part='all'", go() == e_all and go("all") == e_all)
+        check("parts: ledgers calls follow the original step5..13 order",
+              [n for n, _ in e_led if n not in ("load_price",)] ==
+              ["descriptive_daily", "write_descriptive_ledger", "save_daily", "linkage", "build_bucket_rows", "retail_chase",
+               "capit_v2", "votes_pit", "sector_peer_lead", "attention_relative", "afterhours_append", "afterhours_settle"])
+        # ---- 締切超過(run_start が古い)
+        old = now - (config.RESEARCH_LAYER_HARD_DEADLINE_SEC + 10)
+        e_all_late = go(run_start=old)
+        e_sig = go("signal")
+        check("deadline passed: 'all' runs step4 only (legacy: step4 is exempt, step5-13 skipped)", e_all_late == e_sig)
+        e_led_late = go("ledgers", run_start=old)
+        check("deadline passed: 'ledgers' skips everything BEFORE loading raw/analyzed rows (no memory spent) and logs it",
+              e_led_late == [] and loads["raw"] == 0
+              and "ledgers part (step5-13) skipped before loading rows" in open(config.LOG_PATH, encoding="utf-8").read())
+        e_sig_late = go("signal", run_start=old)
+        check("deadline passed: 'signal' (step4, most important data) still runs", e_sig_late == e_sig and len(e_sig_late) > 0)
+        try:
+            RO._run_research_layer(now, part="bogus")
+            ok = False
+        except ValueError:
+            ok = True
+        check("parts: unknown part raises ValueError", ok)
+        check("parts: 'signal' reads raw/analyzed once; 'ledgers' reads them once (own load, no hidden sharing)",
+              (go("signal") and loads["raw"] == 1) and (go("ledgers") and loads["raw"] == 1) and (go() and loads["raw"] == 1))
+    finally:
+        restore()
+
+
+
+def test_night_gate_insight_only_passthrough():
+    """★2026-10-09(ユーザー選択式10-08 22:28): 夜間ゲートが分析サイクルを見送る回でも、AI考察(公開エクスポート再生成＋insight)だけは通す。
+    morning_cut(08:50〜09:05)は従来どおり通さない。analyze/追いつき(_main_body)は呼ばない。BBS_NIGHT_INSIGHT=0で従来どおり。"""
+    import run_once as _ro, night_gate as _ng_mod
+    calls = []
+    saved = {k: getattr(_ro, k) for k in ("_acquire_export_lock", "_release_export_lock", "_lm_peak_gate",
+                                           "_run_public_export_refresh_step", "_run_gsheets_sync_step", "_main_body", "_NIGHT_INSIGHT_ENABLE",
+                                           "_morning_cut_lm_already_loaded")}
+    saved_ng = {k: getattr(_ng_mod, k) for k in ("decide", "unload_lm_if_idle")}
+    try:
+        _ro._acquire_export_lock = lambda timeout_sec=15: "LOCK"
+        _ro._release_export_lock = lambda lp: calls.append("release")
+        _ro._lm_peak_gate = lambda step, unload=True: calls.append("peak:" + step)
+        _ro._run_public_export_refresh_step = lambda no_lm_gen=False: calls.append("export")
+        _ro._run_gsheets_sync_step = lambda: calls.append("sheets")
+        _ro._main_body = lambda **kw: calls.append("main_body") or 0
+        # ★2026-10-13: 見送り枝の既定は『LM生成なし(_lm_peak_gate も呼ばない)』。従来の並びを検証する以降のテストは環境変数=0(従来動作)で行う
+        _env_bak = os.environ.get("BBS_NIGHT_INSIGHT_NO_LM_GEN")
+        os.environ["BBS_NIGHT_INSIGHT_NO_LM_GEN"] = "0"
+        _ng_mod.unload_lm_if_idle = lambda: (calls.append("unload") or (True, "ok"))
+        def run(reason, enabled=True):
+            calls.clear()
+            _ro._NIGHT_INSIGHT_ENABLE = enabled
+            _ng_mod.decide = lambda *a, **k: {"skip": True, "reason": reason, "ga": []}
+            rc = _ro.main(collect_only=False, catchup=True)
+            return rc, list(calls)
+        rc, c = run("night_window_and_ga_running")
+        check("night insight: GA-night skip -> AI考察(export)のみ実行・分析本体は呼ばない・後でLM解放",
+              rc == 0 and c == ["peak:export_build", "export", "sheets", "release", "unload"] or
+              (rc == 0 and "export" in c and "main_body" not in c and c[-1] == "unload"))
+        # ★2026-10-10(ユーザー選択式17:5x・案B-2): 朝の区切りは『LMを新規に載せない』制限だけ残し、載り済みならAI考察を通す(分析本体は見送り)
+        _ro._morning_cut_lm_already_loaded = lambda: False
+        rc, c = run("morning_cut_0850_0905")
+        check("night insight: morning_cut(08:50-09:05) LM未ロード→従来どおり全見送り", rc == 0 and "export" not in c and "main_body" not in c)
+        _ro._morning_cut_lm_already_loaded = lambda: True
+        rc, c = run("morning_cut_0850_0905")
+        check("night insight: morning_cut LM載り済み→AI考察(export)のみ通す・分析本体は呼ばない・LM解放は従来どおり",
+              rc == 0 and "export" in c and "main_body" not in c and c[-1] == "unload")
+        _ro._morning_cut_lm_already_loaded = lambda: True
+        rc, c = run("morning_cut_0850_0905", enabled=False)
+        check("night insight: morning_cut LM載り済みでも BBS_NIGHT_INSIGHT=0 なら全見送り", rc == 0 and "export" not in c)
+        _ro._morning_cut_lm_already_loaded = saved["_morning_cut_lm_already_loaded"]
+        rc, c = run("night_window_and_ga_running", enabled=False)
+        check("night insight: BBS_NIGHT_INSIGHT=0 なら従来どおり全見送り", rc == 0 and "export" not in c and "main_body" not in c)
+        _ro._acquire_export_lock = lambda timeout_sec=15: None
+        rc, c = run("night_window_and_ga_running")
+        check("night insight: export lock busy -> 何もせず解放だけ(fail-soft)", rc == 0 and "export" not in c and c[-1] == "unload")
+        # 既定(環境変数なし)=LM生成なし: _lm_peak_gate を通らず export(数値更新)→sheets→release→unload
+        _ro._acquire_export_lock = lambda timeout_sec=15: "LOCK"
+        os.environ.pop("BBS_NIGHT_INSIGHT_NO_LM_GEN", None)
+        rc, c = run("night_window_and_ga_running")
+        check("night insight(既定): LM生成なし=メモリ関門を通らず export→sheets→release→unload",
+              rc == 0 and c == ["export", "sheets", "release", "unload"])
+    finally:
+        if _env_bak is None:
+            os.environ.pop("BBS_NIGHT_INSIGHT_NO_LM_GEN", None)
+        else:
+            os.environ["BBS_NIGHT_INSIGHT_NO_LM_GEN"] = _env_bak
+        for k, v in saved.items():
+            setattr(_ro, k, v)
+        for k, v in saved_ng.items():
+            setattr(_ng_mod, k, v)
+
+def test_memory_peak_night_gate_non_interference_and_wiring():
+    """night_gateとの非干渉(夜間見送りの回はgateに到達しない・night_gate/preopen_labelのunloadは不変)と、run_once側の配線(ソース検査)。"""
+    import tempfile
+    import inspect
+    import types
+    import night_gate as NG
+    import preopen_label as PLm
+    import lm_peak_gate as G
+    patch, restore = _mp_patcher()
+    d = tempfile.mkdtemp()
+    calls = {"body": 0, "gate": 0, "unload": 0}
+    try:
+        patch(config, "DATA_DIR", d)
+        patch(config, "LOG_PATH", os.path.join(d, "run.log"))
+        patch(RO, "_main_body", lambda **kw: calls.__setitem__("body", calls["body"] + 1) or 0)
+        patch(RO, "_lm_peak_gate", lambda *a, **k: calls.__setitem__("gate", calls["gate"] + 1))
+        patch(NG, "decide", lambda *a, **k: {"skip": True, "reason": "night_window_and_ga_running", "ga": [(1, "verify_settings")]})
+        patch(NG, "unload_lm_if_idle", lambda *a, **k: (calls.__setitem__("unload", calls["unload"] + 1) or (True, "stub")))
+        patch(RO, "_NIGHT_INSIGHT_ENABLE", False)   # 2026-10-09: 夜間のAI考察のみ通す動作は専用テスト(test_night_gate_insight_only_passthrough)で検証。ここは従来の『全見送り』の配線を検証する
+        rc = RO.main(collect_only=False, catchup=True)
+        check("night_gate skip: cycle skipped before heavy lock/_main_body; our gate never runs; night_gate's own unload still runs once",
+              rc == 0 and calls == {"body": 0, "gate": 0, "unload": 1})
+        patch(NG, "decide", lambda *a, **k: {"skip": False, "reason": "outside_night_window", "ga": []})
+        rc = RO.main(collect_only=False, catchup=False)
+        check("night_gate pass: main() delegates to _main_body once; main() itself never calls the gate",
+              rc == 0 and calls["body"] == 1 and calls["gate"] == 0 and not os.path.exists(os.path.join(d, ".heavy_cycle.lock")))
+    finally:
+        restore()
+    # night_gate / preopen_label の既存unloadは不変
+    calls2 = []
+    res = NG.unload_lm_if_idle(run_fn=lambda: calls2.append(1), exists_fn=lambda p: p.endswith(".heavy_cycle.lock"))
+    check("night_gate.unload_lm_if_idle unchanged: refuses while another heavy lock exists (our gate has its own own-pid-aware rule)",
+          res[0] is False and "not unloading" in res[1] and not calls2)
+    res = NG.unload_lm_if_idle(run_fn=lambda: types.SimpleNamespace(stdout="ok", stderr=""), exists_fn=lambda p: False)
+    check("night_gate.unload_lm_if_idle unchanged: unloads when idle", res[0] is True)
+    check("preopen_label._unload_lm_after_cut still uses night_gate.unload_lm_if_idle (unchanged)",
+          "night_gate.unload_lm_if_idle()" in inspect.getsource(PLm._unload_lm_after_cut))
+    import ast
+    tree = ast.parse(inspect.getsource(G))
+    attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    imps = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            imps |= {a.name for a in n.names}
+        elif isinstance(n, ast.ImportFrom):
+            imps.add(n.module)
+    check("lm_peak_gate (code, not docs) does not call night_gate.decide / unload_lm_if_idle and does not import run_once (no cycle, no night rule changes)",
+          "decide" not in attrs and "unload_lm_if_idle" not in attrs and "run_once" not in imps and ("night_gate" in imps or "lm_in_use" in imps))
+    # ---- run_once の配線(ソース検査)
+    src = inspect.getsource(RO._main_body)
+    check("wiring: main() never mentions the gate", "_lm_peak_gate(" not in inspect.getsource(RO.main))
+    check("wiring: _analyze_attempted is set right before analyze.analyze",
+          src.index("_analyze_attempted = True") < src.index("analyze.analyze(time_budget_sec="))
+    check("wiring: after_analyze gate runs only if analyze was attempted and BEFORE the hourly early lock release",
+          "if _analyze_attempted:" in src and src.index('_lm_peak_gate("after_analyze")') < src.index("_release_heavy_cycle_lock_early("))
+    check("wiring: after_analyze gate comes after the analyze lock is released (finally)",
+          src.index("_release_analyze_lock(analyze_lock)") < src.index('_lm_peak_gate("after_analyze")'))
+    i_sig = src.index('_run_research_layer(run_start, part="signal")')
+    i_lock = src.index("export_lock = _acquire_export_lock()")
+    i_gate_exp = src.index('_lm_peak_gate("export_build")')
+    i_exp = src.index("            _run_public_export_refresh_step(no_lm_gen=_hold)\n")
+    i_rel = src.index("_release_export_lock(export_lock)")
+    i_led = src.index('_run_research_layer(run_start + _ledgers_shift, part="ledgers")')
+    i_mirror_last = src.rindex("_maybe_mirror_external()")
+    check("wiring: research step4 (signal) stays BEFORE the export lock/export (export reads signal_export/latest.json regime)", i_sig < i_lock)
+    check("wiring: export_build gate sits inside the export lock, right before the export build",
+          i_lock < i_gate_exp < i_exp)
+    check("wiring: research ledgers (step5-13) run after the export lock is released and before the final mirror",
+          i_rel < i_led < i_mirror_last and src.index('_lm_peak_gate("research_ledgers")') < i_led)
+    check("wiring: ledgers deferral flag is only set in the non-catchup research branch (catchup keeps skipping research)",
+          src.index("_ledgers_due = True") > src.index('_log("research_layer skipped (catchup:')
+          and src.count("_ledgers_due = True") == 1 and src.count('part="signal"') == 1 and src.count('part="ledgers"') == 1)
+    check("wiring: heavy-lock/analyze-lock/export-lock acquire logic untouched (still only main() acquires the heavy lock)",
+          "_acquire_heavy_cycle_lock(" not in src)
+
+
 def main():
     # 密閉化(2026-08-17・恒久策): 個別テスト関数ごとに config.LOG_PATH を退避する対症療法
     # (test_forward_oos_freeze_settle等)では、新しいテスト関数が追加されるたびに同じ穴を
@@ -4610,7 +6583,7 @@ def _main_body():
                test_stocktwits_parse, test_yahoo_api_parse, test_feel_vs_llm,
                test_feel_to_sentiment_both_maps_neutral,
                test_interleave_by_source, test_iter_jsonl_torn_write_resilient,
-               test_pending_raw_newest_first, test_dedupe_analyzed_by_id,
+               test_pending_raw_newest_first, test_pending_raw_auto_and_preopen_label, test_early_heavy_lock_release_and_backlog_budget, test_jsonl_intern_row_is_value_preserving, test_night_gate_ga_priority, test_tier_flow_ledger_mark_rule, test_preopen_label_night_gate, test_preopen_lock_conflict_countermeasures, test_lm_peak_gate_unit, test_memory_peak_main_body_order_and_equivalence, test_research_layer_parts_equivalence, test_memory_peak_night_gate_non_interference_and_wiring, test_night_gate_insight_only_passthrough, test_dedupe_analyzed_by_id,
                test_source_breakdown, test_tokenizer_fallback,
                test_classify_lexicon, test_lmstudio_hybrid, test_analyze_time_budget_sec_param,
                test_price_parse, test_price_adr_pts_parse, test_sig_lexicon, test_sig_zscore,
@@ -4620,6 +6593,7 @@ def _main_body():
                test_sig_named_user_fallback,
                test_sig_hourly, test_sig_lowzone, test_sig_gauges,
                test_sig_cap_shock_and_price_freeze_guard,
+               test_sig_threshold_labels,
                test_sig_compute_and_cards, test_sig_raw_vs_analyzed_split,
                test_eng_dense_and_calib, test_eng_robust_z_pctrank,
                test_eng_bvp_and_direction, test_eng_confidence_and_regime,
@@ -4630,6 +6604,7 @@ def _main_body():
                test_public_export_build_record, test_public_export_load_regime_readonly,
                test_public_export_trend_from_snapshots,
                test_public_export_extended_hours_summary,
+               test_public_export_us_indices_summary,
                test_public_export_peer_snapshot_summary,
                test_public_export_read_execution_cost_bp,
                test_public_export_ml_regime_snapshot,
@@ -4645,6 +6620,9 @@ def _main_body():
                test_public_export_signal_cards_daily_series,
                test_news_fetch_pure_functions,
                test_news_fetch_collect_news_io,
+               test_lm_memory_guard_and_news_deferral,
+               test_lm_memory_guard_premarket_window_and_load_gb,
+               test_public_insight_lm_memory_guard_deferral,
                test_public_export_signal_state_changes,
                test_public_export_previous_deltas,
                test_public_export_sd_levels_and_drawdown,
@@ -4668,6 +6646,10 @@ def _main_body():
                test_run_once_public_export_refresh_commentary_wiring,
                test_run_once_public_export_refresh_lmstudio_bypasses_gate,
                test_run_once_export_lock, test_run_once_catchup_runs_export_step,
+               test_run_once_heavy_cycle_lock, test_run_once_pid_is_alive,
+               test_run_once_heavy_cycle_lock_wiring, test_run_once_catchup_defer_window,
+               test_run_once_hourly_body_waits_longer_than_catchup,
+               test_run_once_research_layer_hard_deadline,
                test_run_once_parse_raw_rows_resilient,
                test_run_once_public_export_refresh_runs_before_gsheets_sync,
                test_run_once_catchup_mode, test_run_once_analyze_lock,
@@ -4679,7 +6661,7 @@ def _main_body():
                test_public_sheets_sync_run_once_step_gate,
                test_eventstudy_pure, test_backtest_pnl,
                test_forward_oos_freeze_settle,
-               test_descriptive_daily, test_descriptive_ledger]:
+               test_descriptive_daily, test_descriptive_dense_matches_legacy, test_descriptive_ledger]:
         fn()
     pillar_fails = _run_pillar_selftests()
     print("-" * 40)

@@ -38,6 +38,10 @@ DISCLAIMER = ("本情報は掲示板投稿を統計的に集計したもので�
 
 # snapshots.jsonl 等を読む際の窓(営業日ではなく暦日。14日トレンドに十分な安全マージン)。
 TREND_READ_WINDOW_DAYS = 60
+SNAPSHOT_EXPORT_WINDOW_DAYS = 30     # ★2026-10-14: 14営業日(連休込み)に十分な暦日。読込時間も短縮(60日→30日)
+_SNAPSHOT_KEEP_KEYS = ("date", "timestamp", "signals", "day_cumulative")   # ★2026-10-14: snapshots から公開エクスポートが使う項目だけ
+ANALYZED_RAW_WINDOW_DAYS = 35       # ★2026-10-14: analyzed/raw の読込窓(日)。z窓20営業日+較正20日の余裕。snapshotsは上の60日のまま
+_ANALYZED_DROP_KEYS = ("text", "rationale", "topics", "cluster_label")   # analyzed から使われない重い項目(読込時に落とす)
 
 # 個別投稿由来の疑いがあるキー名(小文字化して完全一致で判定=構造的なキー汚染を検出)。
 # 「含む(部分一致)」ではなく「完全一致」なので、post_count_today 等の集計キー名を
@@ -538,8 +542,9 @@ def board_totals_60s_series(rows, today=None):
             continue
         buy_visible = sum(buy_qtys)
         sell_visible = sum(sell_qtys)
-        buy_total = buy_visible + under_buy + market_buy
-        sell_total = sell_visible + over_sell + market_sell
+        # 2026-11-20修正: 成行は板10本(最良気配)の数量に含まれる=別に足さない(二重加算の訂正)
+        buy_total = buy_visible + under_buy
+        sell_total = sell_visible + over_sell
 
         key = f"{hh:02d}:{mm:02d}"   # 分単位バケット(60秒平均・秒の桁は表示しない)
         b = buckets.setdefault(key, {"buy": [], "sell": []})
@@ -1384,7 +1389,7 @@ def previous_snapshot_for_ai_commentary(previous_record):
     }
 
 
-def extended_hours_summary(adr_pts_data):
+def extended_hours_summary(adr_pts_data, dex=None):
     """★2026-08-19追加(ユーザー依頼「AI分析はPTS・米国ADRの時間帯もそれらの値を分析
     するように。翌日の傾向につながる可能性がある」)。
     price_fetch.fetch_adr_pts_and_save() が保存したnikkei225jp.comフィード
@@ -1398,8 +1403,11 @@ def extended_hours_summary(adr_pts_data):
     たら」という解釈で使える値)。
 
     戻り値: {tse_close:{price,time}, pts:{price,change_pct,time}|None,
-    adr:{price_yen,price_usd,change_pct,time}|None} または、フィード自体が
-    無ければ None(fail-soft)。
+    adr:{price_yen,price_usd,change_pct,time}|None, dex:{price,price_usd,change_pct,time}|None}
+    または、フィード自体が無ければ None(fail-soft)。
+    ★2026-10-16追加(ユーザー指示『DEXも今後見ましょう』『公開表示にも追加』): dex=Hyperliquid xyz:KIOXIA
+    パーペチュアル(24時間取引)の円換算価格。dex 引数は {"jpy","mark","price_time_ms"} の dict(price_fetch が
+    記録した dex_285A_quotes.jsonl の最新行)。TSE最終値との比較(change_pct)はPTS/ADRと同じ。
     """
     rows = (adr_pts_data or {}).get("rows") or []
     if not rows:
@@ -1436,11 +1444,71 @@ def extended_hours_summary(adr_pts_data):
         adr_summary = {"price_yen": last["adr_yen"], "price_usd": last.get("adr_usd"),
                        "change_pct": _chg(last["adr_yen"]), "time": _fmt_time(last["ts"])}
 
+    dex_summary = None
+    try:
+        if dex and dex.get("jpy") is not None:
+            _pt = dex.get("price_time_ms")
+            dex_summary = {"price": float(dex["jpy"]),
+                           "price_usd": (float(dex["mark"]) if dex.get("mark") is not None else None),
+                           "change_pct": _chg(float(dex["jpy"])),
+                           "time": (_fmt_time(int(_pt) // 1000) if _pt else None)}
+    except Exception:
+        dex_summary = None
+
     return {
         "tse_close": {"price": tse_close, "time": _fmt_time(boundary_ts)},
         "pts": pts_summary,
         "adr": adr_summary,
+        "dex": dex_summary,
     }
+
+
+def _load_dex_latest():
+    """★2026-10-16追加。price_fetch.fetch_dex_and_save() が追記した DEX スナップショット(config.DEX_QUOTES_PATH)の
+    最新行を読み取り専用で返す(無い/壊れていれば None=表示しないだけ・fail-soft)。"""
+    try:
+        p = getattr(config, "DEX_QUOTES_PATH", None)
+        if not p or not os.path.exists(p):
+            return None
+        with open(p, "rb") as f:
+            f.seek(0, 2)
+            sz = f.tell()
+            f.seek(max(0, sz - 4096))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+        for l in reversed(lines):
+            if l.strip().startswith("{"):
+                return json.loads(l)
+    except Exception:
+        return None
+    return None
+
+
+def us_indices_summary(us_indices_data):
+    """★2026-09-30追加(ユーザー依頼「米国市場の指数をおにや式にも足す」)。
+    price_fetch.fetch_us_indices_and_save() が保存したconfig.US_INDICES_PATHの内容
+    (load_price()の戻り値)から、AI考察向けの表示用リストを組み立てる純関数。
+    個別銘柄との相関・予測材料ではなく、市場全体の地合いを示す客観的な参考情報
+    (前日終値比)としてのみ扱う(peer_snapshot_summaryの統計的相関記述とは性質を分ける)。
+
+    戻り値: [{key, name_ja, ticker, price, change_pct}, ...](config.US_INDICES の
+    定義順)。フィード自体が無い/空なら空リスト(fail-soft・捏造しない)。
+    """
+    indices = (us_indices_data or {}).get("indices") or {}
+    if not indices:
+        return []
+    out = []
+    for key, meta in config.US_INDICES.items():
+        row = indices.get(key)
+        if not row:
+            continue
+        out.append({
+            "key": key,
+            "name_ja": row.get("name_ja") or meta.get("name_ja"),
+            "ticker": row.get("ticker") or meta.get("ticker"),
+            "price": row.get("price"),
+            "change_pct": row.get("change_pct"),
+        })
+    return out
 
 
 # ============================================================================
@@ -1678,7 +1746,8 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
                         execution_cost=None, ml_regime=None,
                         board_history_14d=None, signal_changes=None,
                         sentiment_last_24h=None, signal_cards_history_14d=None,
-                        news=None, comprehensive_stats=None):
+                        news=None, comprehensive_stats=None, us_indices=None,
+                        screen_extras=None):
     """
     既存の集計結果から公開用レコードを組み立てる純関数。個別投稿情報は一切参照しない
     (引数として生コメントのリストを受け取らない設計=構造的に混入を防ぐ)。
@@ -1844,6 +1913,7 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
     if extended_hours is not None:
         pts = extended_hours.get("pts")
         adr = extended_hours.get("adr")
+        dex = extended_hours.get("dex")
         tse_close = extended_hours.get("tse_close") or {}
         rec["extended_hours"] = {
             "tse_close": {"price": tse_close.get("price"), "time": tse_close.get("time")},
@@ -1852,7 +1922,18 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
             "adr": ({"price_yen": adr.get("price_yen"), "price_usd": adr.get("price_usd"),
                     "change_pct": adr.get("change_pct"), "time": adr.get("time")}
                    if adr else None),
+            "dex": ({"price": dex.get("price"), "price_usd": dex.get("price_usd"),
+                    "change_pct": dex.get("change_pct"), "time": dex.get("time")}
+                   if dex else None),
         }
+    if us_indices:
+        # ★2026-09-30追加。詳細はus_indices_summary()のdocstring参照。
+        # (空リスト/Noneはキー自体を省く=既存の他フィールドと同じfail-soft方針)
+        rec["us_indices"] = [
+            {"key": r.get("key"), "name_ja": r.get("name_ja"), "ticker": r.get("ticker"),
+             "price": r.get("price"), "change_pct": r.get("change_pct")}
+            for r in us_indices if isinstance(r, dict)
+        ]
     if peer is not None:
         # ★2026-09-06追加。詳細はpeer_snapshot_summary()のdocstring・
         # CROSS_PROJECT_LOG 2026-09-06 18:13/18:52/18:55参照。
@@ -1905,6 +1986,10 @@ def build_public_record(S, price_d, trend_14d, *, symbol=None, company_name=None
             "summary_generated_at": (_news_summary.get("generated_at")
                                     if isinstance(_news_summary, dict) else None),
         }
+    if screen_extras is not None:
+        # ★2026-10-16追加(既定OFF・None=キー自体を出さない)。板の増減・価格まわり(tick)・見立ての機械採点のみ
+        # (moomoo画面OCR由来の買い優勢・層別フロー等は含めない)。screen_flow_summary.public_safe_extras() の出力。
+        rec["screen_extras"] = screen_extras
     if comprehensive_stats is not None:
         # ★2026-09-08追加。comprehensive_stats_summary()が返す行をそのまま格納
         # (metric_key/metric_name/horizon_days/horizon_name/n/r/high_n/low_n/
@@ -2124,6 +2209,63 @@ def load_public_history():
     return rows
 
 
+def load_public_history_last_per_day(days=14, today=None):
+    """★2026-10-18追加(おにや・メモリ低減案A・コーデ承認 22:4x)。history.jsonl(260MB超)を全行
+    読まずに、signal_cards_daily_series()が実際に使う「日付ごとの最後のsignal_cards付き行」だけを
+    末尾から逆読みして集め、その行だけjson.loadsして昇順のlistで返す(最大days日ぶん)。
+    signal_cards_daily_series()に渡せば全行版と同じ結果になる(today以降の日は除外・signal_cards無しの行は
+    スキップ・日付内は最後の行が勝つ、という同じ規則)。ファイル欠損・解析不能はfail-soft([])。
+    既存のload_public_history()は無変更(他の呼び出し元はそのまま)。"""
+    import re as _re
+    today = today or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                      + dt.timedelta(hours=9)).strftime("%Y-%m-%d")
+    p = config.PUBLIC_EXPORT_HISTORY_PATH
+    if not os.path.exists(p):
+        return []
+    date_re = _re.compile(rb'"generated_at"\s*:\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})')
+    cards_re = _re.compile(rb'"signal_cards"\s*:\s*\[\s*\{')   # 空リスト・無し行を除く(行ごとにJSONの空白有無が混在)
+    kept = {}
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, 2)
+            pos = f.tell()
+            tail = b""
+            block = 4 * 1024 * 1024
+            done = False
+            while pos > 0 and not done:
+                step = min(block, pos)
+                pos -= step
+                f.seek(pos)
+                buf = f.read(step) + tail
+                parts = buf.split(b"\n")
+                tail = parts[0] if pos > 0 else b""   # 先頭の不完全行は次の(さらに前の)ブロックと結合
+                lines = parts[1:] if pos > 0 else parts
+                for raw in reversed(lines):
+                    if not raw.strip():
+                        continue
+                    m = date_re.search(raw[:600])
+                    if not m:
+                        continue
+                    d = m.group(1).decode("ascii")
+                    if d >= today:
+                        continue
+                    if kept and len(kept) >= days and d < min(kept):
+                        done = True
+                        break
+                    if d in kept or not cards_re.search(raw):
+                        continue
+                    kept[d] = raw
+    except Exception:
+        return []
+    rows = []
+    for d in sorted(kept):
+        try:
+            rows.append(json.loads(kept[d].decode("utf-8")))
+        except Exception:
+            continue
+    return rows
+
+
 # ============================================================================
 # AI考察(ai_commentary)の1日1回自動生成ゲート(config.PUBLIC_EXPORT_COMMENTARY_DAILY)
 # ============================================================================
@@ -2156,6 +2298,18 @@ def _commentary_already_generated_today(latest_record, history_rows, today):
     return False
 
 
+def previous_commentary_for_carryover(latest_record, history_rows):
+    """★2026-10-01追加(lm_memory_guardでAI考察の生成を見送った時の表示維持用・純関数)。
+    latest.json相当に text を持つ ai_commentary があればそれ、無ければ history.jsonl相当を
+    新しい順に走査して最初の text 付き ai_commentary を返す(dict {"text","generated_at"}、
+    無ければ None)。generated_at は元のまま(古い考察を新しく見せない)。"""
+    for row in [latest_record] + list(reversed(list(history_rows or []))):
+        ac = (row or {}).get("ai_commentary") or {}
+        if isinstance(ac, dict) and isinstance(ac.get("text"), str) and ac.get("text").strip():
+            return {"text": ac.get("text"), "generated_at": ac.get("generated_at")}
+    return None
+
+
 def should_generate_commentary_today(today=None):
     """I/O込み: load_public_latest() / load_public_history() を読み、JST当日分の
     ai_commentary がまだ生成されていなければ True(=このrunで with_commentary=True に
@@ -2174,7 +2328,21 @@ def should_generate_commentary_today(today=None):
 # ============================================================================
 # CLI: 実データ(読み取り専用)から1回分の公開レコードを生成する最小エントリ
 # ============================================================================
-def _build_from_live_data(with_commentary=False):
+def _screen_extras_if_enabled():
+    """★2026-10-16追加: 環境変数 ONIYA_PUBLIC_SCREEN_EXTRAS=1 の時だけ、板の増減・tick価格まわり・見立て採点
+    (moomoo非依存)を公開レコードへ渡す。既定OFF(=従来どおり何も出ない・公開反映はコーデの画面確認後にONにする)。fail-soft。"""
+    if os.environ.get("ONIYA_PUBLIC_SCREEN_EXTRAS", "").strip() != "1":
+        return None
+    try:
+        import screen_flow_summary as SF
+        d = SF.load_today_public(dt.datetime.now().strftime("%Y-%m-%d"))  # moomoo画面CSVは開かない(公開専用ローダ)
+        return SF.public_safe_extras(d.get("board"), d.get("price"), d.get("grades"))
+    except Exception as e:  # noqa: BLE001
+        _log(f"WARN screen_extras failed (fail-soft, omitted): {e!r}")
+        return None
+
+
+def _build_from_live_data(with_commentary=False, carry_commentary=False, no_news_summary=False):
     """実データ(read-only)から1回分の公開レコードを組み立てて書き出す。CLI用。
     raw_comments/analyzed/snapshots/price の各ファイルは jsonl_window / price_fetch
     経由で読むだけ(書込み・削除・切り詰め一切なし)。
@@ -2188,10 +2356,16 @@ def _build_from_live_data(with_commentary=False):
     import signals as sigmod
     import price_fetch
 
-    analyzed = jsonl_window.read_jsonl_recent(config.ANALYZED_PATH,
-                                              days=TREND_READ_WINDOW_DAYS)
-    raw = jsonl_window.read_jsonl_recent(config.RAW_COMMENTS_PATH,
-                                         days=TREND_READ_WINDOW_DAYS)
+    # ★2026-10-14(メモリ是正・コーデ04:3x依頼『run_once --catchup が約6.5GBを使いGA10本と同居で空き物理が0.7GBへ』):
+    #   analyzed/raw は直近 ANALYZED_RAW_WINDOW_DAYS(既定35日)だけ読み、analyzed の使わない重い項目(本文・理由・話題・
+    #   クラスタ名)は読込時に落とす。出力は不変(実データで60日版と全項目一致・差は calib_days の数値のみ=公開レコードに
+    #   含まれない)。snapshots は小さいので従来の60日のまま。環境変数 BBS_EXPORT_WINDOW_DAYS で日数を変更できる(0以下は従来の60日)。
+    _win = int(os.environ.get("BBS_EXPORT_WINDOW_DAYS", str(ANALYZED_RAW_WINDOW_DAYS)))
+    if _win <= 0:
+        _win = TREND_READ_WINDOW_DAYS
+    analyzed = jsonl_window.read_jsonl_recent(config.ANALYZED_PATH, days=_win,
+                                              drop_keys=_ANALYZED_DROP_KEYS)
+    raw = jsonl_window.read_jsonl_recent(config.RAW_COMMENTS_PATH, days=_win)
     price_daily = price_fetch.load_price(config.PRICE_DAILY_PATH)
     price_intraday = price_fetch.load_price(config.PRICE_INTRADAY_PATH)
 
@@ -2202,6 +2376,10 @@ def _build_from_live_data(with_commentary=False):
     # するように」)。price_fetch.fetch_adr_pts_and_save()が別stepで保存済みの
     # フィードを読み取り専用で読む(このモジュール自身はネット非依存を維持)。
     adr_pts_data = price_fetch.load_price(config.ADR_PTS_PATH)
+    # ★2026-09-30追加(ユーザー依頼「米国市場の指数をおにや式にも足す」)。
+    # price_fetch.fetch_us_indices_and_save()が別stepで保存済みのフィードを
+    # 読み取り専用で読む(adr_ptsと同じ設計・このモジュール自身はネット非依存を維持)。
+    us_indices_data = price_fetch.load_price(config.US_INDICES_PATH)
 
     # ★2026-08-20追加(ユーザー指摘「最新の株価が反映されていない」への対応・ユーザー
     # 指示「取得しているデータで更新しましょう」): 実測で確認済みの障害(Yahoo Finance
@@ -2222,8 +2400,15 @@ def _build_from_live_data(with_commentary=False):
             _log(f"price fallback: Yahoo intraday has no volume today, "
                 f"using adr_pts tse={fallback['price']} (prev_close={prev_close}, chg={chg})")
 
+    # ★2026-10-14(メモリ是正の本丸・コーデ04:3x依頼): snapshots.jsonl(約2.1GB)を丸ごと辞書化すると約7GBになり、
+    #   夜間の--catchupでも空き物理が0.7GBへ落ちていた(実測 04:41〜04:43 に python 7.3GB)。以下3関数(trend_14d・
+    #   price_sentiment_series・intraday_today)が使うのは date/timestamp/signals/day_cumulative だけなので、その項目だけを読む
+    #   (出力は不変=実データで全項目を読んだ版と一致を確認)。
     snaps = jsonl_window.read_jsonl_recent(config.SNAPSHOTS_PATH,
-                                           days=TREND_READ_WINDOW_DAYS)
+                                           days=SNAPSHOT_EXPORT_WINDOW_DAYS,
+                                           ts_field="timestamp",   # snapshots の行は 'ts' でなく 'timestamp'(従来は窓が効かず全行を読んでいた)
+                                           stop_after_old=300,     # snapshots は厳密に時系列追記。既定25000だと窓の外の巨大な行を2.5万行も読む
+                                           keep_keys=_SNAPSHOT_KEEP_KEYS)
     trend = trend_14d_from_snapshots(snaps)
     # ★2026-08-20: price_intradayを渡し、Yahoo日足に一時的に無い日(日付切替直後の
     # null終値等)を自前の日中足集計で補完できるようにする(_price_ohlc_by_dateの
@@ -2235,7 +2420,10 @@ def _build_from_live_data(with_commentary=False):
     # 同じフォールバック(_today_tse_ohlc_from_adr_pts)で埋める(intraday_today_series
     # のdocstring参照)。
     intraday_today = intraday_today_series(snaps, price_intraday, adr_pts=adr_pts_data)
-    extended_hours = extended_hours_summary(adr_pts_data)
+    extended_hours = extended_hours_summary(adr_pts_data, dex=_load_dex_latest())
+    # ★2026-09-30追加: us_indices_summary()のdocstring参照。フィード未取得なら空リスト
+    # (fail-soft・build_public_record側は空リストでも渡された引数自体は保持する)。
+    us_indices = us_indices_summary(us_indices_data)
     # ★2026-09-06追加: 詳細はpeer_snapshot_summary()のdocstring・
     # CROSS_PROJECT_LOG 2026-09-06 18:13/18:52/18:55参照。モニタ側の台帳が
     # まだ生成されていない/読めない場合もfail-softでpeer=Noneに劣化する。
@@ -2298,6 +2486,23 @@ def _build_from_live_data(with_commentary=False):
             today_signal_entry[_name] = _c.get("value")
     signal_cards_history_14d = signal_cards_daily_series(history_rows) + [today_signal_entry]
 
+    # ★2026-08-20追加・同日中に再設計(ユーザー指示「本日のセンチメント推移は、過去
+    # 24時間の10分毎のセンチメントの推移に」→ユーザー指摘「投稿量は投稿時刻で
+    # ばらけさせるべきでは」)。既に読み込み済みのraw/analyzed(各行の実投稿時刻"ts"
+    # を持つ)から算出(snapshots.jsonlベースだと収集タイミングに投稿が偏って
+    # 見える問題があった。sentiment_last_24h_10min()のdocstring参照)。
+    sentiment_last_24h = sentiment_last_24h_10min(raw, analyzed)
+
+    # ★2026-09-20追加(メモリ削減・PDCA09-20レビューの実測より): analyzed/raw/snapsは
+    # ここより後では使わない(以降はS・pss・trend・sentiment_last_24h等の集計済みdictのみ)。
+    # 従来はこれらを保持したまま news_fetch.collect_news() と public_insight の
+    # LM Studio呼び出し(モデル約16GBのロード)に入り、python約11GB+LM Studio約16GBが
+    # 重なって空き物理が数GBまで落ちていた(21:11に空き34.6→4.2GB)。ここで解放して
+    # から LLM を呼ぶ。挙動は不変(news_fetchの呼び出し位置が後ろへ移るのみ)。
+    del analyzed, raw, snaps
+    import gc
+    gc.collect()
+
     # ★2026-08-27追加(ユーザー依頼「24時間以内のキオクシアに関係しそうなニュースの
     # 要約を公開ダッシュボードに」「検索頻度は10分毎・新ニュースが出たら更新と
     # リンクを」)。_build_from_live_data()自体がcatchup(10分毎)からも毎回呼ばれる
@@ -2310,16 +2515,15 @@ def _build_from_live_data(with_commentary=False):
     news_result = None
     try:
         import news_fetch
-        news_result = news_fetch.collect_news()
+        if no_news_summary:
+            # ★2026-10-13: 夜間・休場日の見送り枝=ニュース要約をLMで生成しない(deferred扱い=要約は前回値のまま・
+            #   見出し一覧は更新・既読リンクは更新しない=昼の通常サイクルで改めて要約される)。
+            news_result = news_fetch.collect_news(summarizer=lambda _items: {"deferred": True})
+        else:
+            news_result = news_fetch.collect_news()
     except Exception as e:
         _log(f"WARN news_fetch.collect_news failed (fail-soft, rec['news'] omitted): {e!r}")
 
-    # ★2026-08-20追加・同日中に再設計(ユーザー指示「本日のセンチメント推移は、過去
-    # 24時間の10分毎のセンチメントの推移に」→ユーザー指摘「投稿量は投稿時刻で
-    # ばらけさせるべきでは」)。既に読み込み済みのraw/analyzed(各行の実投稿時刻"ts"
-    # を持つ)から算出(snapshots.jsonlベースだと収集タイミングに投稿が偏って
-    # 見える問題があった。sentiment_last_24h_10min()のdocstring参照)。
-    sentiment_last_24h = sentiment_last_24h_10min(raw, analyzed)
 
     ai_commentary = None
     if with_commentary:
@@ -2329,6 +2533,7 @@ def _build_from_live_data(with_commentary=False):
         prelim = build_public_record(S, price_intraday, trend, price_sentiment_series=pss,
                                      regime=regime, intraday_today=intraday_today,
                                      previous=previous, extended_hours=extended_hours,
+                                     us_indices=us_indices,
                                      peer=peer, execution_cost=execution_cost,
                                      ml_regime=ml_regime,
                                      board_history_14d=board_history_14d,
@@ -2343,7 +2548,15 @@ def _build_from_live_data(with_commentary=False):
         else:
             import public_insight
             result = public_insight.generate_public_insight(prelim)
-            if result:
+            if result and result.get("deferred"):
+                # ★2026-10-01追加(lm_memory_guard): 夜間GA稼働中/空きメモリ不足でAI考察の生成を
+                # 見送った。失敗ではないので、前回(latest.json→history.jsonl)のAI考察を引き継いで
+                # 表示を維持する(generated_atは元のまま)。引き継ぎ元が無ければai_commentary無し。
+                ai_commentary = previous_commentary_for_carryover(load_public_latest(),
+                                                                  history_rows)
+                _log(f"ai_commentary DEFERRED by lm_memory_guard (reason={result.get('reason')}); "
+                     f"carried_over_previous={ai_commentary is not None}")
+            elif result:
                 ai_commentary = {
                     "text": result.get("text"),
                     "generated_at": result.get("generated_at"),
@@ -2352,11 +2565,16 @@ def _build_from_live_data(with_commentary=False):
             else:
                 _log("WARN ai_commentary generation failed (fail-soft None); "
                      "exporting without ai_commentary")
+    elif carry_commentary:
+        # ★2026-10-08追加(ユーザー直接指示: AI考察は20分毎の起動時刻に生成): 今回は生成しないrunでも前回の考察を引き継いで表示を維持する(generated_atは元のまま)
+        ai_commentary = previous_commentary_for_carryover(load_public_latest(), history_rows)
 
     return write_public_export(S, price_intraday, trend, price_sentiment_series=pss,
                                ai_commentary=ai_commentary, regime=regime,
                                intraday_today=intraday_today, previous=previous,
-                               extended_hours=extended_hours, peer=peer,
+                               extended_hours=extended_hours, us_indices=us_indices,
+                               screen_extras=_screen_extras_if_enabled(),
+                               peer=peer,
                                execution_cost=execution_cost, ml_regime=ml_regime,
                                board_history_14d=board_history_14d,
                                signal_changes=signal_changes,

@@ -79,7 +79,8 @@ def build_tier_size_report(date_iso, as_of_hhmm=None, thresholds=None, ticks_dir
       use_v2: True で estimate_tier_size_shares_v2()(仮想小口再配分・2026-08-28新設。
         moomoo実測とのMAEがv1比で改善済み・tick_tier_classifier.pyのdocstring参照)を使う。
         既定False(=v1)で後方互換を維持する。
-      unit_lot_shares: use_v2=True の場合のみ使用。省略時 DEFAULT_UNIT_LOT_SHARES
+      unit_lot_shares: use_v2=True の場合のみ使用。省略時は ttc.unit_lot_for_date(date_iso)
+        (分割前=DEFAULT_UNIT_LOT_SHARES 1000株・285A分割後 2026-09-29〜=3000株)
 
     戻り値:
       {date, as_of, n_ticks_total, shares(=estimate_tier_size_shares[_v2]の戻り値そのまま)}
@@ -87,6 +88,10 @@ def build_tier_size_report(date_iso, as_of_hhmm=None, thresholds=None, ticks_dir
     ticks = load_day_ticks(date_iso, ticks_dir=ticks_dir)
     end_time = _normalize_as_of(date_iso, as_of_hhmm)
     windowed = ttc.filter_ticks_window(ticks, end_time=end_time) if end_time else ticks
+    if use_v2 and unit_lot_shares is None:
+        # 285A株式分割(2026-09-29)対応: 省略時は日付別ロット(分割前1000株/分割後3000株)。
+        # 分割前の日は DEFAULT_UNIT_LOT_SHARES と同値=従来どおり。明示指定は優先。
+        unit_lot_shares = ttc.unit_lot_for_date(date_iso)
     if use_v2:
         shares = ttc.estimate_tier_size_shares_v2(windowed, thresholds=thresholds,
                                                    unit_lot_shares=unit_lot_shares)
@@ -327,7 +332,7 @@ def main():
     print(format_report_text(report))
     if args.v2:
         print(f"※--v2使用中(仮想小口再配分、unit_lot_shares="
-              f"{args.unit_lot_shares or ttc.DEFAULT_UNIT_LOT_SHARES}株)")
+              f"{args.unit_lot_shares or ttc.unit_lot_for_date(date_iso)}株)")
 
     # ★2026-08-27追加(おにや21:59要望): tier_flow_manual_log.csvに当日分の観測行が
     # あれば、フラグ無しでも自動的に較正誤差を表示する(継続モニタリング目的)。
@@ -408,6 +413,29 @@ def _run_selftests():
            report_empty["n_ticks_total"] == 0)
         ck("build_tier_size_report: 存在しない日付 -> total_amount_yen=0",
            report_empty["shares"]["total_amount_yen"] == 0.0)
+
+        # ---- 285A株式分割(2026-09-29): --v2の日付別ロット(2026-10-02新設) ----
+        post_date = "2026-09-30"
+        post_path = os.path.join(tmpdir, f"ticks_285A_{post_date}.csv")
+        with open(post_path, "w", encoding="utf-8", newline="") as f:
+            w = _csv.DictWriter(f, fieldnames=["time", "price", "tickvol", "bid", "ask"])
+            w.writeheader()
+            w.writerow({"time": f"{post_date} 09:00:00", "price": "18900", "tickvol": "3000",
+                        "bid": "18950", "ask": "18850"})                   # 56.7M -> 3000株ロットならmid
+        r_v2_post = build_tier_size_report(post_date, ticks_dir=tmpdir, use_v2=True)
+        r_v2_post_old = build_tier_size_report(post_date, ticks_dir=tmpdir, use_v2=True,
+                                               unit_lot_shares=ttc.DEFAULT_UNIT_LOT_SHARES)
+        ck("build_tier_size_report(v2): 分割後日は既定で日付別ロット(3000株)=mid維持",
+           abs(r_v2_post["shares"]["mid"]["share"] - 1.0) < 1e-9)
+        ck("build_tier_size_report(v2): 分割後日でも明示1000株は優先(=旧挙動でmid消失)",
+           r_v2_post_old["shares"]["mid"]["share"] == 0.0)
+        r_v2_pre = build_tier_size_report(date_iso, thresholds=ttc.DEFAULT_THRESHOLDS,
+                                          ticks_dir=tmpdir, use_v2=True)
+        r_v2_pre_exp = build_tier_size_report(date_iso, thresholds=ttc.DEFAULT_THRESHOLDS,
+                                              ticks_dir=tmpdir, use_v2=True,
+                                              unit_lot_shares=ttc.DEFAULT_UNIT_LOT_SHARES)
+        ck("build_tier_size_report(v2): 分割前日は従来(1000株明示)と完全一致",
+           r_v2_pre["shares"] == r_v2_pre_exp["shares"])
 
         text = format_report_text(report)
         ck("format_report_text: 文字列化でエラーなく主要語を含む",

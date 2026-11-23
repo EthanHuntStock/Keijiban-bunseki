@@ -48,6 +48,10 @@ import json
 import datetime as dt
 
 import config
+try:
+    import oniya_phase2_paths as _p2   # Phase2: 当日ticks/boardをローカル/OneDriveのmtime新しい方で解決(ポインタ未設置なら従来パス)
+except Exception:
+    _p2 = None
 import public_export
 import signals as sigmod
 import jsonl_window
@@ -94,7 +98,8 @@ def read_today_board_rows(sym=None, date_iso=None, base_dir=None):
     sym = sym or config.SYMBOL
     date_iso = date_iso or _today_str()
     base_dir = base_dir or config.KABU_PROTO1_285A_BOARD_DIR
-    path = os.path.join(base_dir, f"board_{sym}_{date_iso}.csv")
+    path = (_p2.board_csv_path(sym, date_iso, base_dir) if (_p2 is not None and base_dir == config.KABU_PROTO1_285A_BOARD_DIR)
+            else os.path.join(base_dir, f"board_{sym}_{date_iso}.csv"))
     return _read_csv_rows(path)
 
 
@@ -103,7 +108,8 @@ def read_today_tick_rows(sym=None, date_iso=None, base_dir=None):
     sym = sym or config.SYMBOL
     date_iso = date_iso or _today_str()
     base_dir = base_dir or config.KABU_PROTO1_285A_TICKS_DIR
-    path = os.path.join(base_dir, f"ticks_{sym}_{date_iso}.csv")
+    path = (_p2.ticks_csv_path(sym, date_iso, base_dir) if (_p2 is not None and base_dir == config.KABU_PROTO1_285A_TICKS_DIR)
+            else os.path.join(base_dir, f"ticks_{sym}_{date_iso}.csv"))
     return _read_csv_rows(path)
 
 
