@@ -1327,10 +1327,19 @@ def main():
     # 姉妹プロジェクト「AIセクター ワールドモニター」(ai_sector_monitor・キオクシア285A
     # 売買判断支援)の公開静的サイトへの相互リンク。あちら側にも本ダッシュボードへの
     # 逆リンクを追加済み(ai_sector_monitor/templates/index.html・static_export.py)。
+    # ★2026-11-23(ユーザー指示「姉妹サイトがあまり見られていない・誘導を改善」): カード型バナー+ボタンへ変更(事実のみ記載)。
     st.markdown(
         "<a href='https://ethanhuntstock.github.io/ai-sector-monitor/' target='_blank' "
-        "rel='noopener noreferrer' style='text-decoration:none;font-size:0.85em'>"
-        "🔗 姉妹サイト: AIセクター ワールドモニター（キオクシア285A売買判断支援）</a>",
+        "rel='noopener noreferrer' style='display:flex;align-items:center;gap:12px;flex-wrap:wrap;"
+        "text-decoration:none;color:inherit;padding:10px 14px;border:2px solid #4c9aff;"
+        "border-radius:10px;background:rgba(76,154,255,.10);margin-bottom:8px'>"
+        "<span style='flex:1 1 260px;min-width:0'>"
+        "<div style='font-weight:700'>📈 キオクシア(285A)の「値位置・米韓ピア・信用倍率」は、姉妹サイトで毎日更新</div>"
+        "<div style='font-size:.82em;opacity:.85;margin-top:2px;line-height:1.5'>"
+        "AIセクター ワールドモニター：寄り前・寄り直後・前場引け前・大引け後のAI考察／支持線・抵抗線／"
+        "米国・韓国の半導体ピア／信用倍率／アナリスト評価の内訳</div></span>"
+        "<span style='flex:0 0 auto;padding:7px 14px;border-radius:6px;background:#4c9aff;color:#fff;"
+        "font-weight:700;font-size:.88em;white-space:nowrap'>ワールドモニターを開く ▶</span></a>",
         unsafe_allow_html=True)
 
     # ★2026-08-19追加(ユーザー依頼「タイトルを最上部に書く」): ブラウザタブの
@@ -1402,6 +1411,18 @@ def main():
 
     with tab_ai:
         _ai_commentary(rec)
+        st.markdown(
+            "<a href='https://ethanhuntstock.github.io/ai-sector-monitor/' target='_blank' "
+            "rel='noopener noreferrer' style='display:flex;align-items:center;gap:12px;flex-wrap:wrap;"
+            "text-decoration:none;color:inherit;padding:10px 14px;border:2px solid #4c9aff;"
+            "border-radius:10px;background:rgba(76,154,255,.10);margin-top:12px'>"
+            "<span style='flex:1 1 260px;min-width:0'>"
+            "<div style='font-weight:700'>次は「285Aは今どの値位置にいるか」を見る</div>"
+            "<div style='font-size:.82em;opacity:.85;margin-top:2px;line-height:1.5'>"
+            "掲示板の空気に加えて、支持線・抵抗線、米国・韓国ピア、信用倍率を姉妹サイトで確認できます(営業日に更新)</div></span>"
+            "<span style='flex:0 0 auto;padding:7px 14px;border-radius:6px;background:#4c9aff;color:#fff;"
+            "font-weight:700;font-size:.88em;white-space:nowrap'>ワールドモニターへ ▶</span></a>",
+            unsafe_allow_html=True)
 
     with tab_overview:
         top = st.columns([1.1, 1.1, 1.6])
