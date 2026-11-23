@@ -228,6 +228,10 @@ def build_public_insight_context(public_record):
             "tse_close": (extended_hours.get("tse_close") if isinstance(extended_hours, dict) else None),
             "pts": (extended_hours.get("pts") if isinstance(extended_hours, dict) else None),
             "adr": (extended_hours.get("adr") if isinstance(extended_hours, dict) else None),
+            # ★2026-11-23追加(ユーザー指示「DEXの分析も足してください」): Hyperliquid xyz:KIOXIA(24時間取引・円換算・東証終値比)
+            "dex": (extended_hours.get("dex") if isinstance(extended_hours, dict) else None),
+            # ★2026-11-23: 東証・PTS・ADR・DEXの直近変化(5分/15分/1時間/3時間・trend_stats.trend_stats の結果)
+            "trend": (extended_hours.get("trend") if isinstance(extended_hours, dict) else None),
         } if isinstance(extended_hours, dict) else None),
         # ★2026-09-30追加(ユーザー依頼「米国市場の指数をおにや式にも足す」)。
         # public_export.us_indices_summary()の集計値のみ(前日終値比のみ・相関/判定は
@@ -454,9 +458,9 @@ def render_public_prompt(context, target_length="400〜600字程度"):
     # 米国ADR)の値動きは翌営業日の東証の値動きに影響しうるため、参考情報として
     # 明示的にプロンプトへ渡す。断定的な予測をさせないための注意書きも併記する。
     eh = c.get("extended_hours")
-    if eh and (eh.get("pts") or eh.get("adr")):
+    if eh and (eh.get("pts") or eh.get("adr") or eh.get("dex")):
         tse_close = eh.get("tse_close") or {}
-        L.append(f"■ 東証取引時間外(PTS・米国ADR)の動き"
+        L.append(f"■ 東証取引時間外(PTS・米国ADR・DEX)の動き"
                  f"(基準=東証最終値{_fmt(tse_close.get('price'))}"
                  f"[{_fmt(tse_close.get('time'))}時点])")
         pts = eh.get("pts")
@@ -468,6 +472,20 @@ def render_public_prompt(context, target_length="400〜600字程度"):
             L.append(f"  米国ADR円換算: {_fmt(adr.get('price_yen'))}"
                      f"({_fmt(adr.get('change_pct'))}% [{_fmt(adr.get('time'))}時点]"
                      f" ・ADR現地値={_fmt(adr.get('price_usd'))}ドル)")
+        dex = eh.get("dex")
+        if dex:
+            L.append(f"  DEX(分散型取引所Hyperliquidの285Aパーペチュアル・24時間取引・円換算): {_fmt(dex.get('price'))}"
+                     f"({_fmt(dex.get('change_pct'))}% [{_fmt(dex.get('time'))}時点])"
+                     "。東証の閉場中も動く取引で、PTS・ADRとは別の市場(向きの一致/乖離を読み解く材料にする)")
+        tr = eh.get("trend") or {}
+        try:
+            import trend_stats as _ts
+            for _lab, _k in (("東証(285A・直近の取引時間)", "tse"), ("PTS", "pts"), ("米国ADR", "adr"), ("DEX", "dex")):
+                _tt = _ts.text(tr.get(_k))
+                if _tt:
+                    L.append(f"  {_lab}の直近変化: {_tt}")
+        except Exception:
+            pass
         L.append("")
 
     # ★2026-09-30追加(ユーザー依頼「米国市場の指数をおにや式にも足す」)。285A固有の
@@ -569,8 +587,13 @@ def render_public_prompt(context, target_length="400〜600字程度"):
     if prev:
         L.append("  ・「■ 前回集計時点との比較」の差分にも触れ、直近の短時間での"
                  "変化・勢いについて一言言及する(価格や強弱比率が前回からどう動いたか)。")
-    if eh and (eh.get("pts") or eh.get("adr")):
-        L.append("  ・「■ 東証取引時間外(PTS・米国ADR)の動き」があれば、翌営業日の"
+    if eh and (eh.get("trend") or {}):
+        L.append("  ・東証・PTS・米国ADR・DEXは、最終値(瞬時値)だけでなく『直近変化』(5分・15分・1時間・3時間)も読む。"
+                 "窓ごとの符号と大きさから、動きが加速/減速/反転しているか、短い窓と長い窓で向きが食い違っていないか、"
+                 "各市場の同時間帯の動きが揃っているか乖離しているかを分析する(値は与えられた表をそのまま引用し再計算しない。"
+                 "表に無い窓は『データ間隔が空いていて算出できない』ものとして触れない)。")
+    if eh and (eh.get("pts") or eh.get("adr") or eh.get("dex")):
+        L.append("  ・「■ 東証取引時間外(PTS・米国ADR・DEX)の動き」があれば、翌営業日の"
                  "東証の値動きを見る上での参考情報として一言触れる(ただし『翌日は"
                  "上がる/下がる』等の断定的な予測はしない。あくまで『PTS/ADRでは"
                  "こう動いている』という事実の記述に留める)。")
@@ -1161,6 +1184,19 @@ def _run_selftests():
           "断定的な予測はしない" in prompt_eh)
     # extended_hours未提供(None)の場合は既存動作を壊さず、そのセクション自体が現れない
     check("context: extended_hours None when absent", ctx["extended_hours"] is None)
+    # ★2026-11-23: DEX(24時間取引)もプロンプトへ
+    _rec_dx = dict(rec_eh)
+    _rec_dx["extended_hours"] = dict(rec_eh["extended_hours"], dex={"price": 6808.5, "price_usd": 42.8, "change_pct": -6.82, "time": "11/23 13:45"})
+    _pr_dx = render_public_prompt(build_public_insight_context(_rec_dx))
+    check("prompt: DEX line present when dex available", "DEX(分散型" in _pr_dx and "-6.82" in _pr_dx and "PTS・米国ADR・DEX)の動き」があれば" in _pr_dx)
+    # ★2026-11-23: 東証・PTS・ADR・DEXの直近変化
+    import trend_stats as _tst
+    _st = _tst.trend_stats([(1_800_000_000 + i * 60, 100.0 + i * 0.1) for i in range(200)])
+    _rec_tr = dict(_rec_dx)
+    _rec_tr["extended_hours"] = dict(_rec_dx["extended_hours"], trend={"tse": _st, "dex": _st, "pts": None, "adr": None})
+    _pr_tr = render_public_prompt(build_public_insight_context(_rec_tr))
+    check("prompt: 直近変化(東証・DEX)と読み方の指示が入る", "DEXの直近変化:" in _pr_tr and "東証(285A・直近の取引時間)の直近変化:" in _pr_tr and "加速/減速/反転" in _pr_tr)
+    check("prompt: trend無しなら直近変化の指示は出ない", "直近変化" not in _pr_dx)
     check("prompt: no PTS section when extended_hours absent", "PTS(私設取引システム" not in prompt)
 
     # ---- us_indices(米国市場指数) ----
