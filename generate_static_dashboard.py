@@ -56,6 +56,7 @@ try:
 except Exception:
     _p2 = None
 import public_export
+import ui5 as _ui5
 from switch_bar import CSS as _SWITCH_BAR_CSS, switch_bar_html as _switch_bar_html  # 2026-11-25 ④
 
 try:
@@ -1384,7 +1385,7 @@ def _news_summary_html(rec):
             f"<div class='news-row'><a href='{link}' target='_blank' "
             f"rel='noopener noreferrer'>{title}</a>"
             f"<span class='caption'>（{source}{time_part}）</span></div>")
-    parts.append("<p class='caption'>※ニュース見出しの要約であり、投資助言ではありません。"
+    parts.append("<p class='caption'>"   # 2026-11-26: 免責文言はページ末尾に集約(ui5.DISCLAIMER_ITEMS)
                 "各見出しから元記事(Google News経由)へ移動できます。</p>")
     return "\n".join(parts)
 
@@ -1747,20 +1748,22 @@ def render_html(rec, images, extras, generated_at_str):
     try:
         import numeric_summary as _ns
         _ns_b = _ns.build_numeric_summary(rec)
+        _rt = _ui5.recent_table_html(_ui5.recent_rows(rec))   # 2026-11-26: 直近変化は表で表示(表がある時は文の行を重複させない)
         numeric_summary_html = (
             "<div class='panel' id='numeric-summary'><h3>📊 " + html.escape(_ns_b["heading"]) + "｜" + html.escape(_ns_b["asof"]) + " 更新</h3><ul>"
-            + "".join("<li>" + html.escape(x) + "</li>" for x in _ns_b["lines"]) + "</ul>"
+            + "".join("<li>" + html.escape(x) + "</li>" for x in _ns_b["lines"]
+                      if not (_rt and (x.startswith("直近変化:") or x.startswith("立会時間外の市場")))) + "</ul>" + _rt
             + "<p class='caption'>" + html.escape(_ns_b["note"]) + "</p></div>")
     except Exception:
         numeric_summary_html = ""
     # ★2026-10-16追加(既定では出ない): rec['screen_extras'](板の増減・tick価格まわり・見立ての機械採点。moomoo由来は含まない)がある時だけ表示。
     try:
         import screen_flow_summary as _sf
-        _xl = _sf.public_extras_lines(rec.get("screen_extras"))
+        _xl = _sf.public_extras_lines(rec.get("screen_extras"), with_disclaimer=False)
         screen_extras_html = (
             "<div class='panel' id='screen-extras'><h3>🧭 板・価格まわり・見立ての採点（参考）</h3><ul>"
             + "".join("<li>" + html.escape(x) + "</li>" for x in _xl) + "</ul>"
-            + "<p class='caption'>板情報・約定ティック(遅延あり)から作成。売買代金は試算(VWAP×出来高)。見立ての採点は参考・機械採点で、売買の推奨ではありません。</p></div>") if _xl else ""
+            + "<p class='caption'>板情報・約定ティック(遅延あり)から作成。売買代金は試算(VWAP×出来高)。</p></div>") if _xl else ""
     except Exception:
         screen_extras_html = ""
     # ★2026-11-25追加(ユーザー承認・Gemini助言⑥): セリクラ成立チェック(3点ランプ)。screen_extras['selloff']がある時だけ。
@@ -1778,7 +1781,7 @@ def render_html(rec, images, extras, generated_at_str):
                 + "".join("<li>" + _mk[i["state"]] + " " + html.escape(i["label"]) + "</li>" for i in _lp["items"]) + "</ul>"
                 + ("<div class='caption'>別表示(3点に数えない) VWAP回復: " + ("はい" if _vw.get("recovered") else "いいえ")
                    + "（" + html.escape(_vw.get("detail", "")) + "）</div>" if _vw.get("recovered") is not None else "")
-                + "<div class='caption'>" + html.escape(_lp["caution"]) + " 板・約定ティックは遅延あり。売買の推奨ではありません。</div></div>")
+                + "<div class='caption'>" + html.escape(_lp["caution"]) + " 板・約定ティックは遅延あり。</div></div>")
         else:
             selloff_check_html = ""
     except Exception:
@@ -1805,6 +1808,7 @@ def render_html(rec, images, extras, generated_at_str):
 
     css = f"""
     {_SWITCH_BAR_CSS}
+    {_ui5.CSS}
     :root {{
       --bg:{COL['bg']}; --panel:{COL['panel']}; --border:{COL['border']}; --muted:{COL['muted']};
       --text:{COL['text']}; --orange:{COL['orange']}; --red:{COL['red']}; --green:{COL['green']};
@@ -2004,6 +2008,7 @@ def render_html(rec, images, extras, generated_at_str):
 
       <section data-tab-panel="aiinsight">
         <h2>🤖 AI考察</h2>
+        {_ui5.summary3_html(rec)}
         {ai_schedule_html}
         {numeric_summary_html}
         {screen_extras_html}
@@ -2039,12 +2044,12 @@ def render_html(rec, images, extras, generated_at_str):
         </div>
 
         <h2>🎯 シグナル発火状況（9指標）</h2>
+        <details class="fold"><summary>📖 この一覧の読み方（用語）</summary>
         <p class="caption">掲示板の投稿を集計した9つの指標が、統計的なしきい値を超えたかどうかを示す一覧です。
-        「発火」は売買のシグナルではなく、「統計的に見て平常時より偏りが大きい状態」を示す記述的な警告ラベルです。</p>
+        「発火」は売買のシグナルではなく、「統計的に見て平常時より偏りが大きい状態」を示す記述的な警告ラベルです。</p></details>
         {_signal_changes_html(rec)}
         <div class="panel">{_signal_list_html(rec, images)}</div>
-        <p class="caption">※研究・エンタメ用途・未検証。売買シグナルではありません。
-        掲示板は方向よりボラを予測する傾向が文献で報告されています(Antweiler &amp; Frank, 2004)。</p>
+        <p class="caption">掲示板は方向よりボラを予測する傾向が文献で報告されています(Antweiler &amp; Frank, 2004)。</p>
       </section>
 
       <section data-tab-panel="today" class="tab-hidden">
@@ -2053,8 +2058,9 @@ def render_html(rec, images, extras, generated_at_str):
         {high_low_html}
         <div class="panel">{_img_tag(images, "today_price", "本日の価格推移")}</div>
         <h3>板の買い・売り総計（成行込み全価格帯・60秒平均）</h3>
+        <details class="fold"><summary>📖 板の買い・売り総計の読み方</summary>
         <p class="caption">表示10本の気配だけでなく、外側の気配(OVER/UNDER)と成行注文も含めた板全体の数量合計です。
-        値は直近60秒間の平均。需給の偏りを直接示す指標ではありません。</p>
+        値は直近60秒間の平均。需給の偏りを直接示す指標ではありません。</p></details>
         <div class="panel">{_img_tag(images, "board_totals", "板の買い・売り総計")}</div>
         {extras.get("outliers", {}).get("board_totals_buy", "")}
         {extras.get("outliers", {}).get("board_totals_sell", "")}
@@ -2104,6 +2110,7 @@ def render_html(rec, images, extras, generated_at_str):
 
       <hr style="border:none;border-top:1px solid var(--border);margin:2rem 0 1rem">
       <p class="caption">⚠️ {disclaimer}</p>
+      <div id="disclaimer-all">{_ui5.disclaimer_extra_html()}</div>
       <footer>生成: generate_static_dashboard.py（{html.escape(generated_at_str)}） /
       画像バックエンド: {html.escape(IMAGE_BACKEND or "なし")}</footer>
     </div>

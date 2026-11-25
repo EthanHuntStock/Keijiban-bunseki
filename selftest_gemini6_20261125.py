@@ -114,7 +114,12 @@ def _bf_at(h, m):
     t0 = D(2026, 11, 25, h, m, 0)   # 水曜
     return SF.board_flow([{"t": t0 + dt.timedelta(seconds=10 * i), "mid": 1.0, "B": 1e6 + 1e4 * i, "S": 1e6} for i in range(40)])
 bf_l = _bf_at(11, 40)
-check("昼休み(11:30-12:30)はlunch=True・窓別を出さず理由を明記", bf_l["lunch"] is True and not any("直近30秒" in x for x in SF.lines_board(bf_l)) and any("昼休み(11:30-12:30)は板が静止するため窓別の増減は意味がなく表示しません" in x for x in SF.lines_board(bf_l)))
+check("昼休み前半(11:40台)=lunch・注文受付停止の文言・窓別なし", bf_l["lunch"] is True and bf_l["lunch_phase"] == "stop" and not any("直近30秒" in x for x in SF.lines_board(bf_l)) and any("前場の取引終了後は注文の受付が止まるため板は動きません。窓別の増減は表示しません" in x for x in SF.lines_board(bf_l)))
+bf_pre = _bf_at(12, 10)
+check("昼休み後半(12:10台)=後場寄り前・記録が無いため出せない文言・窓別なし(『静止』とは書かない)", bf_pre["lunch_phase"] == "pre" and not any("直近30秒" in x for x in SF.lines_board(bf_pre)) and any("後場寄り前の板は動いていますが、この時間帯の板は記録していないため、窓別の増減は出せません" in x for x in SF.lines_board(bf_pre)) and not any("静止" in x for x in SF.lines_board(bf_pre)))
+bf_pm = _bf_at(12, 31)
+check("12:31以降は従来どおり窓別を表示", bf_pm["lunch"] is False and bf_pm["lunch_phase"] == "" and any("直近30秒" in x for x in SF.lines_board(bf_pm)))
+check("昼休み区間の境界(12:04:59=前半・12:05:00=後半)・旧レコードも時刻で救済", SF._lunch_phase(D(2026, 11, 25, 12, 4, 59)) == "stop" and SF._lunch_phase(D(2026, 11, 25, 12, 5, 0)) == "pre" and any("後場寄り前" in x for x in SF.lines_board({k: v for k, v in bf_pre.items() if k not in ("lunch", "lunch_phase")})))
 check("昼休み: 公開用抽出にlunchが残り、旧レコード(lunchキー無し)も時刻で救済", SF.public_safe_extras(bf_l, None, None)["board_flow"]["lunch"] is True and not any("直近30秒" in x for x in SF.lines_board({k: v for k, v in bf_l.items() if k != "lunch"})))
 bf_m = _bf_at(10, 0)
 bf_p = _bf_at(13, 0)
@@ -195,5 +200,26 @@ check("④バー: flex・gap6px・角丸8px・枠1px・既存CSS変数(ダーク
 _gs = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "generate_static_dashboard.py"), encoding="utf-8").read()
 _pd = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "public_dashboard.py"), encoding="utf-8").read()
 check("④バー: 静的版はタイトル(h1)直下・Streamlit版はタイトル直下に配置", "（静的版）</h1>"+chr(10)+"      {_switch_bar_html()}" in _gs and "投資情報"+chr(34)+")"+chr(10)+"    try:" in _pd.replace(chr(13), ""))
+# ---- 2026-11-26 UI5点
+import ui5 as U5
+_rec = {"generated_at": "2026-11-25T23:50:00", "price": {"last": 6895.0, "change_pct": -1.2},
+        "board": {"bull_ratio": 0.311, "bear_ratio": 0.641, "post_count_today": 223},
+        "extended_hours": {"trend": {"tse": _tse, "pts": _pts, "adr": _adr, "dex": _dex}, "pts": {"change_pct": -2.8}, "dex": {"change_pct": -2.2}},
+        "screen_extras": {"board_flow": {"ratio": 0.89, "asof_label": "11/25 15:31時点"}, "selloff": sel_pv}}
+rows5 = U5.recent_rows(_rec, now_ts=_now)
+tbl = U5.recent_table_html(rows5)
+check("UI②直近変化は表(thead・5分/15分/1時間・最終約定)", "<table class='rc'>" in tbl and "<th>5分</th>" in tbl and "<th>最終約定</th>" in tbl and tbl.count("<tr") == 5)
+check("UI②立会時間外の行(ADR・東証)はstaleクラス=薄グレー・PTS/DEXは通常", tbl.count("class='stale'") == 2 and "米国ADR(立会時間外)" in tbl and "<tr class=''><td>PTS</td>" in tbl)
+check("UI②上昇=pos(#16a34a)・下落=neg(#dc2626)・ダーク/ライト両対応の変数と色", "class='pos'" in tbl and "class='neg'" in tbl and "#16a34a" in U5.CSS and "#dc2626" in U5.CSS and "var(--border" in U5.CSS)
+check("UI⑤tabular-nums・横スクロール枠(overflow-x:auto)・375px向けmedia", "font-variant-numeric:tabular-nums" in U5.CSS and "overflow-x:auto" in U5.CSS and "max-width:480px" in U5.CSS)
+s3 = U5.summary3(_rec)
+h3 = U5.summary3_html(_rec)
+check("UI③3行サマリー: 3行・数値の出所時点つき・決定論(同入力で同出力)", len(s3) == 3 and "23:50時点" in s3[0][1] and "-1.20%" in s3[0][1] and "弱気 64.1%" in s3[2][1] and "大引け時点で確定" in s3[1][1] or "セリクラ" in s3[1][1])
+check("UI③3行サマリー: 同入力で同出力・予想/推奨語を含めず『推奨ではありません』の注記は1回", U5.summary3(_rec) == s3 and h3.count("id='sum3'") == 1 and not any(w in h3 for w in ("上がる", "下がる", "買い推奨", "売り推奨")))
+check("UI③データ無しはクラッシュせず『データなし』", all(v for _, v in U5.summary3({})) and "データなし" in U5.summary3({})[2][1])
+check("UI④免責: 集約リストに既存文言を保持(売買の推奨・売買シグナル・投資助言)", any("売買の推奨ではありません" in x for x in U5.DISCLAIMER_ITEMS) and any("売買シグナルではありません" in x for x in U5.DISCLAIMER_ITEMS) and any("投資助言ではありません" in x for x in U5.DISCLAIMER_ITEMS))
+_ex_l = SF.public_extras_lines({"forecast_score": {"label": "x", "count": {"○": 1, "△": 0, "×": 0}, "n_graded": 1, "n_pending": 0, "items": []}}, with_disclaimer=False)
+check("UI④見立て採点の行は集約時に『売買の推奨ではありません』を重ねない・既定は従来どおり付く", not any("売買の推奨ではありません" in x for x in _ex_l) and any("売買の推奨ではありません" in x for x in SF.public_extras_lines({"forecast_score": {"label": "x", "count": {}, "n_graded": 0, "n_pending": 0, "items": []}})))
+check("UI①用語説明はdetails(既定は閉)に畳む(静的版)", _gs.count('<details class="fold">') >= 2 and '<details class="fold" open' not in _gs)
 print("\n結果: OK=%d NG=%d" % (len(OK), len(NG)))
 sys.exit(1 if NG else 0)

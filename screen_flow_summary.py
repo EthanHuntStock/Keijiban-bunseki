@@ -119,6 +119,26 @@ def _is_lunch(t):
     return t.weekday() < 5 and "11:30:00" <= t.strftime("%H:%M:%S") < "12:30:00"
 
 
+LUNCH_MSG_STOP = "前場の取引終了後は注文の受付が止まるため板は動きません。窓別の増減は表示しません。"
+LUNCH_MSG_PRE = "後場寄り前の板は動いていますが、この時間帯の板は記録していないため、窓別の増減は出せません。"
+
+
+def _lunch_phase(t):
+    """★2026-11-26(ユーザー指摘): 昼休みを2区間に分ける。'stop'=11:30:00〜12:05:00(注文受付停止・板は動かない)/
+    'pre'=12:05:00〜12:30:00(後場寄り前・板は動くが記録していない)/''=それ以外。平日のみ(祝日は未対応)。"""
+    if t.weekday() >= 5:
+        return ""
+    hm = t.strftime("%H:%M:%S")
+    return "stop" if "11:30:00" <= hm < "12:05:00" else ("pre" if "12:05:00" <= hm < "12:30:00" else "")
+
+
+def _asof_lunch_phase(asof):
+    try:
+        return _lunch_phase(dt.datetime.fromisoformat(str(asof)[:19]))
+    except Exception:
+        return ""
+
+
 def _asof_lunch(asof):
     """asof(ISO文字列)が昼休みか。旧レコード(lunchキー無し)の救済用。"""
     try:
@@ -138,7 +158,7 @@ def board_flow(pts, windows=(30, 60, 180, 300)):
            # ★2026-11-25(モニタ連絡): 大引け(15:30)後は板が動かず全窓が同値になる=窓別の増減に意味が無い→表示側で窓比較を出さない
            "closed": cur["t"].strftime("%H:%M:%S") >= "15:30:00",
            # ★2026-11-25(ユーザー承認): 昼休み(11:30-12:30・平日)も板が静止し全窓が同値になる→窓別を出さない
-           "lunch": _is_lunch(cur["t"])}
+           "lunch": _is_lunch(cur["t"]), "lunch_phase": _lunch_phase(cur["t"])}
     for w in windows:
         tgt = cur["t"] - dt.timedelta(seconds=w)
         c = [x for x in pts if x["t"] <= tgt]
@@ -294,7 +314,7 @@ def public_safe_extras(board, price, grades, selloff=None):
     """公開側に出せる範囲(moomoo由来を含まない)。キー名はvalidate_no_leakの疑いキー(id/text等)を避ける。"""
     ex = {}
     if board:
-        ex["board_flow"] = {k: board[k] for k in ("asof", "asof_label", "buy_total_man", "sell_total_man", "ratio", "diff_man", "windows", "closed", "lunch") if k in board}
+        ex["board_flow"] = {k: board[k] for k in ("asof", "asof_label", "buy_total_man", "sell_total_man", "ratio", "diff_man", "windows", "closed", "lunch", "lunch_phase") if k in board}
         ex["board_flow"]["source"] = "板情報(遅延あり)"
     if price:
         ex["price_flow"] = dict(price, source="約定ティック(遅延あり)・売買代金は試算(VWAP×出来高)")
@@ -343,7 +363,8 @@ def lines_board(bf):
         L.append("大引け(15:30)後は板が更新されないため、30秒〜5分の窓別の増減は意味がなく表示しません(上は大引け時点の板)。")
         return L
     if bf.get("lunch"):
-        L.append("昼休み(11:30-12:30)は板が静止するため窓別の増減は意味がなく表示しません。")
+        ph = bf.get("lunch_phase") or _asof_lunch_phase(bf.get("asof")) or "stop"
+        L.append(LUNCH_MSG_PRE if ph == "pre" else LUNCH_MSG_STOP)
         return L
     for w in bf["windows"]:
         s = f"{w['sec']}秒" if w["sec"] < 60 else f"{w['sec'] // 60}分"
@@ -452,7 +473,7 @@ def load_today_public(date):
             "selloff": _selloff(tk, bd, prev)}
 
 
-def public_extras_lines(ex):
+def public_extras_lines(ex, with_disclaimer=True):
     """公開レコードの rec['screen_extras'](public_safe_extras の出力)を表示行へ。無ければ空リスト。
     moomoo由来の項目は含まない(板・約定ティック・見立ての機械採点のみ)。"""
     if not ex:
@@ -467,7 +488,7 @@ def public_extras_lines(ex):
         c = fs.get("count") or {}
         L.append(f"見立ての採点（{fs.get('label', REF_LABEL)}）: ○{c.get('○', 0)} △{c.get('△', 0)} ×{c.get('×', 0)}"
                  f"（採点済み{fs.get('n_graded', 0)}件・未採点/暫定{fs.get('n_pending', 0)}件）"
-                 "。○=高安が主レンジ内／△=片側のみ逸脱／×=主シナリオ外れ。売買の推奨ではありません。")
+                 "。○=高安が主レンジ内／△=片側のみ逸脱／×=主シナリオ外れ。" + ("売買の推奨ではありません。" if with_disclaimer else ""))
         note = hand_note(fs.get("items") or [])
         if note:
             L.append(note)

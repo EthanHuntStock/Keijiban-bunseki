@@ -396,8 +396,7 @@ def _news_summary(rec):
             f"<span style='color:{COL['muted']};font-size:.85em'>"
             f"（{source}{time_part}）</span></div>",
             unsafe_allow_html=True)
-    st.caption("※ニュース見出しの要約であり、投資助言ではありません。"
-              "各見出しから元記事(Google News経由)へ移動できます。")
+    st.caption("各見出しから元記事(Google News経由)へ移動できます。")   # 免責文言はページ末尾に集約(ui5.DISCLAIMER_ITEMS)
 
 
 # ★2026-08-20: 「YYYY-MM-DD」→「M/D」表記への変換(ユーザー依頼「グラフの日付は
@@ -936,14 +935,19 @@ def _ai_commentary(rec):
     try:
         import numeric_summary as _ns
         _nb = _ns.build_numeric_summary(rec)
-        st.markdown("**📊 " + _nb["heading"] + "｜" + _nb["asof"] + " 更新**\n\n" + "\n".join("- " + x for x in _nb["lines"]))
+        import ui5 as _ui5
+        _rt = _ui5.recent_table_html(_ui5.recent_rows(rec))   # 2026-11-26: 直近変化は表で表示
+        st.markdown("**📊 " + _nb["heading"] + "｜" + _nb["asof"] + " 更新**" + chr(10) * 2 + chr(10).join(
+            "- " + x for x in _nb["lines"] if not (_rt and (x.startswith("直近変化:") or x.startswith("立会時間外の市場")))))
+        if _rt:
+            st.markdown("<style>" + _ui5.CSS + "</style>" + _rt, unsafe_allow_html=True)
         st.caption(_nb["note"])
     except Exception:
         pass
     _previous_deltas_row(rec)
     try:  # ★2026-10-16追加: rec['screen_extras'] がある時だけ表示(既定は出ない)
         import screen_flow_summary as _sf
-        _xl = _sf.public_extras_lines(rec.get("screen_extras"))
+        _xl = _sf.public_extras_lines(rec.get("screen_extras"), with_disclaimer=False)
         if _xl:
             st.markdown("**🧭 板・価格まわり・見立ての採点（参考）**" + chr(10)*2 + chr(10).join("- " + x for x in _xl))
     except Exception:
@@ -1294,6 +1298,11 @@ def _reading_guide():
 def _disclaimer(rec):
     st.markdown("---")
     st.caption(f"⚠️ {rec.get('disclaimer', public_export.DISCLAIMER)}")
+    try:
+        import ui5 as _ui5
+        st.markdown(_ui5.disclaimer_extra_html(), unsafe_allow_html=True)
+    except Exception:
+        pass
 
 
 # ============================================================================
@@ -1459,13 +1468,14 @@ def main():
             if _sel:
                 _lp = _sc.lamps(_sel, rec.get("signal_cards"))
                 st.markdown("**🚦 " + _sc.lamps_text(_lp) + "**" + (f"（{_lp['asof_label']}）" if _lp.get("asof_label") else ""))
-                st.caption(_lp["caution"] + " 板・約定ティックは遅延あり。VWAP回復は3点に数えない別表示。売買の推奨ではありません。")
+                st.caption(_lp["caution"] + " 板・約定ティックは遅延あり。VWAP回復は3点に数えない別表示。")
         except Exception:
             pass
 
         st.markdown("#### 🎯 シグナル発火状況（9指標）")
         # ★2026-08-19追加(ユーザー依頼): 「発火」が何を意味するか一目でわかるよう説明を追加。
-        st.caption(
+        with st.expander("📖 この一覧の読み方（用語）"):
+          st.caption(
             "掲示板の投稿を集計した9つの指標(過熱度・投稿量の偏り等)が、あらかじめ決めた"
             "統計的なしきい値を超えたかどうかを示す一覧です。「発火」は"
             "**売買のシグナルではなく**、「統計的に見て平常時より偏りが大きい状態」を"
@@ -1473,8 +1483,7 @@ def main():
             "🔴発火=しきい値超過(過熱・悲観が強い)。")
         _signal_changes_note(rec)
         _signal_list(rec)
-        st.caption("※研究・エンタメ用途・未検証。売買シグナルではありません。"
-                   "掲示板は方向よりボラを予測する傾向が文献で報告されています"
+        st.caption("掲示板は方向よりボラを予測する傾向が文献で報告されています"
                    "(Antweiler & Frank, 2004)。")
 
     with tab_today:
