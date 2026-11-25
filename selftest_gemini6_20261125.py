@@ -79,6 +79,25 @@ lp3 = SC.lamps(dict(sel, board_turn={"ok": True, "detail": ""}, low_rise={"ok": 
 check("⑥3点揃っても断定しない文言", lp3["n"] == 3 and "確定ではありません" in lp3["caution"])
 check("⑥カード無し=(a)は判定不能(点灯に数えない)", SC.lamps(sel, None)["items"][0]["state"] == "na")
 check("⑥VWAP回復は3点に数えない", SC.lamps(dict(sel, vwap={"recovered": True, "detail": ""}), None)["n"] == 0)
+# ---- 2026-11-25 モニタ連絡: 大引け後の窓比較非表示・夜間確定モード
+import screen_flow_summary as SF
+_bp = [{"t": D(2026, 11, 25, 15, 29, 0) + dt.timedelta(seconds=10 * i), "mid": 1.0, "B": 1e6 + 1e4 * i, "S": 1e6} for i in range(12)]
+bf_live = SF.board_flow(_bp[:6])
+bf_closed = SF.board_flow([dict(p, t=p["t"] + dt.timedelta(minutes=2)) for p in _bp])
+check("板: 場中(15:30前)はclosed=False・窓別を表示", bf_live["closed"] is False and any("直近30秒" in x for x in SF.lines_board(bf_live)))
+check("板: 大引け後はclosed=True・窓別を出さず理由を明記", bf_closed["closed"] is True and not any("直近30秒" in x for x in SF.lines_board(bf_closed)) and any("大引け" in x for x in SF.lines_board(bf_closed)))
+check("板: 公開用抽出にclosedが残る", SF.public_safe_extras(bf_closed, None, None)["board_flow"]["closed"] is True)
+tk_n = [dict(t, t=t["t"].replace(hour=15, minute=31 + (i % 2), second=0)) for i, t in enumerate(tk)]  # 全tick大引け後
+tk_n = tk + [{"t": D(2026, 11, 25, 15, 31, 5), "price": 900.0, "vwap": 1000.0, "volume": tk[-1]["volume"] + 1}]
+sel_n = SC.compute(tk_n, bp)
+sel_d = SC.compute(tk, bp)
+check("夜間: 大引け後tickがあれば final=True・ラベルに確定", sel_n.get("final") is True and "確定" in sel_n["asof_label"], sel_n.get("asof_label"))
+check("夜間: 大引け後の900円tickが(c)判定に混ざらない(15:30までで評価)", sel_n["low_rise"].get("low") != 900.0, sel_n["low_rise"])
+check("場中: final無し", not sel_d.get("final"))
+lpf = SC.lamps(dict(sel, final=True), [{"name": "阿鼻叫喚(セリクラ)", "state": "発火"}])
+check("夜間: ランプは過去形の確定結果(進行形でない)", lpf["final"] and "確定" in lpf["title"] and "確定結果" in lpf["caution"] and "ありませんでした" in lpf["caution"], lpf)
+check("場中: 従来タイトルのまま", SC.lamps(sel, None)["title"] == "セリクラ成立チェック(0/3)")
+check("公開表示: 他銘柄混入率の説明にピア除外を明記", "ピア" in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "public_dashboard.py"), encoding="utf-8").read().split("\"他銘柄混入率\":")[1][:200])
 # ---- 統計評価タブの結論(表示専用・数値は変えない)
 import stats_explain as SE
 def _c(m, h, r, t, d, n): return {"metric_name": m, "horizon_name": h, "r": r, "t": t, "diff_pt": d, "n": n}

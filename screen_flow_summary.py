@@ -121,7 +121,9 @@ def board_flow(pts, windows=(30, 60, 180, 300)):
     out = {"asof": cur["t"].isoformat(timespec="seconds"), "asof_label": stamp_label(cur["t"]),
            "buy_total_man": round(cur["B"] / 1e4, 1), "sell_total_man": round(cur["S"] / 1e4, 1),
            "ratio": round(cur["B"] / cur["S"], 2) if cur["S"] else None,
-           "diff_man": round((cur["B"] - cur["S"]) / 1e4, 1), "windows": []}
+           "diff_man": round((cur["B"] - cur["S"]) / 1e4, 1), "windows": [],
+           # ★2026-11-25(モニタ連絡): 大引け(15:30)後は板が動かず全窓が同値になる=窓別の増減に意味が無い→表示側で窓比較を出さない
+           "closed": cur["t"].strftime("%H:%M:%S") >= "15:30:00"}
     for w in windows:
         tgt = cur["t"] - dt.timedelta(seconds=w)
         c = [x for x in pts if x["t"] <= tgt]
@@ -277,7 +279,7 @@ def public_safe_extras(board, price, grades, selloff=None):
     """公開側に出せる範囲(moomoo由来を含まない)。キー名はvalidate_no_leakの疑いキー(id/text等)を避ける。"""
     ex = {}
     if board:
-        ex["board_flow"] = {k: board[k] for k in ("asof", "asof_label", "buy_total_man", "sell_total_man", "ratio", "diff_man", "windows")}
+        ex["board_flow"] = {k: board[k] for k in ("asof", "asof_label", "buy_total_man", "sell_total_man", "ratio", "diff_man", "windows", "closed") if k in board}
         ex["board_flow"]["source"] = "板情報(遅延あり)"
     if price:
         ex["price_flow"] = dict(price, source="約定ティック(遅延あり)・売買代金は試算(VWAP×出来高)")
@@ -307,11 +309,23 @@ def lines_layer(lf):
     return L
 
 
+def _asof_closed(asof):
+    """asof(ISO文字列)が大引け(15:30)以降か。旧レコード(closedキー無し)の救済用。"""
+    try:
+        return str(asof)[11:19] >= "15:30:00"
+    except Exception:
+        return False
+
+
 def lines_board(bf):
     if not bf:
         return ["板の増減: データなし"]
+    bf = dict(bf, closed=bool(bf.get("closed")) or _asof_closed(bf.get("asof")))
     L = [f"{bf['asof_label']}｜買い総量 {bf['buy_total_man']:,.1f}万株／売り総量 {bf['sell_total_man']:,.1f}万株"
          f"／比 {bf['ratio']}／差 {bf['diff_man']:+,.1f}万株"]
+    if bf.get("closed"):
+        L.append("大引け(15:30)後は板が更新されないため、30秒〜5分の窓別の増減は意味がなく表示しません(上は大引け時点の板)。")
+        return L
     for w in bf["windows"]:
         s = f"{w['sec']}秒" if w["sec"] < 60 else f"{w['sec'] // 60}分"
         L.append(f"直近{s}: 買い {w['buy_man']:+,.1f}万株({w['buy_dir']})／売り {w['sell_man']:+,.1f}万株({w['sell_dir']})")

@@ -105,8 +105,23 @@ def vwap_state(ticks, as_of=None):
             "detail": "現値%s円・VWAP%s円(距離%+.1f円)" % (format(p, ",.0f"), format(v, ",.1f"), p - v)}
 
 
+CLOSE_HHMMSS = "15:30:00"
+
+
 def compute(ticks, board_pts, as_of=None):
-    """板・tick由来の2点(b,c)とVWAPをまとめる(公開レコード用・moomoo非依存)。(a)は表示側でカードから足す。"""
+    """板・tick由来の2点(b,c)とVWAPをまとめる(公開レコード用・moomoo非依存)。(a)は表示側でカードから足す。
+    ★2026-11-25(モニタ連絡): 最新tickが大引け(15:30)以降なら『当日の確定結果』モード(final=True)。
+    判定は大引け(15:30:59)までのデータで行い、夜間に動かない板を進行形として評価しない。"""
+    if as_of is None and ticks:
+        last_t = ticks[-1]["t"]
+        if last_t.strftime("%H:%M:%S") >= CLOSE_HHMMSS:
+            as_of = last_t.replace(hour=15, minute=30, second=59, microsecond=0)
+            return dict(_compute(ticks, board_pts, as_of), final=True,
+                        asof_label="%d/%d 大引け(15:30)時点・確定" % (last_t.month, last_t.day))
+    return _compute(ticks, board_pts, as_of)
+
+
+def _compute(ticks, board_pts, as_of=None):
     bars = minute_bars(ticks, as_of)
     asof = None
     for r in reversed(ticks):
@@ -138,10 +153,17 @@ def lamps(sel, cards):
         ok = d.get("ok")
         items.append({"label": lab, "state": "na" if ok is None else ("on" if ok else "off"), "detail": d.get("detail", "データなし")})
     n = sum(1 for i in items if i["state"] == "on")
+    # 旧レコード(finalキー無し)も、時点(asof)が大引け(15:30)以降なら確定扱い
+    final = bool((sel or {}).get("final")) or str((sel or {}).get("asof") or "")[11:19] >= "15:30:00"
     only_psych = n == 1 and items[0]["state"] == "on"
     caution = ("心理指標が点灯しているだけで、板・出来高の裏付けはまだありません(『底』とは言えません)。" if only_psych
                else "3点が揃っても底の確定ではありません。研究用・未検証の参考表示です。")
-    return {"n": n, "total": 3, "title": "セリクラ成立チェック(%d/3)" % n, "items": items,
+    if final:  # 夜間・大引け後は過去形の確定結果(進行形にしない)
+        if only_psych:
+            caution = "心理指標は点灯しましたが、板・出来高の裏付けはありませんでした(『底』とは言えません)。"
+        caution = "本日の大引け時点の確定結果です(進行中の判定ではありません)。" + caution
+    return {"n": n, "total": 3, "final": final,
+            "title": ("本日のセリクラ成立チェック・大引け時点で確定(%d/3)" if final else "セリクラ成立チェック(%d/3)") % n, "items": items,
             "vwap": (sel or {}).get("vwap"), "asof_label": (sel or {}).get("asof_label"), "caution": caution}
 
 
