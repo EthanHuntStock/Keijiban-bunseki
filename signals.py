@@ -363,7 +363,7 @@ def _z_to01(z, fallback=None):
 
 
 def oniya_gauges(*, ratios, lex_today, votes, posts_z, cap_z, eup_z,
-                 in_low_zone, calib_days, price_change_pct=None):
+                 in_low_zone, calib_days, price_change_pct=None, posts_z_blocked=False):
     """
     過熱スコア/阿鼻叫喚スコア(0-100)と状態判定。全入力は他の純関数の出力。
     履歴不足(calib_days < SIG_MIN_CALIB_DAYS)は絶対閾値フォールバックで暫定判定し
@@ -385,7 +385,9 @@ def oniya_gauges(*, ratios, lex_today, votes, posts_z, cap_z, eup_z,
     c_ratio = clip01((r - 1.0) / 4.0) if isinstance(r, (int, float)) else None
     c_maxv = clip01(votes.get("max_bullish_votes", 0) / config.SIG_ONIYA_VOTES_MAX)
     c_votes = max(x for x in [c_ratio or 0.0, c_maxv or 0.0]) if (c_ratio is not None or c_maxv is not None) else None
-    c_surge = _z_to01(posts_z, fallback=0.0)
+    # ★2026-11-26: posts_z は呼び手が話題枯れ/投稿サージのカードと同じz(同時刻累計 or 直近60分・同時刻帯比)を渡す。
+    #   履歴不足(posts_z_blocked)は成分ごと除外(=較正中扱い・全日比へも0固定へも落とさない)。
+    c_surge = None if posts_z_blocked else _z_to01(posts_z, fallback=0.0)
     heat_parts = [x for x in (c_eup, c_bull, c_votes, c_surge) if x is not None]
     overheat = round(sum(heat_parts) / len(heat_parts) * 100.0, 1) if heat_parts else 0.0
 
@@ -525,9 +527,9 @@ def compute_signals(analyzed_rows, raw_rows=None, price_daily=None,
         in_low = low_zone(price_daily.get("bars") or [], price)
 
     gauges = oniya_gauges(ratios=ratios, lex_today=lex_today, votes=votes,
-                          posts_z=posts_z, cap_z=cap_z, eup_z=eup_z,
+                          posts_z=(posts_z_st if posts_z_st is not None else posts_z), cap_z=cap_z, eup_z=eup_z,
                           in_low_zone=in_low, calib_days=calib_days,
-                          price_change_pct=chg)
+                          price_change_pct=chg, posts_z_blocked=posts_z_blocked)
 
     cards = build_signal_cards(ratios=ratios, lex=lex_today, votes=votes,
                                named=named, other=other, posts_z=posts_z,

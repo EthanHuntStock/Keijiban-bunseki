@@ -290,5 +290,21 @@ _peer_txt = ["MUが強い", "SNDK決算", "SKハイニックス", "サムスン"
 check("G5: 指定12系統(MU/SNDK/SKハイニックス/サムスン/NVDA/アドテスト/TEL/東エレク/レーザーテック/ディスコ/SCREEN/KOKUSAI/SOX)は全て除外", SG.other_symbol_ratio(_peer_txt)["hits"] == 0, SG.other_symbol_ratio(_peer_txt))
 check("G5: 英字は前後が英字でない時のみ(MUST/TELEGRAM/HOTEL/SCREENSHOT/NVDAX は他銘柄扱いにならずピアとしても消費しない)", SG._PEER_TICKER_RE.sub(" ", "MUST TELEGRAM HOTEL SCREENSHOT") == "MUST TELEGRAM HOTEL SCREENSHOT")
 check("G5: 285A本文は誤除外されない(285A/キオクシアと無関係銘柄の併記は他銘柄に数える)", SG.other_symbol_ratio(["285Aと7203", "キオクシアとトヨタ", "TELとトヨタ"])["hits"] == 3 and SG.other_symbol_ratio(["285Aキオクシア"])["hits"] == 0)
+# ---- 2026-11-26 灼熱メーターの投稿サージ成分
+_gm = _g2["gauges"]["components"]["heat"]
+_zst = _g2["posts_z_sametime"]
+check("灼熱: 0時台の投稿サージ成分は全日比(0固定)でなく話題枯れ/サージと同じz(直近60分・同時刻帯比)に基づく", _g2["posts_z"] < -1.0 and abs(_gm["post_surge"] - max(0.0, min(1.0, _zst / 3.0))) < 1e-9, (_gm, _zst))
+_parts = [v for v in _gm.values() if v is not None]
+check("灼熱: 合算・正規化は従来どおり(成分の単純平均×100・0-100)", abs(_g2["gauges"]["overheat"] - round(sum(_parts) / len(_parts) * 100.0, 1)) < 1e-9 and 0 <= _g2["gauges"]["overheat"] <= 100)
+_gb = S.compute_signals([], raw_rows=_raw_h, day=_day)["gauges"]
+check("灼熱: 履歴不足(較正中)は投稿サージ成分を除外し、全日比へも0固定へも落とさない", _gb["components"]["heat"]["post_surge"] is None)
+_gq = S.compute_signals([], raw_rows=_raw_s, day=_day)["gauges"]
+check("灼熱: 直近60分が過去の同時刻帯より大幅に多ければ成分が高くなる(上限1.0)", _gq["components"]["heat"]["post_surge"] == 1.0)
+_g_mid = S.compute_signals([], raw_rows=[r for r in _raw if r["ts"] <= "2026-11-24T09:30:00"], day="2026-11-24")
+check("灼熱: 場中(9:30)も同時刻比で成分が決まり全日比に落ちない", _g_mid["posts_z_sametime"] is not None and _g_mid["gauges"]["components"]["heat"]["post_surge"] == max(0.0, min(1.0, _g_mid["posts_z_sametime"] / 3.0)))
+config.SIG_POST_Z_SAMETIME = False
+_g_off = S.compute_signals([], raw_rows=_raw, day=_day)
+config.SIG_POST_Z_SAMETIME = True
+check("灼熱: 切替False=従来挙動(全日比z)", _g_off["gauges"]["components"]["heat"]["post_surge"] == max(0.0, min(1.0, _g_off["posts_z"] / 3.0)))
 print("\n結果: OK=%d NG=%d" % (len(OK), len(NG)))
 sys.exit(1 if NG else 0)
