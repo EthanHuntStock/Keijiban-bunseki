@@ -124,7 +124,7 @@ def _header(rec, live_price=None):
     chg_text = "—"
     if chg is not None:
         chg_color = COL["red"] if chg > 0 else (COL["blue"] if chg < 0 else COL["grey"])
-        chg_text = f"{chg:+.2f}%"
+        chg_text = f"{chg:+.2f}%" + (f"（{price.get('change_basis')}）" if price.get("change_basis") and not (live_price and live_price.get("price", {}).get("last") is not None) else "")
     # ★2026-08-19: dashboard.py(内部ダッシュボード)と同じ表記(カンマ区切り・小数点無し)
     # に統一(例: 50020.0円 -> 50,000円)。ユーザー指摘を受けて修正。
     price_text = f"{last:,.0f}" if last is not None else "—"
@@ -938,7 +938,7 @@ def _ai_commentary(rec):
         import ui5 as _ui5
         _rt = _ui5.recent_table_html(_ui5.recent_rows(rec))   # 2026-11-26: 直近変化は表で表示
         st.markdown("**📊 " + _nb["heading"] + "｜" + _nb["asof"] + " 更新**" + chr(10) * 2 + chr(10).join(
-            "- " + x for x in _nb["lines"] if not (_rt and (x.startswith("直近変化:") or x.startswith("立会時間外の市場")))))
+            "- " + x for x in _nb["lines"] if not (_rt and (x.startswith("直近変化:") or x.startswith("立会時間外の市場") or x.startswith("夜間PTS・米国ADR・DEX")))))
         if _rt:
             st.markdown("<style>" + _ui5.CSS + "</style>" + _rt, unsafe_allow_html=True)
         st.caption(_nb["note"])
@@ -1337,19 +1337,7 @@ def main():
     # 売買判断支援)の公開静的サイトへの相互リンク。あちら側にも本ダッシュボードへの
     # 逆リンクを追加済み(ai_sector_monitor/templates/index.html・static_export.py)。
     # ★2026-11-23(ユーザー指示「姉妹サイトがあまり見られていない・誘導を改善」): カード型バナー+ボタンへ変更(事実のみ記載)。
-    st.markdown(
-        "<a href='https://ethanhuntstock.github.io/ai-sector-monitor/' target='_blank' "
-        "rel='noopener noreferrer' style='display:flex;align-items:center;gap:12px;flex-wrap:wrap;"
-        "text-decoration:none;color:inherit;padding:10px 14px;border:2px solid #4c9aff;"
-        "border-radius:10px;background:rgba(76,154,255,.10);margin-bottom:8px'>"
-        "<span style='flex:1 1 260px;min-width:0'>"
-        "<div style='font-weight:700'>📈 キオクシア(285A)の「値位置・米韓ピア・信用倍率」は、姉妹サイトで毎日更新</div>"
-        "<div style='font-size:.82em;opacity:.85;margin-top:2px;line-height:1.5'>"
-        "AIセクター ワールドモニター：寄り前・寄り直後・前場引け前・大引け後のAI考察／支持線・抵抗線／"
-        "米国・韓国の半導体ピア／信用倍率／アナリスト評価の内訳</div></span>"
-        "<span style='flex:0 0 auto;padding:7px 14px;border-radius:6px;background:#4c9aff;color:#fff;"
-        "font-weight:700;font-size:.88em;white-space:nowrap'>ワールドモニターを開く ▶</span></a>",
-        unsafe_allow_html=True)
+    # 2026-11-26(ユーザー承認): 最上部の大きな姉妹サイトバナーは削除し、タイトル直下のスイッチバーに一本化
 
     # ★2026-08-19追加(ユーザー依頼「タイトルを最上部に書く」): ブラウザタブの
     # page_titleとは別に、ページ本文の最上部にも見出しとして明示する。
@@ -1374,6 +1362,11 @@ def main():
     if not rec:
         st.info("データ準備中です。しばらくしてから再度お試しください。")
         return
+    try:  # 2026-11-26: 日付またぎの騰落率(直近確定営業日)
+        import ui5 as _ui5x
+        _ui5x.fill_prev_session_change(rec, (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d"))
+    except Exception:
+        pass
 
     # ★2026-08-20追加(ユーザー指示「公開版ではYahooでなく自己取得しているkabuの
     # データを使う」「トップの株価/本日の推移/過去14日間の株価が60秒ごとに最新値に
@@ -1467,7 +1460,7 @@ def main():
             _sel = (rec.get("screen_extras") or {}).get("selloff")
             if _sel:
                 _lp = _sc.lamps(_sel, rec.get("signal_cards"))
-                st.markdown("**🚦 " + _sc.lamps_text(_lp) + "**" + (f"（{_lp['asof_label']}）" if _lp.get("asof_label") else ""))
+                st.markdown("**🚦 " + _sc.lamps_text(_lp) + "**" + (f"（{_lp['asof_label']}）" if (_lp.get("asof_label") and not _lp.get("final")) else ""))
                 st.caption(_lp["caution"] + " 板・約定ティックは遅延あり。VWAP回復は3点に数えない別表示。")
         except Exception:
             pass

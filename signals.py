@@ -60,7 +60,7 @@ PEER_NAMES = [
 ]
 _PEER_NAME_RE = re.compile("|".join(map(re.escape, PEER_NAMES)), re.I)
 # 英字ティッカーは前後が英字でない時だけ(「MUST」「SOXL以外の語」等の誤爆防止)。SOXLは SOX で包含。
-_PEER_TICKER_RE = re.compile(r"(?<![A-Za-z])(MU|SNDK|WDC|SOXL?|NVDA|SOXS|SCREEN|KOKUSAI|NAND|DRAM|HBM)(?![A-Za-z])")
+_PEER_TICKER_RE = re.compile(r"(?<![A-Za-z])(MU|SNDK|WDC|SOXL?|NVDA|SOXS|SCREEN|KOKUSAI|TEL|NAND|DRAM|HBM)(?![A-Za-z])")
 # 4桁コード: 東エレ8035・アドバンテスト6857・ディスコ6146・レーザーテック6920・キオクシア周辺の半導体
 PEER_CODES = {8035, 6857, 6146, 6920, 7735, 6525, 4062, 5803, 9984, 7011}   # ★2026-11-25追補: +SCREEN7735/KOKUSAI6525/イビデン4062/フジクラ5803/SBG9984/三菱重工7011
 SELF_TERMS = ["285A", "キオクシア", "kioxia", "KIOXIA", "Kioxia"]
@@ -476,6 +476,13 @@ def compute_signals(analyzed_rows, raw_rows=None, price_daily=None,
     counts_series = [dcounts[d] for d in cov_days]
     posts_z = trailing_zscore(counts_series)          # 従来z(ゲージ/snapshot用・日の途中は部分日vs全日で下振れ)
     posts_z_st = posts_z_sametime(raw, day, cov_days)  # ★カード用: 同時刻までの累計同士で比較
+    posts_z_label = "同時刻比"
+    posts_z_blocked = False
+    if posts_z_st is None and getattr(config, "SIG_POST_Z_SAMETIME", True):
+        # 0時台などで同時刻累計が使えない時: 直近60分の件数を過去日の同時刻帯と比較。それも無ければ全日比へ落とさず較正中(誤発火防止)
+        posts_z_st = posts_z_recent60(raw, day, cov_days)
+        posts_z_label = "直近60分・同時刻帯比"
+        posts_z_blocked = posts_z_st is None
 
     # 日別語彙指数系列(生データ・カバレッジ日のみ)
     # ★2026-09-16修正(コーデ00:27指摘のメモリ調査で自己発見・run_study.pyが
@@ -525,7 +532,7 @@ def compute_signals(analyzed_rows, raw_rows=None, price_daily=None,
     cards = build_signal_cards(ratios=ratios, lex=lex_today, votes=votes,
                                named=named, other=other, posts_z=posts_z,
                                gauges=gauges, pph=pph, in_low_zone=in_low,
-                               posts_z_card=posts_z_st)
+                               posts_z_card=posts_z_st, posts_z_label=posts_z_label, posts_z_blocked=posts_z_blocked)
 
     return {
         "day": day,
@@ -595,6 +602,45 @@ def posts_z_sametime(raw, day, cov_days, window=None):
     return round((cum(day) - mean) / sd, 2)
 
 
+def posts_z_recent60(raw, day, cov_days, window=None, minutes=60):
+    """★2026-11-26追加(Gemini助言2・実データで再現): 0時台は posts_z_sametime が標本なし(None)になり、カードが
+    「当日累計(数百件)vs過去の全日(数千件)」の全日比zへ落ちて、投稿が活発でも話題枯れが誤発火していた
+    (00:27に投稿411件・全日比z=-2.01)。直近60分の投稿数を、過去日の『同じ時刻に終わる60分』の件数と比べたz値。
+    基準時刻=当日の最新投稿の時刻。過去日は暦日をまたぐ窓(例 前日23:27〜00:27)もそのまま数える。
+    標本不足(<5日)/分散0/当日投稿なしはNone。純関数。"""
+    window = window or config.SIG_ZSCORE_WINDOW
+    if not getattr(config, "SIG_POST_Z_SAMETIME", True):
+        return None
+    per_min = {}   # 'YYYY-MM-DDTHH:MM' -> n
+    last = None
+    for r in raw:
+        ts = r.get("ts") or ""
+        if len(ts) < 16:
+            continue
+        k = ts[:16]
+        per_min[k] = per_min.get(k, 0) + 1
+        if ts[:10] == day and (last is None or ts[:16] > last):
+            last = ts[:16]
+    if last is None:
+        return None
+    end = dt.datetime.fromisoformat(last + ":00")
+
+    def win_count(shift_days):
+        e = end - dt.timedelta(days=shift_days)
+        return sum(per_min.get((e - dt.timedelta(minutes=i)).strftime("%Y-%m-%dT%H:%M"), 0) for i in range(minutes))
+
+    d0 = dt.date.fromisoformat(day)
+    hist_days = [d for d in cov_days if d < day][-window:]
+    hist = [win_count((d0 - dt.date.fromisoformat(d)).days) for d in hist_days]
+    if len(hist) < 5:
+        return None
+    mean = sum(hist) / len(hist)
+    sd = math.sqrt(sum((x - mean) ** 2 for x in hist) / len(hist))
+    if sd == 0:
+        return None
+    return round((win_count(0) - mean) / sd, 2)
+
+
 def raw_hourly_volume(rows, day=None):
     """当日の生投稿の1時間バケット件数 {"HH": count}。量の主指標。純関数。"""
     day = day or dt.date.today().isoformat()
@@ -623,11 +669,11 @@ def _threshold_label(op, fire_th, warn_th, state, suffix=""):
 
 
 def build_signal_cards(*, ratios, lex, votes, named, other, posts_z, gauges,
-                       pph, in_low_zone, posts_z_card=None):
+                       pph, in_low_zone, posts_z_card=None, posts_z_label="同時刻比", posts_z_blocked=False):
     """9シグナルのカード(現在値/閾値/状態/1行根拠)。純関数。
     posts_z_card: 話題枯れ/投稿サージのカード判定に使うz(同時刻累計比較)。Noneなら従来のposts_z。"""
-    _zc = posts_z_card if posts_z_card is not None else posts_z
-    _zlab = "同時刻比" if posts_z_card is not None else "全日比"
+    _zc = posts_z_card if posts_z_card is not None else (None if posts_z_blocked else posts_z)
+    _zlab = posts_z_label if posts_z_card is not None else "全日比"
     def card(name, value, threshold, state, note):
         return {"name": name, "value": value, "threshold": threshold,
                 "state": state, "note": note}

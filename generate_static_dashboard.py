@@ -767,6 +767,7 @@ def apply_live_overrides(rec, today=None):
         print(f"[WARN] trend merge failed: {e!r}")
 
     original_screen_extras = rec.get("screen_extras")
+    _ui5.fill_prev_session_change(rec, (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9)).strftime("%Y-%m-%d"))  # 日付またぎの騰落率(2026-11-26)
     try:  # ★2026-11-25(ユーザー承認): 昼休み非表示・日付跨ぎの前営業日確定表示を毎分反映するため、板・tick由来の screen_extras を直接再計算
         #   (latest.jsonは10分毎更新で日付跨ぎ/昼休みに追従できない)。機能が上流で有効(latest.jsonにscreen_extrasがある/環境変数ON)の時だけ。moomoo画面CSVは開かない。
         if original_screen_extras is not None or os.environ.get("ONIYA_PUBLIC_SCREEN_EXTRAS", "").strip() == "1":
@@ -1752,7 +1753,7 @@ def render_html(rec, images, extras, generated_at_str):
         numeric_summary_html = (
             "<div class='panel' id='numeric-summary'><h3>📊 " + html.escape(_ns_b["heading"]) + "｜" + html.escape(_ns_b["asof"]) + " 更新</h3><ul>"
             + "".join("<li>" + html.escape(x) + "</li>" for x in _ns_b["lines"]
-                      if not (_rt and (x.startswith("直近変化:") or x.startswith("立会時間外の市場")))) + "</ul>" + _rt
+                      if not (_rt and (x.startswith("直近変化:") or x.startswith("立会時間外の市場") or x.startswith("夜間PTS・米国ADR・DEX")))) + "</ul>" + _rt
             + "<p class='caption'>" + html.escape(_ns_b["note"]) + "</p></div>")
     except Exception:
         numeric_summary_html = ""
@@ -1776,7 +1777,7 @@ def render_html(rec, images, extras, generated_at_str):
             _vw = _lp.get("vwap") or {}
             selloff_check_html = (
                 "<div id='selloff-check' style='margin-top:8px'><b>🚦 " + html.escape(_lp["title"]) + "</b>"
-                + ("<span class='caption'>（" + html.escape(_lp["asof_label"]) + "）</span>" if _lp.get("asof_label") else "")
+                + ("<span class='caption'>（" + html.escape(_lp["asof_label"]) + "）</span>" if (_lp.get("asof_label") and not _lp.get("final")) else "")
                 + "<ul style='margin:4px 0;padding-left:1.2em'>"
                 + "".join("<li>" + _mk[i["state"]] + " " + html.escape(i["label"]) + "</li>" for i in _lp["items"]) + "</ul>"
                 + ("<div class='caption'>別表示(3点に数えない) VWAP回復: " + ("はい" if _vw.get("recovered") else "いいえ")
@@ -1969,13 +1970,7 @@ def render_html(rec, images, extras, generated_at_str):
            追加済み(ai_sector_monitor/templates/index.html・static_export.py)。 -->
       <!-- 2026-11-23(ユーザー指示「姉妹サイトがあまり見られていない・誘導を改善」): 小さなリンクをカード型バナーに変更し、
            見て得られる内容(事実のみ)と押せるボタンを明示。AI考察タブ末尾にも同じ誘導を再掲。 -->
-      <a class="sister-card" href="https://ethanhuntstock.github.io/ai-sector-monitor/" target="_blank" rel="noopener noreferrer">
-        <span class="sc-main">
-          <div class="sc-title">📈 キオクシア(285A)の「値位置・米韓ピア・信用倍率」は、姉妹サイトで毎日更新</div>
-          <div class="sc-desc">AIセクター ワールドモニター：寄り前・寄り直後・前場引け前・大引け後のAI考察／支持線・抵抗線／米国・韓国の半導体ピア／信用倍率／アナリスト評価の内訳</div>
-        </span>
-        <span class="sc-btn">ワールドモニターを開く ▶</span>
-      </a>
+      <!-- 2026-11-26(ユーザー承認): 最上部の大きな姉妹サイトバナーは削除し、タイトル直下のスイッチバーに一本化 -->
       <h1>📊 掲示板投稿の詳細分析による投資情報（静的版）</h1>
       {_switch_bar_html()}
       {guide}
@@ -1983,7 +1978,7 @@ def render_html(rec, images, extras, generated_at_str):
         <span class="symbol">{symbol}</span>
         <span class="company">{name}</span>
         <span class="price">{fmt_price(last)}</span>
-        <span class="chg" style="color:{chg_color(chg)}">{fmt_pct(chg)}</span>
+        <span class="chg" style="color:{chg_color(chg)}">{fmt_pct(chg)}</span>{("<span class='caption'> " + html.escape(str(price.get("change_basis"))) + "</span>") if price.get("change_basis") else ""}
       </div>
       <p class="caption">更新時刻: {gen_at}（データは1分間隔で自動生成され、このページも
       {STATIC_DASHBOARD_AUTOREFRESH_SEC}秒毎に自動再読み込みされます）</p>

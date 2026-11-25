@@ -119,17 +119,19 @@ def _is_lunch(t):
     return t.weekday() < 5 and "11:30:00" <= t.strftime("%H:%M:%S") < "12:30:00"
 
 
-LUNCH_MSG_STOP = "前場の取引終了後は注文の受付が止まるため板は動きません。窓別の増減は表示しません。"
-LUNCH_MSG_PRE = "後場寄り前の板は動いていますが、この時間帯の板は記録していないため、窓別の増減は出せません。"
+LUNCH_MSG_STOP = "前場の取引終了後〜12:00は記録が無く、注文の受付も止まっているため窓別は表示しません。"
+LUNCH_MSG_PRE = "後場寄り前(12:00-12:30)の専用記録を取得できないため、窓別の増減は出せません。"
+POSTLUNCH_LABEL = "後場寄り前の板(12:00-12:30の専用記録)"
+POSTLUNCH_DIR = "C:/Users/ryuta/OneDrive/AI用フォルダ/株取引API_プロト1/_board"   # 読み取り専用(記録は既存タスクPostLunchBoardPoll)
 
 
 def _lunch_phase(t):
-    """★2026-11-26(ユーザー指摘): 昼休みを2区間に分ける。'stop'=11:30:00〜12:05:00(注文受付停止・板は動かない)/
-    'pre'=12:05:00〜12:30:00(後場寄り前・板は動くが記録していない)/''=それ以外。平日のみ(祝日は未対応)。"""
+    """★2026-11-26(ユーザー指摘・実測で再訂正): 昼休みを2区間に分ける。'stop'=11:30:00〜12:00:00(記録なし・注文受付停止)/
+    'pre'=12:00:00〜12:30:00(後場寄り前・板は動く。専用記録postlunch_boardがあれば窓別を出す)/''=それ以外。平日のみ(祝日は未対応)。"""
     if t.weekday() >= 5:
         return ""
     hm = t.strftime("%H:%M:%S")
-    return "stop" if "11:30:00" <= hm < "12:05:00" else ("pre" if "12:05:00" <= hm < "12:30:00" else "")
+    return "stop" if "11:30:00" <= hm < "12:00:00" else ("pre" if "12:00:00" <= hm < "12:30:00" else "")
 
 
 def _asof_lunch_phase(asof):
@@ -147,7 +149,35 @@ def _asof_lunch(asof):
         return False
 
 
-def board_flow(pts, windows=(30, 60, 180, 300)):
+def postlunch_path(date, sym="285A", base=None):
+    return os.path.join(base or POSTLUNCH_DIR, f"postlunch_board_{sym}_{date}.csv")
+
+
+def read_postlunch_board(path):
+    """後場寄り前(12:00-12:30)の専用記録CSV(列: ts,...,over_sell_qty,under_buy_qty,...,raw_json)から板の買い/売り総量を作る。
+    read_board と同じ定義: 買い=Buy1..10の数量+UnderBuyQty / 売り=Sell1..10の数量+OverSellQty(成行は最良気配数量に含まれるので足さない)。"""
+    pts = []
+    if not os.path.exists(path):
+        return pts
+    with open(path, encoding="utf-8-sig", errors="replace", newline="") as fh:
+        for d in csv.DictReader(fh):
+            try:
+                t = dt.datetime.strptime(str(d["ts"])[:19], "%Y-%m-%d %H:%M:%S")
+                j = json.loads(d.get("raw_json") or "{}")
+            except Exception:
+                continue
+            B = sum(_f((j.get(f"Buy{i}") or {}).get("Qty")) for i in range(1, 11)) + _f(d.get("under_buy_qty"))
+            S = sum(_f((j.get(f"Sell{i}") or {}).get("Qty")) for i in range(1, 11)) + _f(d.get("over_sell_qty"))
+            pts.append({"t": t, "mid": _f(d.get("current_price")), "B": B, "S": S})
+    return pts
+
+
+def in_postlunch_band(now):
+    """平日12:00:00以上12:30:00未満か(専用記録を読む時間帯)。祝日は未対応。"""
+    return now.weekday() < 5 and "12:00:00" <= now.strftime("%H:%M:%S") < "12:30:00"
+
+
+def board_flow(pts, windows=(30, 60, 180, 300), source=None):
     if not pts:
         return None
     cur = pts[-1]
@@ -158,7 +188,9 @@ def board_flow(pts, windows=(30, 60, 180, 300)):
            # ★2026-11-25(モニタ連絡): 大引け(15:30)後は板が動かず全窓が同値になる=窓別の増減に意味が無い→表示側で窓比較を出さない
            "closed": cur["t"].strftime("%H:%M:%S") >= "15:30:00",
            # ★2026-11-25(ユーザー承認): 昼休み(11:30-12:30・平日)も板が静止し全窓が同値になる→窓別を出さない
-           "lunch": _is_lunch(cur["t"]), "lunch_phase": _lunch_phase(cur["t"])}
+           "lunch": _is_lunch(cur["t"]) and source != "postlunch", "lunch_phase": "" if source == "postlunch" else _lunch_phase(cur["t"])}
+    if source == "postlunch":
+        out["source_note"] = POSTLUNCH_LABEL
     for w in windows:
         tgt = cur["t"] - dt.timedelta(seconds=w)
         c = [x for x in pts if x["t"] <= tgt]
@@ -314,7 +346,7 @@ def public_safe_extras(board, price, grades, selloff=None):
     """公開側に出せる範囲(moomoo由来を含まない)。キー名はvalidate_no_leakの疑いキー(id/text等)を避ける。"""
     ex = {}
     if board:
-        ex["board_flow"] = {k: board[k] for k in ("asof", "asof_label", "buy_total_man", "sell_total_man", "ratio", "diff_man", "windows", "closed", "lunch", "lunch_phase") if k in board}
+        ex["board_flow"] = {k: board[k] for k in ("asof", "asof_label", "buy_total_man", "sell_total_man", "ratio", "diff_man", "windows", "closed", "lunch", "lunch_phase", "source_note") if k in board}
         ex["board_flow"]["source"] = "板情報(遅延あり)"
     if price:
         ex["price_flow"] = dict(price, source="約定ティック(遅延あり)・売買代金は試算(VWAP×出来高)")
@@ -356,9 +388,11 @@ def lines_board(bf):
     if not bf:
         return ["板の増減: データなし"]
     bf = dict(bf, closed=bool(bf.get("closed")) or _asof_closed(bf.get("asof")),
-              lunch=bool(bf.get("lunch")) or _asof_lunch(bf.get("asof")))
+              lunch=bool(bf.get("lunch")) or (not bf.get("source_note") and _asof_lunch(bf.get("asof"))))
     L = [f"{bf['asof_label']}｜買い総量 {bf['buy_total_man']:,.1f}万株／売り総量 {bf['sell_total_man']:,.1f}万株"
          f"／比 {bf['ratio']}／差 {bf['diff_man']:+,.1f}万株"]
+    if bf.get("source_note"):
+        L.append("出所: " + str(bf["source_note"]))
     if bf.get("closed"):
         L.append("大引け(15:30)後は板が更新されないため、30秒〜5分の窓別の増減は意味がなく表示しません(上は大引け時点の板)。")
         return L
@@ -439,6 +473,27 @@ def latest_session_low(date, tick_fn=None):
     return (d, min(z)) if z else None
 
 
+def session_change(date, tick_fn=None):
+    """★2026-11-26(Gemini助言1): 日付またぎ(当日の立会が未開始)に、直近確定営業日の終値と、その前営業日終値比の騰落率(tick CSVの当日最終価格)を返す。
+    当日09:00以降のtickが既にある時はNone(場中・大引け後は従来の価格系列を使う)。戻り値={date,close,prev_date,prev_close,pct,label}/None。"""
+    fn = tick_fn or read_ticks
+    if has_session_ticks(fn(tick_path(date))):
+        return None
+    a = find_prev_session(date, tick_fn=tick_fn)
+    if not a:
+        return None
+    d1, tk1 = a
+    b = find_prev_session(d1, tick_fn=tick_fn)
+    if not b:
+        return None
+    d0, tk0 = b
+    c1 = [r["price"] for r in tk1 if r["price"] > 0][-1]
+    c0 = [r["price"] for r in tk0 if r["price"] > 0][-1]
+    m, dd = int(d1[5:7]), int(d1[8:10])
+    return {"date": d1, "close": c1, "prev_date": d0, "prev_close": c0, "pct": round((c1 / c0 - 1) * 100.0, 2),
+            "label": "%d/%d終値・前営業日比" % (m, dd)}
+
+
 def _selloff(tk, bd, prev_date=None):
     """★2026-11-25: セリクラ成立チェックの板・tick由来部分(selloff_check.compute)。失敗/データ無しはNone(fail-soft)。"""
     try:
@@ -458,7 +513,7 @@ def load_today(date, now=None):
             "grades": grade_all(reg, tk) if reg else None, "registry": reg, "selloff": _selloff(tk, bd)}
 
 
-def load_today_public(date):
+def load_today_public(date, now=None):
     """公開側専用: moomoo画面CSV(data/moomoo_screen)は一切開かない。板CSV・tick CSV・見立てJSONだけ読む(kabu由来＋自前の見立て記録)。"""
     tk = read_ticks(tick_path(date))
     prev = None
@@ -469,7 +524,16 @@ def load_today_public(date):
     use = prev or date
     bd = read_board(os.path.join(BOARD_BASE, "_board", f"board_285A_{use}.csv"))
     reg = load_registry(use)
-    return {"board": board_flow(bd), "price": price_flow(tk), "grades": grade_all(reg, tk) if reg else None,
+    bflow = board_flow(bd)
+    try:  # ★2026-11-26: 12:00-12:30は専用記録(postlunch)から窓別の増減を出す(selloffの板は従来の板のまま)
+        n = now or dt.datetime.now()
+        if prev is None and in_postlunch_band(n) and n.strftime("%Y-%m-%d") == date:
+            pl = read_postlunch_board(postlunch_path(date))
+            if pl:
+                bflow = board_flow(pl, source="postlunch")
+    except Exception:
+        pass
+    return {"board": bflow, "price": price_flow(tk), "grades": grade_all(reg, tk) if reg else None,
             "selloff": _selloff(tk, bd, prev)}
 
 

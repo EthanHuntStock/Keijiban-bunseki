@@ -114,12 +114,31 @@ def _bf_at(h, m):
     t0 = D(2026, 11, 25, h, m, 0)   # 水曜
     return SF.board_flow([{"t": t0 + dt.timedelta(seconds=10 * i), "mid": 1.0, "B": 1e6 + 1e4 * i, "S": 1e6} for i in range(40)])
 bf_l = _bf_at(11, 40)
-check("昼休み前半(11:40台)=lunch・注文受付停止の文言・窓別なし", bf_l["lunch"] is True and bf_l["lunch_phase"] == "stop" and not any("直近30秒" in x for x in SF.lines_board(bf_l)) and any("前場の取引終了後は注文の受付が止まるため板は動きません。窓別の増減は表示しません" in x for x in SF.lines_board(bf_l)))
-bf_pre = _bf_at(12, 10)
-check("昼休み後半(12:10台)=後場寄り前・記録が無いため出せない文言・窓別なし(『静止』とは書かない)", bf_pre["lunch_phase"] == "pre" and not any("直近30秒" in x for x in SF.lines_board(bf_pre)) and any("後場寄り前の板は動いていますが、この時間帯の板は記録していないため、窓別の増減は出せません" in x for x in SF.lines_board(bf_pre)) and not any("静止" in x for x in SF.lines_board(bf_pre)))
+check("昼休み前半(11:30-12:00)=lunch(stop)・記録なし/受付停止の文言・窓別なし", bf_l["lunch"] is True and bf_l["lunch_phase"] == "stop" and not any("直近30秒" in x for x in SF.lines_board(bf_l)) and any("前場の取引終了後〜12:00は記録が無く、注文の受付も止まっているため窓別は表示しません" in x for x in SF.lines_board(bf_l)))
+import tempfile, json as _json, csv as _csv
+def _mk_postlunch(path, n=80):
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["ts", "symbol", "current_price", "current_price_status", "calc_indicative", "bid_price", "bid_qty", "ask_price", "ask_qty", "over_sell_qty", "under_buy_qty", "market_sell_qty", "market_buy_qty", "raw_json"])
+        for i in range(n):
+            t = D(2026, 11, 25, 12, 9, 0) + dt.timedelta(seconds=5 * i)
+            j = {("Buy%d" % k): {"Price": 1000 - k, "Qty": 100.0 * (i + 1)} for k in range(1, 11)}
+            j.update({("Sell%d" % k): {"Price": 1000 + k, "Qty": 50.0} for k in range(1, 11)})
+            w.writerow([t.strftime("%Y-%m-%d %H:%M:%S"), "285A", 1000, 1, 1000, 999, 100, 1001, 50, 1000.0, 2000.0, 0, 0, _json.dumps(j)])
+_pl_path = os.path.join(tempfile.mkdtemp(), "postlunch_board_285A_2026-11-25.csv")
+_mk_postlunch(_pl_path)
+_pl = SF.read_postlunch_board(_pl_path)
+check("後場寄り前の専用記録: 買い=Buy1-10+UnderBuy・売り=Sell1-10+OverSell(成行は足さない)", abs(_pl[0]["B"] - (100.0 * 10 + 2000.0)) < 1e-6 and abs(_pl[0]["S"] - (50.0 * 10 + 1000.0)) < 1e-6, _pl[0])
+bf_pre = SF.board_flow(_pl[:60], source="postlunch")
+_ln = SF.lines_board(bf_pre)
+check("12:10台(専用記録)=窓別を表示・出所『後場寄り前の板(12:00-12:30の専用記録)』を明記・昼休み非表示にしない", bf_pre["lunch"] is False and any("直近30秒" in x for x in _ln) and any("直近5分" in x for x in _ln) and any("後場寄り前の板(12:00-12:30の専用記録)" in x for x in _ln) and not any("表示しません" in x for x in _ln), _ln)
+check("12:10台: 公開抽出・旧キー無しでも出所/窓別が残る", SF.public_safe_extras(bf_pre, None, None)["board_flow"].get("source_note") == SF.POSTLUNCH_LABEL and any("直近30秒" in x for x in SF.lines_board(SF.public_safe_extras(bf_pre, None, None)["board_flow"])))
+bf_nopl = _bf_at(12, 10)
+check("12:10台で専用記録が無い場合は誤った数値を出さず理由を明記(記録なしの旨)", bf_nopl["lunch_phase"] == "pre" and not any("直近30秒" in x for x in SF.lines_board(bf_nopl)) and any("専用記録を取得できない" in x for x in SF.lines_board(bf_nopl)))
+check("load_today_public: 12:10は専用記録帯・11:40/12:31は帯の外(平日のみ)", SF.in_postlunch_band(D(2026, 11, 25, 12, 10)) and not SF.in_postlunch_band(D(2026, 11, 25, 11, 40)) and not SF.in_postlunch_band(D(2026, 11, 25, 12, 31)) and not SF.in_postlunch_band(D(2026, 11, 28, 12, 10)))
 bf_pm = _bf_at(12, 31)
 check("12:31以降は従来どおり窓別を表示", bf_pm["lunch"] is False and bf_pm["lunch_phase"] == "" and any("直近30秒" in x for x in SF.lines_board(bf_pm)))
-check("昼休み区間の境界(12:04:59=前半・12:05:00=後半)・旧レコードも時刻で救済", SF._lunch_phase(D(2026, 11, 25, 12, 4, 59)) == "stop" and SF._lunch_phase(D(2026, 11, 25, 12, 5, 0)) == "pre" and any("後場寄り前" in x for x in SF.lines_board({k: v for k, v in bf_pre.items() if k not in ("lunch", "lunch_phase")})))
+check("昼休み区間の境界(11:59:59=stop・12:00:00=pre)・旧レコードも時刻で救済", SF._lunch_phase(D(2026, 11, 25, 11, 59, 59)) == "stop" and SF._lunch_phase(D(2026, 11, 25, 12, 0, 0)) == "pre" and any("専用記録" in x for x in SF.lines_board({k: v for k, v in bf_nopl.items() if k not in ("lunch", "lunch_phase")})))
 check("昼休み: 公開用抽出にlunchが残り、旧レコード(lunchキー無し)も時刻で救済", SF.public_safe_extras(bf_l, None, None)["board_flow"]["lunch"] is True and not any("直近30秒" in x for x in SF.lines_board({k: v for k, v in bf_l.items() if k != "lunch"})))
 bf_m = _bf_at(10, 0)
 bf_p = _bf_at(13, 0)
@@ -221,5 +240,55 @@ check("UI④免責: 集約リストに既存文言を保持(売買の推奨・�
 _ex_l = SF.public_extras_lines({"forecast_score": {"label": "x", "count": {"○": 1, "△": 0, "×": 0}, "n_graded": 1, "n_pending": 0, "items": []}}, with_disclaimer=False)
 check("UI④見立て採点の行は集約時に『売買の推奨ではありません』を重ねない・既定は従来どおり付く", not any("売買の推奨ではありません" in x for x in _ex_l) and any("売買の推奨ではありません" in x for x in SF.public_extras_lines({"forecast_score": {"label": "x", "count": {}, "n_graded": 0, "n_pending": 0, "items": []}})))
 check("UI①用語説明はdetails(既定は閉)に畳む(静的版)", _gs.count('<details class="fold">') >= 2 and '<details class="fold" open' not in _gs)
+# ---- 2026-11-26 Gemini5点
+_t1 = lambda d, price: [{"t": D(int(d[:4]), int(d[5:7]), int(d[8:10]), 9, 5), "price": price, "vwap": 1.0, "volume": 1.0}, {"t": D(int(d[:4]), int(d[5:7]), int(d[8:10]), 15, 31), "price": price + 1, "vwap": 1.0, "volume": 2.0}]
+_okc = {"2026-11-24": _t1("2026-11-24", 8033.0), "2026-11-25": _t1("2026-11-25", 6894.0)}
+_fc = lambda path: _okc.get(os.path.basename(path)[len("ticks_285A_"):-4], [])
+_sc1 = SF.session_change("2026-11-26", tick_fn=_fc)
+check("G1: 日付またぎは直近確定営業日(11/25)の終値と前営業日比を算出(8034→6895=-14.18%)", _sc1 is not None and _sc1["close"] == 6895.0 and _sc1["prev_close"] == 8034.0 and _sc1["pct"] == -14.18 and _sc1["label"] == "11/25終値・前営業日比", _sc1)
+check("G1: 当日の立会tickが既にあれば何もしない(場中・大引け後は従来系列)", SF.session_change("2026-11-25", tick_fn=_fc) is None)
+_okc2 = {"2026-11-25": _t1("2026-11-25", 6894.0)}
+check("G1: 前営業日が無ければNone(『—』のまま・捏造しない)", SF.session_change("2026-11-26", tick_fn=lambda p: _okc2.get(os.path.basename(p)[len("ticks_285A_"):-4], [])) is None)
+_r1 = {"generated_at": "2026-11-26T00:27:00", "price": {"last": 6895.0, "change_pct": None}}
+_orig_sc = SF.session_change
+SF.session_change = lambda date, tick_fn=None: _orig_sc(date, tick_fn=_fc)
+U5.fill_prev_session_change(_r1, "2026-11-26")
+SF.session_change = _orig_sc
+check("G1: priceに騰落率と根拠ラベルが入り、3行サマリーに『11/25終値・前営業日比 -14.18%』と出る", _r1["price"]["change_pct"] == -14.18 and "11/25終値・前営業日比 -14.18%" in U5.summary3(_r1)[0][1], U5.summary3(_r1)[0])
+# G2: 0時台の話題枯れ誤発火(同時刻累計が標本なし→全日比へ落ちていた)
+_raw = []
+for _k in range(12):   # 過去12日: 毎時100件(日計2400件)
+    _d = (dt.date(2026, 11, 13) + dt.timedelta(days=_k))
+    for _h in range(24):
+        _raw += [{"id": "%s-%d-%d" % (_d, _h, _i), "ts": "%sT%02d:%02d:00" % (_d, _h, (_i * 7 + _k) % 60), "text": "x"} for _i in range(100 + (_k % 3))]
+_day = "2026-11-26"
+_raw += [{"id": "n%d" % _i, "ts": "%sT00:%02d:00" % (_day, min(27, _i % 28)), "text": "x"} for _i in range(100)]   # 00:00〜00:27に100件=過去と同ペース
+_g2 = S.compute_signals([], raw_rows=_raw, day=_day)
+_cg2 = {c["name"]: c for c in _g2["cards"]}
+check("G2(再現): 全日比zは0時台で強く負(従来はこれで話題枯れが誤発火)", _g2["posts_z"] is not None and _g2["posts_z"] < -1.0, _g2["posts_z"])
+check("G2(修正): 0時台は直近60分・同時刻帯比で判定し、平常ペースなら話題枯れは発火しない", _g2["posts_z_sametime"] is not None and abs(_g2["posts_z_sametime"]) < 2 and _cg2["話題枯れ"]["state"] != "発火" and "直近60分・同時刻帯比" in _cg2["話題枯れ"]["note"], (_g2["posts_z_sametime"], _cg2["話題枯れ"]))
+_raw_q = [r for r in _raw if not r["ts"].startswith(_day)] + [{"id": "q1", "ts": _day + "T00:20:00", "text": "x"}]
+_g2q = S.compute_signals([], raw_rows=_raw_q, day=_day)
+check("G2: 本当に閑散(直近60分1件)なら話題枯れ発火", {c["name"]: c for c in _g2q["cards"]}["話題枯れ"]["state"] == "発火")
+_raw_s = [r for r in _raw if not r["ts"].startswith(_day)] + [{"id": "s%d" % _i, "ts": _day + "T00:%02d:00" % (_i % 28), "text": "x"} for _i in range(1500)]
+check("G2: 直近60分が過去の同時刻帯より大幅に多ければ投稿サージ発火", {c["name"]: c for c in S.compute_signals([], raw_rows=_raw_s, day=_day)["cards"]}["投稿サージ"]["state"] == "発火")
+_raw_h = [r for r in _raw if r["ts"][:10] >= "2026-11-24"] + [{"id": "h", "ts": _day + "T00:10:00", "text": "x"}]
+check("G2: 履歴不足は全日比へ落とさず較正中(OK・誤発火しない)", {c["name"]: c for c in S.compute_signals([], raw_rows=_raw_h, day=_day)["cards"]}["話題枯れ"]["state"] == "OK")
+# G3
+check("G3a: 最上部の大きな姉妹サイトバナーを削除(静的版はAI考察タブ末尾の再掲のみ・スイッチバーは残る)", _gs.count('class="sister-card" href') == 1 and "_switch_bar_html()" in _gs and "ワールドモニターを開く" not in _pd.split("def main")[1][:6000])
+check("G3b: 読み方ガイドは<details>既定閉(静的はopen無し・StreamlitはexpanderでTrue指定なし)", '<details class="panel">' in _gs and '<details class="panel" open' not in _gs and 'st.expander("📖 このダッシュボードの読み方（初めての方向け）"' in _pd and "expanded=True" not in _pd.split("このダッシュボードの読み方（初めての方向け）")[1][:80])
+_sel_f = SC.compute(tk_n, bp, prev_date="2026-11-25")
+_r3 = {"generated_at": "2026-11-26T00:27:00", "price": {"last": 6895.0, "change_pct": -14.18}, "screen_extras": {"selloff": _sel_f}}
+_l2 = U5.summary3(_r3)[1][1]
+check("G3c: 3行サマリー2行目は確定の時点表示を1回だけ(二重出力なし)", _l2.count("大引け") == 1 and _l2.count("前営業日(2026-11-25)") == 1, _l2)
+check("G3d: 表がある時は『夜間PTS・米国ADR・DEX(東証最終値比)』の箇条書きを出さない(静的・Streamlit両方)", _gs.count('x.startswith("夜間PTS・米国ADR・DEX")') == 1 and _pd.count('x.startswith("夜間PTS・米国ADR・DEX")') == 1)
+# G4
+_h3 = U5.summary3_html(_r3)
+check("G4: 3行サマリーのラベルはバッジ(.k)・縦並び・ダーク/ライトは変数/rgba・375px", "class='k'" in _h3 and ".sum3 .k{display:inline-block" in U5.CSS and "flex-direction:column" in U5.CSS and "border-radius:999px" in U5.CSS)
+# G5
+_peer_txt = ["MUが強い", "SNDK決算", "SKハイニックス", "サムスン", "NVDA", "アドテスト", "TELが上げ", "東エレクが", "レーザーテック", "ディスコ", "SCREEN", "KOKUSAI", "SOXが", "SOXL"]
+check("G5: 指定12系統(MU/SNDK/SKハイニックス/サムスン/NVDA/アドテスト/TEL/東エレク/レーザーテック/ディスコ/SCREEN/KOKUSAI/SOX)は全て除外", SG.other_symbol_ratio(_peer_txt)["hits"] == 0, SG.other_symbol_ratio(_peer_txt))
+check("G5: 英字は前後が英字でない時のみ(MUST/TELEGRAM/HOTEL/SCREENSHOT/NVDAX は他銘柄扱いにならずピアとしても消費しない)", SG._PEER_TICKER_RE.sub(" ", "MUST TELEGRAM HOTEL SCREENSHOT") == "MUST TELEGRAM HOTEL SCREENSHOT")
+check("G5: 285A本文は誤除外されない(285A/キオクシアと無関係銘柄の併記は他銘柄に数える)", SG.other_symbol_ratio(["285Aと7203", "キオクシアとトヨタ", "TELとトヨタ"])["hits"] == 3 and SG.other_symbol_ratio(["285Aキオクシア"])["hits"] == 0)
 print("\n結果: OK=%d NG=%d" % (len(OK), len(NG)))
 sys.exit(1 if NG else 0)

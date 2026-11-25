@@ -9,15 +9,16 @@ CSS = (".sum3,.rc,.rc-wrap,.panel,.metric-card,.caption,.stMarkdown table{font-v
        "body,.stApp{font-variant-numeric:tabular-nums}"
        ".fold{margin:6px 0}.fold>summary{cursor:pointer;font-size:.85em;color:var(--muted,#94a3b8)}"
        ".sum3{background:var(--panel,transparent);border:1px solid var(--border,rgba(128,128,128,.5));border-radius:10px;padding:8px 12px;margin:8px 0 14px}"
-       ".sum3 .l{display:flex;gap:8px;line-height:1.6;padding:3px 0;align-items:baseline}"
-       ".sum3 .k{flex:0 0 auto;font-size:.75em;color:var(--muted,#94a3b8);min-width:6.5em}"
+       ".sum3 .l{display:flex;flex-direction:column;gap:2px;line-height:1.6;padding:4px 0;align-items:flex-start}"
+       ".sum3 .k{display:inline-block;font-size:.72em;font-weight:700;padding:1px 8px;border-radius:999px;border:1px solid #3b82f6;"
+       "color:var(--text,inherit);background:rgba(59,130,246,.14)}"
        ".sum3 .n{font-size:.75em;color:var(--muted,#94a3b8);margin-top:2px}"
        ".rc-wrap{overflow-x:auto;margin:8px 0 14px;max-width:100%}.rc{width:100%;border-collapse:collapse;font-size:.85em}"
        ".rc th,.rc td{padding:4px 8px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--border,rgba(128,128,128,.5))}"
        ".rc th:first-child,.rc td:first-child{text-align:left}.rc .pos{color:#16a34a}.rc .neg{color:#dc2626}"
        ".rc tr.stale td{color:#94a3b8;opacity:.75}.rc tr.stale td.pos,.rc tr.stale td.neg{color:#94a3b8}"
        ".rc caption{caption-side:top;text-align:left;font-size:.8em;color:var(--muted,#94a3b8);padding-bottom:4px}"
-       "@media(max-width:480px){.rc{font-size:.78em}.rc th,.rc td{padding:3px 5px}.sum3 .l{flex-direction:column;gap:0}img{max-width:100%;height:auto}}")
+       "@media(max-width:480px){.rc{font-size:.78em}.rc th,.rc td{padding:3px 5px}img{max-width:100%;height:auto}}")
 
 # 免責: 各所に散っていた短い文言を消さずにここへ集約して1か所(ページ末尾)に表示する(文言は既存のまま)
 DISCLAIMER_ITEMS = (
@@ -30,6 +31,24 @@ DISCLAIMER_ITEMS = (
 
 def disclaimer_extra_html():
     return "<p class='caption'>" + "<br>".join(_h.escape(x) for x in DISCLAIMER_ITEMS) + "</p>"
+
+
+def fill_prev_session_change(rec, date):
+    """price.change_pct が無い(日付またぎ)時、直近確定営業日の騰落率を price に補い『11/25終値・前営業日比』の根拠ラベルを付ける。fail-soft。"""
+    try:
+        pr = (rec or {}).get("price")
+        if not isinstance(pr, dict) or pr.get("change_pct") is not None:
+            return rec
+        import screen_flow_summary as _sf
+        sc = _sf.session_change(date)
+        if sc:
+            pr["change_pct"] = sc["pct"]
+            pr["change_basis"] = sc["label"]
+            if pr.get("last") is None:
+                pr["last"] = sc["close"]
+    except Exception:
+        pass
+    return rec
 
 
 def _f(x):
@@ -95,7 +114,9 @@ def summary3(rec, now=None):
     except Exception:
         gl = "時点不明"
     last, chg = _f(pr.get("last")), _f(pr.get("change_pct"))
-    l1 = ("285A %s円(前営業日終値比 %s)" % (format(last, ",.0f"), _pct(chg)) if last is not None else "株価データなし") + "｜" + gl
+    basis = pr.get("change_basis")
+    l1 = (("285A %s円(%s %s)" % (format(last, ",.0f"), basis, _pct(chg))) if (last is not None and basis) else
+          ("285A %s円(前営業日終値比 %s)" % (format(last, ",.0f"), _pct(chg))) if last is not None else "株価データなし") + "｜" + gl
     eh = r.get("extended_hours") or {}
     ex = ["%s %s" % (lab, _pct((eh.get(k) or {}).get("change_pct"))) for lab, k in (("PTS", "pts"), ("ADR", "adr"), ("DEX", "dex"))
           if isinstance(eh.get(k), dict) and _f(eh[k].get("change_pct")) is not None]
@@ -108,7 +129,7 @@ def summary3(rec, now=None):
         try:
             import selloff_check as _sc
             lp = _sc.lamps(sel, r.get("signal_cards"))
-            parts.append("%s(%s)" % (lp["title"], lp.get("asof_label") or "時点不明"))
+            parts.append(lp["title"] if lp.get("final") else "%s(%s)" % (lp["title"], lp.get("asof_label") or "時点不明"))   # 確定表示はタイトルに日付・時点が入るので二重にしない
         except Exception:
             pass
     bf = se.get("board_flow")
