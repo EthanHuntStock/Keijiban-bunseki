@@ -152,3 +152,53 @@ def summary3_html(rec):
                 "<div class='n'>公開レコードの数値の言い換えです(予想ではありません)。</div></div>")
     except Exception:
         return ""
+
+
+def latest_txt(rec, generated_at_str=None, now_ts=None):
+    """公開ルート直下の latest.txt(Markdown・UTF-8・10KB以下)。2026-11-26(ユーザー承認)。
+    数値は公開HTMLと同じrec(apply_live_overrides後)から作る。AI考察本文は公開版と同一の文面(免責も削らない)。
+    10KBを超える時は比較表・シグナルの節から削り、AI考察本文は削らない。失敗時は空文字(呼び手がindex.html公開を止めない)。"""
+    try:
+        r = rec or {}
+        pr = r.get("price") or {}
+        ac = r.get("ai_commentary") or {}
+        out = ["# 掲示板投稿の詳細分析による投資情報(キオクシア285A・公開サマリー)", "",
+               "- 更新: %s(公開ページ index.html と同一スナップショット)" % (generated_at_str or r.get("generated_at") or "—"),
+               "- 研究・エンタメ用途・未検証。売買の推奨・投資助言ではありません。"]
+        last = _f(pr.get("last"))
+        if last is not None:
+            out.append("- 285A 現在値: %s円(%s %s)" % (format(last, ",.0f"), pr.get("change_basis") or "前営業日終値比", _pct(pr.get("change_pct"))))
+        out += ["", "## 3行サマリー"]
+        for k, v in summary3(r):
+            out.append("- %s: %s" % (k, v))
+        sec_tbl = ["", "## 時間外・直近変化(東証・PTS・米国ADR・DEX)"]
+        for x in recent_rows(r, now_ts):
+            sec_tbl.append("- %s%s: 最終値 %s円・終値比 %s・5分 %s・15分 %s・1時間 %s・最終約定 %s" % (
+                x["name"], "(立会時間外)" if x["stale"] else "",
+                format(float(x["last_price"]), ",.0f") if _f(x["last_price"]) is not None else "—",
+                _pct(x["level"]), _pct(x["c5"]), _pct(x["c15"]), _pct(x["c60"]), x["last_time"]))
+        if len(sec_tbl) == 2:
+            sec_tbl.append("- 直近変化のデータなし")
+        sec_sig = ["", "## シグナル発火状況(9指標)"]
+        for c in r.get("signal_cards") or []:
+            v = c.get("value")
+            sec_sig.append("- %s: %s%s" % (c.get("name"), c.get("state"), (" (%s)" % v) if v is not None else ""))
+        sec_ext = ["", "## 信用倍率・次の重要イベント",
+                   "- このサイトの公開データには含まれません(姉妹サイト AIセクター ワールドモニター https://ethanhuntstock.github.io/ai-sector-monitor/ で確認できます)。"]
+        sec_ai = ["", "## AI考察(公開ページと同一の本文)"]
+        if ac.get("text"):
+            sec_ai.append(str(ac.get("text")))
+            sec_ai += ["", "%s(生成時刻: %s)" % ("", ac.get("generated_at") or "不明")]
+        else:
+            sec_ai.append("AI考察は準備中です。")
+        foot = ["", "## 免責"] + ["- " + str(r.get("disclaimer") or "")] + ["- " + x for x in DISCLAIMER_ITEMS]
+        def build(*parts):
+            return "\n".join(out + [l for p in parts for l in p] + sec_ai + foot) + "\n"
+        txt = build(sec_tbl, sec_sig, sec_ext)
+        if len(txt.encode("utf-8")) > 10 * 1024:
+            txt = build(sec_tbl)
+        if len(txt.encode("utf-8")) > 10 * 1024:
+            txt = build()
+        return txt
+    except Exception:
+        return ""

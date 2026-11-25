@@ -306,5 +306,22 @@ config.SIG_POST_Z_SAMETIME = False
 _g_off = S.compute_signals([], raw_rows=_raw, day=_day)
 config.SIG_POST_Z_SAMETIME = True
 check("灼熱: 切替False=従来挙動(全日比z)", _g_off["gauges"]["components"]["heat"]["post_surge"] == max(0.0, min(1.0, _g_off["posts_z"] / 3.0)))
+# ---- 2026-11-26 latest.txt
+_rec_lt = dict(_rec, ai_commentary={"text": "本文1行目。" + chr(10) + "免責: 本情報は投資助言ではありません。", "generated_at": "2026-11-25T23:50:00"},
+               disclaimer="本情報は掲示板投稿を統計的に集計したものであり、投資助言ではありません。", signal_cards=[{"name": "話題枯れ", "state": "OK", "value": 0.54}])
+_lt = U5.latest_txt(_rec_lt, "2026-11-25T23:55:00")
+check("latest.txt: 10KB以下・UTF-8・主要節(3行サマリー/時間外比較/シグナル/AI考察/免責)を含む", 0 < len(_lt.encode("utf-8")) <= 10240 and all(x in _lt for x in ("## 3行サマリー", "## 時間外・直近変化", "## シグナル発火状況", "## AI考察", "## 免責")))
+check("latest.txt: AI考察本文は公開HTMLと同一の文面(免責行も削らない)", "本文1行目。" + chr(10) + "免責: 本情報は投資助言ではありません。" in _lt and _rec_lt["ai_commentary"]["text"] in _lt)
+check("latest.txt: 数値は同じrecord由来(現在値・前営業日比・更新時刻)", "6,895円" in _lt and "-1.20%" in _lt and "2026-11-25T23:55:00" in _lt)
+_big = dict(_rec_lt, signal_cards=[{"name": "x" * 50 + str(i), "state": "OK", "value": 0.1} for i in range(200)])
+_ltb = U5.latest_txt(_big, "t")
+check("latest.txt: 10KB超は表・シグナルの節から削りAI考察本文は残す", len(_ltb.encode("utf-8")) <= 10240 and _rec_lt["ai_commentary"]["text"] in _ltb)
+check("latest.txt: AI考察が無ければ『準備中』と明記・失敗(不正rec)は空文字で例外を出さない", "AI考察は準備中です" in U5.latest_txt(dict(_rec_lt, ai_commentary={})) and U5.latest_txt(object()) == "")
+check("latest.txt: 生成失敗でもindex.htmlの公開は止めない(try/exceptで囲み・index生成の後に実行)", "_ui5.latest_txt(rec, generated_at_str)" in _gs and _gs.index("render_html(rec, images, extras, generated_at_str)") < _gs.index("_ui5.latest_txt(rec, generated_at_str)") and "index.html is unaffected" in _gs)
+import publish_static_dashboard as _PUB
+_src = tempfile.mkdtemp(); _dst = tempfile.mkdtemp()
+open(os.path.join(_src, "index.html"), "w").write("a"); open(os.path.join(_src, "latest.txt"), "w", encoding="utf-8").write("x")
+_PUB.sync_docs_dir(_src, _dst)
+check("latest.txt: sync_docs_dirがdocsへコピーする", os.path.exists(os.path.join(_dst, "latest.txt")) and os.path.exists(os.path.join(_dst, "index.html")))
 print("\n結果: OK=%d NG=%d" % (len(OK), len(NG)))
 sys.exit(1 if NG else 0)

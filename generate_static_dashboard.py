@@ -2357,6 +2357,17 @@ def main():
         print(f"[INFO] images generated: {len(images)} -> {IMG_DIR}")
         generated_at_str = dt.datetime.now().isoformat(timespec="seconds")
         render_html(rec, images, extras, generated_at_str)
+        try:  # 2026-11-26(ユーザー承認): 公開ルート直下に latest.txt(同一スナップショット)。失敗してもindex.htmlの公開は止めない
+            import re as _re
+            _lt = _ui5.latest_txt(rec, generated_at_str)
+            if _lt and not _re.search("(?i)moomoo|ocr", _lt):   # 公開用リーク防止(moomoo/OCR由来は載せない)
+                _tmp = os.path.join(OUT_DIR, "latest.txt.tmp")
+                with open(_tmp, "w", encoding="utf-8", newline="") as _f:
+                    _f.write(_lt)
+                os.replace(_tmp, os.path.join(OUT_DIR, "latest.txt"))
+                print(f"[INFO] latest.txt written ({len(_lt.encode('utf-8')):,} bytes)")
+        except Exception as _e:
+            print(f"[WARN] latest.txt failed (index.html is unaffected): {_e!r}")
         elapsed = time.time() - t0
         index_size = os.path.getsize(INDEX_PATH)
         print(f"[DONE] index.html written ({index_size:,} bytes) in {elapsed:.1f}s -> {INDEX_PATH}")
