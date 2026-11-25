@@ -443,6 +443,9 @@ SIG_POST_DEARTH_WARN = -0.5   # 話題枯れ警戒(投稿数z値・旧ハード�
 SIG_POST_DEARTH_FIRE = -1.0   # 話題枯れ発火(投稿数z値・旧ハードコード)
 SIG_POST_SURGE_WARN = 1.0     # 投稿サージ警戒(投稿数z値・旧ハードコード)
 SIG_POST_SURGE_FIRE = 2.0     # 投稿サージ発火(投稿数z値・旧ハードコード)
+# ★2026-11-25追加(ユーザー承認・Gemini助言①②): 閾値は不変。計算の改善のみ(Falseで従来挙動)。
+SIG_POST_Z_SAMETIME = True    # 話題枯れ/投稿サージのカードは「同時刻までの累計」同士で比べる(日中の部分日誤点灯対策)
+SIG_OTHER_EXCLUDE_PEERS = True  # 他銘柄混入率からメモリ/半導体ピア(MU/SNDK/ハイニックス/アドバンテスト/東エレ/SOX等)を除外
 SIG_BEAR_EXTREME = 0.70       # bear率極値
 SIG_BULL_EXTREME = 0.70       # bull率極値
 

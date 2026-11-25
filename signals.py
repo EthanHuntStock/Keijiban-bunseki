@@ -46,6 +46,22 @@ OTHER_NAMES = [
     "メタプラ", "サンバイオ", "三菱重工",
 ]
 _OTHER_NAME_RE = re.compile("|".join(map(re.escape, OTHER_NAMES)), re.I)
+
+# ★2026-11-25追加(ユーザー承認・Gemini助言②): メモリ/半導体ピア銘柄(285Aの値動きと連動する
+# 「外部要因」)の言及は「関心が他銘柄へ逃げた」シグナルではないので、他銘柄混入率の分子から除外する
+# (ホワイトリスト方式)。除外は config.SIG_OTHER_EXCLUDE_PEERS=False で従来挙動へ戻せる。
+# 判定: 投稿から先にピア言及(名称・英字ティッカー・4桁コード)を取り除き、残りに他銘柄が有るかを見る
+# =ピア+無関係銘柄の併記投稿は従来どおり「他銘柄あり」。
+PEER_NAMES = [
+    "マイクロン", "Micron", "ハイニックス", "Hynix", "サムスン", "Samsung",
+    "サンディスク", "SanDisk", "ウエスタンデジタル", "アドバンテスト", "東エレ", "東京エレクトロン",
+    "ディスコ", "レーザーテック", "エヌビディア", "NVIDIA", "フィラデルフィア半導体",
+]
+_PEER_NAME_RE = re.compile("|".join(map(re.escape, PEER_NAMES)), re.I)
+# 英字ティッカーは前後が英字でない時だけ(「MUST」「SOXL以外の語」等の誤爆防止)。SOXLは SOX で包含。
+_PEER_TICKER_RE = re.compile(r"(?<![A-Za-z])(MU|SNDK|WDC|SOXL?|NVDA|SOXS)(?![A-Za-z])")
+# 4桁コード: 東エレ8035・アドバンテスト6857・ディスコ6146・レーザーテック6920・キオクシア周辺の半導体
+PEER_CODES = {8035, 6857, 6146, 6920}
 SELF_TERMS = ["285A", "キオクシア", "kioxia", "KIOXIA", "Kioxia"]
 
 
@@ -225,30 +241,45 @@ def lexicon_counts(texts):
     }
 
 
-def other_symbol_ratio(texts):
+def _has_other_symbol(t, exclude_peers):
+    """1投稿に「285A以外・ピア以外」の銘柄言及があるか(純関数)。"""
+    if exclude_peers:
+        t = _PEER_NAME_RE.sub(" ", t)
+        t = _PEER_TICKER_RE.sub(" ", t)
+    for m in _CODE_RE.finditer(t):
+        code = int(m.group(1))
+        if 1900 <= code <= 2100:
+            continue  # 年号らしき数字
+        if exclude_peers and code in PEER_CODES:
+            continue
+        return True
+    return bool(_OTHER_NAME_RE.search(t))
+
+
+def other_symbol_ratio(texts, exclude_peers=None):
     """
     285A/キオクシア以外の銘柄(4桁コード or 主要銘柄名)への言及を含む投稿比率。
     年号(1900-2100)の4桁は除外。純関数。
+    ★2026-11-25: exclude_peers(既定=config.SIG_OTHER_EXCLUDE_PEERS)がTrueなら、メモリ/半導体ピア
+    (PEER_NAMES/ティッカー/PEER_CODES)の言及は「外部要因連動」として分子から除く。
+    戻り値: ratio=除外後(カード判定に使う)・ratio_incl_peer=従来定義・peer_hits=ピア言及のみの投稿数。
     """
+    if exclude_peers is None:
+        exclude_peers = getattr(config, "SIG_OTHER_EXCLUDE_PEERS", True)
     n = len(texts)
     if n == 0:
-        return {"n": 0, "hits": 0, "ratio": 0.0}
-    hits = 0
+        return {"n": 0, "hits": 0, "ratio": 0.0, "ratio_incl_peer": 0.0, "peer_hits": 0}
+    hits = hits_all = 0
     for t in texts:
         if not t:
             continue
-        found = False
-        for m in _CODE_RE.finditer(t):
-            code = int(m.group(1))
-            if 1900 <= code <= 2100:
-                continue  # 年号らしき数字
-            found = True
-            break
-        if not found and _OTHER_NAME_RE.search(t):
-            found = True
-        if found:
-            hits += 1
-    return {"n": n, "hits": hits, "ratio": round(hits / n, 3)}
+        a = _has_other_symbol(t, False)
+        b = _has_other_symbol(t, True) if exclude_peers else a
+        hits_all += 1 if a else 0
+        hits += 1 if b else 0
+    ratio_all = round(hits_all / n, 3)
+    return {"n": n, "hits": hits, "ratio": round(hits / n, 3) if exclude_peers else ratio_all,
+            "ratio_incl_peer": ratio_all, "peer_hits": max(0, hits_all - hits)}
 
 
 # ============================================================================
@@ -442,7 +473,8 @@ def compute_signals(analyzed_rows, raw_rows=None, price_daily=None,
                       if n >= config.SIG_MIN_DAY_COVERAGE and d <= day)
     calib_days = len(cov_days)
     counts_series = [dcounts[d] for d in cov_days]
-    posts_z = trailing_zscore(counts_series)
+    posts_z = trailing_zscore(counts_series)          # 従来z(ゲージ/snapshot用・日の途中は部分日vs全日で下振れ)
+    posts_z_st = posts_z_sametime(raw, day, cov_days)  # ★カード用: 同時刻までの累計同士で比較
 
     # 日別語彙指数系列(生データ・カバレッジ日のみ)
     # ★2026-09-16修正(コーデ00:27指摘のメモリ調査で自己発見・run_study.pyが
@@ -491,7 +523,8 @@ def compute_signals(analyzed_rows, raw_rows=None, price_daily=None,
 
     cards = build_signal_cards(ratios=ratios, lex=lex_today, votes=votes,
                                named=named, other=other, posts_z=posts_z,
-                               gauges=gauges, pph=pph, in_low_zone=in_low)
+                               gauges=gauges, pph=pph, in_low_zone=in_low,
+                               posts_z_card=posts_z_st)
 
     return {
         "day": day,
@@ -504,6 +537,7 @@ def compute_signals(analyzed_rows, raw_rows=None, price_daily=None,
         "other_symbols": other,
         "posts_per_hour": pph,
         "posts_z": posts_z,
+        "posts_z_sametime": posts_z_st,
         "cap_z": cap_z,
         "eup_z": eup_z,
         "hourly": buckets,
@@ -514,6 +548,50 @@ def compute_signals(analyzed_rows, raw_rows=None, price_daily=None,
         "cards": cards,
         "calib_days": calib_days,
     }
+
+
+def posts_z_sametime(raw, day, cov_days, window=None):
+    """★2026-11-25追加(Gemini助言①): 当日の投稿数を、過去日の「同じ時刻までの累計」と比べたz値。
+    従来の trailing_zscore(日次総数) は日中だと部分日(例10時時点)を過去の全日と比べるため、
+    投稿が活発でも常に負に偏り「話題枯れ」が誤点灯していた(2026-11-25 10時台: 7,595件=
+    同時刻比+0.47なのに全日比-0.94)。
+    比較時刻: 当日の最新投稿の時(h)。h==23なら全日。それ以外は未完了の時を除き 00..h-1 時の累計
+    (h==0は標本なし=None)。過去日は同じ時刻範囲の累計。標本不足(<5日)/分散0はNone。純関数。"""
+    window = window or config.SIG_ZSCORE_WINDOW
+    if not getattr(config, "SIG_POST_Z_SAMETIME", True):
+        return None
+    cnt = {}   # (date, hour) -> n
+    last_h = None
+    for r in raw:
+        ts = r.get("ts") or ""
+        if len(ts) < 13:
+            continue
+        try:
+            h = int(ts[11:13])
+        except ValueError:
+            continue
+        d = ts[:10]
+        cnt[(d, h)] = cnt.get((d, h), 0) + 1
+        if d == day and (last_h is None or h > last_h):
+            last_h = h
+    if last_h is None:
+        return None
+    upto = 23 if last_h >= 23 else last_h - 1
+    if upto < 0:
+        return None
+
+    def cum(d):
+        return sum(cnt.get((d, h), 0) for h in range(upto + 1))
+
+    hist_days = [d for d in cov_days if d < day][-window:]
+    hist = [cum(d) for d in hist_days]
+    if len(hist) < 5:
+        return None
+    mean = sum(hist) / len(hist)
+    sd = math.sqrt(sum((x - mean) ** 2 for x in hist) / len(hist))
+    if sd == 0:
+        return None
+    return round((cum(day) - mean) / sd, 2)
 
 
 def raw_hourly_volume(rows, day=None):
@@ -544,8 +622,11 @@ def _threshold_label(op, fire_th, warn_th, state, suffix=""):
 
 
 def build_signal_cards(*, ratios, lex, votes, named, other, posts_z, gauges,
-                       pph, in_low_zone):
-    """9シグナルのカード(現在値/閾値/状態/1行根拠)。純関数。"""
+                       pph, in_low_zone, posts_z_card=None):
+    """9シグナルのカード(現在値/閾値/状態/1行根拠)。純関数。
+    posts_z_card: 話題枯れ/投稿サージのカード判定に使うz(同時刻累計比較)。Noneなら従来のposts_z。"""
+    _zc = posts_z_card if posts_z_card is not None else posts_z
+    _zlab = "同時刻比" if posts_z_card is not None else "全日比"
     def card(name, value, threshold, state, note):
         return {"name": name, "value": value, "threshold": threshold,
                 "state": state, "note": note}
@@ -590,7 +671,7 @@ def build_signal_cards(*, ratios, lex, votes, named, other, posts_z, gauges,
           else ("警戒" if orr >= config.SIG_OTHER_WARN else "OK"))
     cards.append(card("他銘柄混入率", orr,
                       _threshold_label(">=", config.SIG_OTHER_FIRE, config.SIG_OTHER_WARN, st),
-                      st, f"他銘柄言及{orr:.0%} (関心離散のサイン)"))
+                      st, f"他銘柄言及{orr:.0%} (関心離散のサイン・メモリ/半導体ピアの言及は除外)"))
     # 6 暴落煽り
     ai = lex["aori"]["index"]
     st = ("発火" if ai >= config.SIG_AORI_FIRE
@@ -612,21 +693,21 @@ def build_signal_cards(*, ratios, lex, votes, named, other, posts_z, gauges,
                       f"阿鼻叫喚スコア{cp}"
                       + (" 安値圏" if in_low_zone else " 安値圏外" if in_low_zone is not None else " 価格無し")))
     # 8 話題枯れ (z値が小さいほど発火=不等号の向きが他と逆)
-    if posts_z is None:
+    if _zc is None:
         cards.append(card("話題枯れ", None, f"z<{config.SIG_POST_DEARTH_FIRE}", "OK", "履歴不足(較正中)"))
     else:
-        st = ("発火" if posts_z < config.SIG_POST_DEARTH_FIRE
-              else ("警戒" if posts_z < config.SIG_POST_DEARTH_WARN else "OK"))
-        cards.append(card("話題枯れ", posts_z,
+        st = ("発火" if _zc < config.SIG_POST_DEARTH_FIRE
+              else ("警戒" if _zc < config.SIG_POST_DEARTH_WARN else "OK"))
+        cards.append(card("話題枯れ", _zc,
                           _threshold_label("z<", config.SIG_POST_DEARTH_FIRE, config.SIG_POST_DEARTH_WARN, st),
-                          st, f"投稿数z={posts_z} (負=閑散)"))
+                          st, f"投稿数z={_zc}({_zlab}) (負=閑散)"))
     # 9 投稿サージ
-    if posts_z is None:
+    if _zc is None:
         cards.append(card("投稿サージ", None, f"z>{config.SIG_POST_SURGE_FIRE}", "OK", "履歴不足(較正中)"))
     else:
-        st = ("発火" if posts_z > config.SIG_POST_SURGE_FIRE
-              else ("警戒" if posts_z > config.SIG_POST_SURGE_WARN else "OK"))
-        cards.append(card("投稿サージ", posts_z,
+        st = ("発火" if _zc > config.SIG_POST_SURGE_FIRE
+              else ("警戒" if _zc > config.SIG_POST_SURGE_WARN else "OK"))
+        cards.append(card("投稿サージ", _zc,
                           _threshold_label("z>", config.SIG_POST_SURGE_FIRE, config.SIG_POST_SURGE_WARN, st),
-                          st, f"投稿数z={posts_z} (量→ボラ予測が文献の主結果)"))
+                          st, f"投稿数z={_zc}({_zlab}) (量→ボラ予測が文献の主結果)"))
     return cards

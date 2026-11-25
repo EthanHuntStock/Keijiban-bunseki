@@ -958,6 +958,20 @@ def _screen_flow_today_cached(date_iso):
     return SF.load_today(date_iso)
 
 
+def _selloff_check_panel(S):
+    """★2026-11-25追加(ユーザー承認・Gemini助言⑥): セリクラ成立チェック(3点ランプ)。阿鼻叫喚メーター直下。
+    心理発火だけで『底』と見せない(成立チェック n/3 と表記・断定しない)。研究用・未検証。"""
+    try:
+        import selloff_check as SC
+        d = _screen_flow_today_cached(dt.date.today().isoformat())
+        lp = SC.lamps(d.get("selloff"), (S or {}).get("cards"))
+    except Exception as e:  # noqa: BLE001
+        st.caption(f"セリクラ成立チェック: 取得できず（{e!r}）")
+        return
+    st.markdown("**🚦 " + SC.lamps_text(lp) + "**" + (f"（{lp['asof_label']}）" if lp.get("asof_label") else ""))
+    st.caption(lp["caution"] + " 板・約定ティックは遅延あり。VWAP回復は3点に数えない別表示。売買の推奨ではありません。")
+
+
 def _screen_flow_panel():
     """★2026-10-16追加: 層別フロー・板の増減・価格まわり・見立ての機械採点(ローカル専用・公開側へは出さない)。
     層別フローの出所=moomoo証券の画面を読み取った参考情報(遅延あり)。売買推奨ではない。"""
@@ -1011,6 +1025,7 @@ def tab_cockpit(S, latest_export, analyzed, raw, ctrl):
     with top[2]:
         regime_band(latest_export)
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    _selloff_check_panel(S)
 
     # 外部(米ピア)・需給(信用残)・鮮度(収集)のリボン(全read-only・記述用)。
     # コンパクト密度では補助情報として折り畳む(KPI本体/シグナルカードは常に表示のまま)。
@@ -1944,6 +1959,26 @@ def _comprehensive_stats_panel(res_dir):
     _render_comprehensive_stats_table(rows)
 
 
+def _stats_explain_render(rows):
+    """★2026-11-25追加(ユーザー承認・『統計評価が難解』): 冒頭の平易な説明・読み方凡例・指標ごとの結論1行。
+    数値(r/差/t/n)は変更せず表示と説明だけ。詳細表は呼び出し側でexpanderに入れる(情報は削らない)。"""
+    import stats_explain as SE
+    NL = chr(10)
+    st.markdown("**このタブで分かること**" + NL + NL + NL.join("- " + x for x in SE.INTRO))
+    vs = SE.verdicts(rows)
+    tone_col = {"green": COL["green"], "yellow": COL["yellow"], "muted": COL["muted"]}
+    st.markdown("**指標ごとの結論**（" + SE.summary_line(vs) + "）")
+    for v in vs:
+        st.markdown(
+            f"<div style='border-left:4px solid {tone_col[v['tone']]};padding:4px 10px;margin:4px 0'>"
+            f"<b>{v['metric']}</b>　{v['line']}</div>", unsafe_allow_html=True)
+    with st.expander("📖 用語の意味と目安の読み方（t値・相関係数・p値・サンプル数）", expanded=False):
+        st.markdown("| 用語 | 意味 | 目安の読み方 |" + NL + "|---|---|---|" + NL
+                    + NL.join(f"| {a} | {b} | {c} |" for a, b, c in SE.GLOSSARY))
+        st.caption("結論の判定基準: ✅=件数30以上・rとグループ差の向きが一致・rの絶対値0.3以上・tの絶対値3以上／➖=全期間でrの絶対値0.1未満かつtの絶対値2未満／🟡=それ以外。")
+    st.warning("ご注意: " + " ".join(SE.NOTES), icon="⚠️")
+
+
 def _render_comprehensive_stats_table(rows):
     """掲示板センチメント5指標(売り煽り度/買い煽り度/悲鳴・投げ売り度/強気比率/投稿数)
     ×3ホライズン(翌1/3/5日)の相関r・中央値分割の高群-低群差(pt)・t値マトリクスを
@@ -1952,54 +1987,56 @@ def _render_comprehensive_stats_table(rows):
     if not rows:
         return
     st.markdown("##### 📊 掲示板センチメント×株価 統計評価 (研究)")
-    st.caption("売り煽り度/買い煽り度/悲鳴・投げ売り度/強気比率/投稿数(出来高) の各指標と、"
-               "翌1日/3日/5日リターンの相関係数r・中央値分割(高群-低群)の差(pt)・t値。"
-               "**探索的分析であり確定した予測ではありません**。指標×ホライズンの多重比較"
-               "(計15セル)であり、|t|が大きいセルも偶然の可能性を排除できません。"
-               "シグナル/売買判断には使いません。")
-    metrics, horizons = [], []
-    for r in rows:
-        if r["metric_name"] not in metrics:
-            metrics.append(r["metric_name"])
-        if r["horizon_name"] not in horizons:
-            horizons.append(r["horizon_name"])
-    by_key = {(r["metric_name"], r["horizon_name"]): r for r in rows}
-    thead = "<th style='text-align:left'>指標</th>" + "".join(
-        f"<th style='text-align:center'>{h}</th>" for h in horizons)
-    body_rows = []
-    for m in metrics:
-        cells = []
-        for h in horizons:
-            c = by_key.get((m, h))
-            if not c or c.get("r") is None:
-                cells.append("<td style='text-align:center'>—</td>")
-                continue
-            t = c.get("t")
-            r = c["r"]
-            # ★2026-09-07追加(ユーザー指示「ポジティブ:緑、ネガティブ:赤で色付け」)。
-            # r(相関係数)の符号で色を決める(高群ほど翌日リターンが高い=r>0=緑・
-            # 低い=r<0=赤。r/diff_pt/tは同じ方向で動く設計のためrで代表させる)。
-            # |t|>=2は従来どおり太字で強調するが、色そのものは常に符号で塗る
-            # (株価チャートの「上昇=赤/下落=青」という別の配色規則とは別軸・
-            # 混同しないよう緑/赤を使う)。
-            tone = COL["green"] if r > 0 else (COL["red"] if r < 0 else COL["muted"])
-            strong = t is not None and abs(t) >= 2
-            style = f"font-weight:{'700' if strong else '500'};color:{tone}"
-            diff_txt = f"{c['diff_pt']:+.2f}pt" if c.get("diff_pt") is not None else "—"
-            t_txt = f"t={t:.2f}" if t is not None else "t=—"
-            cells.append(f"<td style='text-align:center;{style}'>r={r:.2f}<br>"
-                        f"{diff_txt} / {t_txt}</td>")
-        body_rows.append(f"<tr><td>{m}</td>" + "".join(cells) + "</tr>")
-    table_html = (
-        "<table style='width:100%;border-collapse:collapse;font-size:.88em'>"
-        f"<thead><tr>{thead}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>")
-    st.markdown(table_html, unsafe_allow_html=True)
-    period = rows[0].get("data_period", "—")
-    calc = rows[0].get("calc_date", "—")
-    st.caption(f"データ期間: {period} / 算出日: {calc}。色は相関係数rの符号"
-               "(高群ほど翌日リターンが高い=緑・低い=赤)、|t|≥2程度を目安に太字で"
-               "強調していますが、統計的に確定した優位性ではありません。"
-               "正本の計算ロジック: research/comprehensive_stats.py。")
+    _stats_explain_render(rows)
+    with st.expander("📋 詳細表（相関r・高群−低群の差・t値）を開く", expanded=False):
+        st.caption("売り煽り度/買い煽り度/悲鳴・投げ売り度/強気比率/投稿数(出来高) の各指標と、"
+                   "翌1日/3日/5日リターンの相関係数r・中央値分割(高群-低群)の差(pt)・t値。"
+                   "**探索的分析であり確定した予測ではありません**。指標×ホライズンの多重比較"
+                   "(計15セル)であり、|t|が大きいセルも偶然の可能性を排除できません。"
+                   "シグナル/売買判断には使いません。")
+        metrics, horizons = [], []
+        for r in rows:
+            if r["metric_name"] not in metrics:
+                metrics.append(r["metric_name"])
+            if r["horizon_name"] not in horizons:
+                horizons.append(r["horizon_name"])
+        by_key = {(r["metric_name"], r["horizon_name"]): r for r in rows}
+        thead = "<th style='text-align:left'>指標</th>" + "".join(
+            f"<th style='text-align:center'>{h}</th>" for h in horizons)
+        body_rows = []
+        for m in metrics:
+            cells = []
+            for h in horizons:
+                c = by_key.get((m, h))
+                if not c or c.get("r") is None:
+                    cells.append("<td style='text-align:center'>—</td>")
+                    continue
+                t = c.get("t")
+                r = c["r"]
+                # ★2026-09-07追加(ユーザー指示「ポジティブ:緑、ネガティブ:赤で色付け」)。
+                # r(相関係数)の符号で色を決める(高群ほど翌日リターンが高い=r>0=緑・
+                # 低い=r<0=赤。r/diff_pt/tは同じ方向で動く設計のためrで代表させる)。
+                # |t|>=2は従来どおり太字で強調するが、色そのものは常に符号で塗る
+                # (株価チャートの「上昇=赤/下落=青」という別の配色規則とは別軸・
+                # 混同しないよう緑/赤を使う)。
+                tone = COL["green"] if r > 0 else (COL["red"] if r < 0 else COL["muted"])
+                strong = t is not None and abs(t) >= 2
+                style = f"font-weight:{'700' if strong else '500'};color:{tone}"
+                diff_txt = f"{c['diff_pt']:+.2f}pt" if c.get("diff_pt") is not None else "—"
+                t_txt = f"t={t:.2f}" if t is not None else "t=—"
+                cells.append(f"<td style='text-align:center;{style}'>r={r:.2f}<br>"
+                            f"{diff_txt} / {t_txt}</td>")
+            body_rows.append(f"<tr><td>{m}</td>" + "".join(cells) + "</tr>")
+        table_html = (
+            "<table style='width:100%;border-collapse:collapse;font-size:.88em'>"
+            f"<thead><tr>{thead}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>")
+        st.markdown(table_html, unsafe_allow_html=True)
+        period = rows[0].get("data_period", "—")
+        calc = rows[0].get("calc_date", "—")
+        st.caption(f"データ期間: {period} / 算出日: {calc}。色は相関係数rの符号"
+                   "(高群ほど翌日リターンが高い=緑・低い=赤)、|t|≥2程度を目安に太字で"
+                   "強調していますが、統計的に確定した優位性ではありません。"
+                   "正本の計算ロジック: research/comprehensive_stats.py。")
 
 
 def _fmt_rho(v):

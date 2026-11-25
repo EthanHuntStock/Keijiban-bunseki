@@ -1640,11 +1640,15 @@ def test_sig_zscore():
 
 
 def test_sig_other_symbols():
-    r = SG.other_symbol_ratio(["7203も買った", "2026年は上がる", "サムスンが好調",
-                                "キオクシア最高", "72400円で売った"])
+    # ★2026-11-25: サムスンはメモリ/半導体ピア(外部要因連動)として既定で他銘柄混入から除外(ホワイトリスト)。
+    #   従来定義(ピア込み)は exclude_peers=False / ratio_incl_peer で確認する。
+    txt = ["7203も買った", "2026年は上がる", "サムスンが好調", "キオクシア最高", "72400円で売った"]
+    r = SG.other_symbol_ratio(txt, exclude_peers=False)
     # 7203(コード) と サムスン の2件のみ。2026=年号除外。72400=5桁で非該当。
     check("other: hits=2", r["hits"] == 2)
     check("other: ratio", abs(r["ratio"] - 0.4) < 1e-9)
+    r2 = SG.other_symbol_ratio(txt)
+    check("other: ピア除外(既定)でサムスンは数えない・従来値は保持", r2["hits"] == 1 and r2["peer_hits"] == 1 and abs(r2["ratio_incl_peer"] - 0.4) < 1e-9)
     check("other: empty safe", SG.other_symbol_ratio([])["ratio"] == 0.0)
 
 

@@ -121,7 +121,10 @@ def _dir_word(x):
 
 
 def _read_one(label, tr):
-    """1市場の動きの性質を1文で。窓が足りなければその旨。戻り値 (文, 短い窓の符号 -1/0/1)"""
+    """1市場の動きの性質を1文で。窓が足りなければその旨。戻り値 (文, 短い窓の符号 -1/0/1)
+    2026-11-24 修正(Geminiの指摘・実測で再現): 短い窓がほぼ横ばい(±0.1%未満)で長い窓が逆向きのとき、
+    短い窓の符号(+0.01%=上昇)で『上昇基調』と書いてしまう誤りがあった。方向は長い窓(1時間/3時間)を基準にし、
+    短い窓との組み合わせを4つ(上昇継続/上昇基調の中の押し/下落基調の中の切り返し/下落継続)＋『短い窓は横ばい』に分ける。"""
     c = (tr or {}).get("chg") or {}
     s_k = next((k for k in ("5m", "15m") if c.get(k) is not None), None)
     l_k = next((k for k in ("60m", "180m") if c.get(k) is not None), None)
@@ -133,12 +136,26 @@ def _read_one(label, tr):
     lab_s, lab_l = f"{ms}分", ("1時間" if ml == 60 else "3時間")
     if abs(s) < _READ_FLAT_S and abs(l) < _READ_FLAT_L:
         desc, sign = f"ほぼ横ばい({lab_s} {_pp(s)}%・{lab_l} {_pp(l)}%)", 0
-    elif s * l < 0 and abs(s) >= _READ_FLAT_S:
-        desc = (f"{lab_l}では{_dir_word(l)}({_pp(l)}%)だが直近{lab_s}は逆向き({_pp(s)}%)＝流れが反転しかけている"
-                f"(短い窓だけの動きで、続くかは未確認)")
+    elif abs(s) < _READ_FLAT_S:
+        # 短い窓はほぼ横ばい・長い窓に動きがある: 方向は長い窓の符号で書く
+        wl = _dir_word(l)
+        desc, sign = (f"{lab_l}では{wl}({_pp(l)}%)だが直近{lab_s}はほぼ横ばい({_pp(s)}%)＝{wl}の勢いは止まっている"
+                      f"(短い窓だけの動きで、続くかは未確認)"), 0
+    elif abs(l) < _READ_FLAT_L:
+        # 長い窓が実質横ばい(例: 1時間+0.06%)のときは『上昇/下落基調』と書かない(2026-11-25 追補)
+        wv = "上げている" if s > 0 else "下げている"
+        desc, sign = (f"{lab_l}ではほぼ横ばい({_pp(l)}%)で、直近{lab_s}は{wv}({_pp(s)}%)"
+                      f"(短い窓だけの動きで、続くかは未確認)"), (1 if s > 0 else -1)
+    elif s * l < 0:
+        if l > 0:
+            desc = (f"{lab_l}では上昇({_pp(l)}%)だが直近{lab_s}は下げている({_pp(s)}%)＝上昇基調の中の押し"
+                    f"(短い窓だけの動きで、続くかは未確認)")
+        else:
+            desc = (f"{lab_l}では下落({_pp(l)}%)だが直近{lab_s}は戻している({_pp(s)}%)＝下落基調の中の切り返し"
+                    f"(短い窓だけの動きで、続くかは未確認)")
         sign = 1 if s > 0 else -1
     else:
-        sign = 1 if (s > 0 or (s == 0 and l > 0)) else -1
+        sign = 1 if s > 0 else -1
         ps, pl = abs(s) / ms, abs(l) / ml
         w = _dir_word(sign)
         if pl > 0 and ps >= 1.5 * pl:
@@ -147,8 +164,6 @@ def _read_one(label, tr):
             desc = f"{w}基調だが勢いは鈍化({lab_s} {_pp(s)}%は{lab_l} {_pp(l)}%のペースより遅い)"
         else:
             desc = f"{w}が同程度のペースで継続({lab_s} {_pp(s)}%・{lab_l} {_pp(l)}%)"
-        if abs(s) < _READ_FLAT_S:
-            sign = 0
     hi, lo, last = tr.get("hi"), tr.get("lo"), tr.get("last_price")
     if hi is not None and lo is not None and last is not None and hi > lo:
         pos = (last - lo) / (hi - lo)
@@ -159,7 +174,20 @@ def _read_one(label, tr):
     return (f"{label}: {desc}", sign)
 
 
-def reading(series, levels=None):
+def _now():
+    return dt.datetime.now()
+
+
+def in_tse_session(now=None):
+    """★2026-11-25追加(Gemini助言⑤): 東証立会時間(平日09:00〜15:30・JST想定のPCローカル時刻)か。祝日は判定しない。"""
+    n = now or _now()
+    if n.weekday() >= 5:
+        return False
+    hm = n.hour * 60 + n.minute
+    return 9 * 60 <= hm < 15 * 60 + 30
+
+
+def reading(series, levels=None, now=None):
     """series={ラベル: trend_stats結果}・levels={ラベル: 東証最終値比%}(PTS/ADR/DEXなど)から、
     『変化の読み』の文リストを返す純関数。断定的な予測はしない(性質の記述と、比較の材料の提示に留める)。"""
     out, signs, tss = [], {}, {}
@@ -188,7 +216,20 @@ def reading(series, levels=None):
         if stale:
             out.append(f"{'・'.join(stale)}は最終値の時刻が他と大きく離れているため、同時間帯の比較には含めない")
     lv = {k: v for k, v in (levels or {}).items() if v is not None}
-    if lv:
+    if lv and in_tse_session(now):
+        # ★2026-11-25(Gemini助言⑤): 場中は「次の寄り付き」の話ではない。東証ザラ場の現値とDEXの乖離(先行指標)を述べる。
+        tse, dex = (series or {}).get("東証"), (series or {}).get("DEX")
+        if (isinstance(tse, dict) and isinstance(dex, dict) and tse.get("last_price") and dex.get("last_price")):
+            gap = (dex["last_price"] - tse["last_price"]) / tse["last_price"] * 100.0
+            tdiff = ""
+            if tse.get("last_ts") and dex.get("last_ts"):
+                tdiff = f"・最終値の時刻差 {abs(tse['last_ts'] - dex['last_ts']) / 60:.0f}分"
+            out.append(f"東証ザラ場現値とDEXの乖離: DEX {dex['last_price']:,.0f}円は東証現値 {tse['last_price']:,.0f}円より"
+                       f"{gap:+.2f}%(DEXは東証とは別の取引で、東証に先行して動くことがある参考指標・予告ではない{tdiff})")
+        else:
+            out.append("場中(東証の立会時間)のため、PTS・米国ADRの『東証最終値比』は前営業日の時間外の水準であり、"
+                       "現在の水準感ではない(東証現値とDEXの乖離を出すには両方の直近系列が必要で、今回は取得できていない)")
+    elif lv:
         parts = "・".join(f"{k} {v:+.2f}%" for k, v in lv.items())
         neg, pos_ = [v for v in lv.values() if v < 0], [v for v in lv.values() if v > 0]
         if neg and not pos_:

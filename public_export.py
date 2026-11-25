@@ -2336,7 +2336,7 @@ def _screen_extras_if_enabled():
     try:
         import screen_flow_summary as SF
         d = SF.load_today_public(dt.datetime.now().strftime("%Y-%m-%d"))  # moomoo画面CSVは開かない(公開専用ローダ)
-        return SF.public_safe_extras(d.get("board"), d.get("price"), d.get("grades"))
+        return SF.public_safe_extras(d.get("board"), d.get("price"), d.get("grades"), d.get("selloff"))
     except Exception as e:  # noqa: BLE001
         _log(f"WARN screen_extras failed (fail-soft, omitted): {e!r}")
         return None

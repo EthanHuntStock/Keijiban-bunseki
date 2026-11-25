@@ -1448,6 +1448,15 @@ def main():
             # public_export側でも同じキー名に揃えてあるためそのまま渡せる。
             regime_band(regime)
             _extended_hours_card(rec)
+        try:  # ★2026-11-25追加: セリクラ成立チェック(3点ランプ)。rec['screen_extras']['selloff'] がある時だけ。
+            import selloff_check as _sc
+            _sel = (rec.get("screen_extras") or {}).get("selloff")
+            if _sel:
+                _lp = _sc.lamps(_sel, rec.get("signal_cards"))
+                st.markdown("**🚦 " + _sc.lamps_text(_lp) + "**" + (f"（{_lp['asof_label']}）" if _lp.get("asof_label") else ""))
+                st.caption(_lp["caution"] + " 板・約定ティックは遅延あり。VWAP回復は3点に数えない別表示。売買の推奨ではありません。")
+        except Exception:
+            pass
 
         st.markdown("#### 🎯 シグナル発火状況（9指標）")
         # ★2026-08-19追加(ユーザー依頼): 「発火」が何を意味するか一目でわかるよう説明を追加。
