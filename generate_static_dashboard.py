@@ -56,6 +56,7 @@ try:
 except Exception:
     _p2 = None
 import public_export
+from switch_bar import CSS as _SWITCH_BAR_CSS, switch_bar_html as _switch_bar_html  # 2026-11-25 ④
 
 try:
     import plotly.graph_objects as go
@@ -764,12 +765,27 @@ def apply_live_overrides(rec, today=None):
     except Exception as e:
         print(f"[WARN] trend merge failed: {e!r}")
 
+    original_screen_extras = rec.get("screen_extras")
+    try:  # ★2026-11-25(ユーザー承認): 昼休み非表示・日付跨ぎの前営業日確定表示を毎分反映するため、板・tick由来の screen_extras を直接再計算
+        #   (latest.jsonは10分毎更新で日付跨ぎ/昼休みに追従できない)。機能が上流で有効(latest.jsonにscreen_extrasがある/環境変数ON)の時だけ。moomoo画面CSVは開かない。
+        if original_screen_extras is not None or os.environ.get("ONIYA_PUBLIC_SCREEN_EXTRAS", "").strip() == "1":
+            import screen_flow_summary as _sf2
+            _d = _sf2.load_today_public((dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                                         + dt.timedelta(hours=9)).strftime("%Y-%m-%d"))
+            _ex = _sf2.public_safe_extras(_d.get("board"), _d.get("price"), _d.get("grades"), _d.get("selloff"))
+            if _ex:
+                rec["screen_extras"] = _ex
+                print(f"[INFO] screen_extras refreshed live (selloff prev_date={(_ex.get('selloff') or {}).get('prev_date')})")
+    except Exception as e:
+        print(f"[WARN] screen_extras live refresh failed (keeping latest.json value): {e!r}")
+
     errs = public_export.validate_no_leak(rec)
     if errs:
         print(f"[WARN] live override introduced leak-risk keys, reverting: {errs}")
         rec["price"] = original_price
         rec["intraday_today"] = original_intraday
         rec["extended_hours"] = original_extended_hours
+        rec["screen_extras"] = original_screen_extras
     return rec
 
 
@@ -1788,6 +1804,7 @@ def render_html(rec, images, extras, generated_at_str):
                      if _day_high is not None and _day_low is not None else "")
 
     css = f"""
+    {_SWITCH_BAR_CSS}
     :root {{
       --bg:{COL['bg']}; --panel:{COL['panel']}; --border:{COL['border']}; --muted:{COL['muted']};
       --text:{COL['text']}; --orange:{COL['orange']}; --red:{COL['red']}; --green:{COL['green']};
@@ -1956,6 +1973,7 @@ def render_html(rec, images, extras, generated_at_str):
         <span class="sc-btn">ワールドモニターを開く ▶</span>
       </a>
       <h1>📊 掲示板投稿の詳細分析による投資情報（静的版）</h1>
+      {_switch_bar_html()}
       {guide}
       <div class="panel header">
         <span class="symbol">{symbol}</span>

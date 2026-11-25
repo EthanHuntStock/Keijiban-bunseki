@@ -37,6 +37,35 @@ def trend_stats(points, windows=WINDOWS_MIN):
             "hi": max(recent), "lo": min(recent), "n": len(recent)}
 
 
+STALE_MIN = 120   # ★2026-11-25(ユーザー承認): 最終約定から120分超=立会時間外として直近変化・変化の読みから除外
+
+
+def _md(last_time):
+    """'11/05 06:00' -> '11/5 06:00'"""
+    try:
+        d, t = str(last_time).split(" ")
+        m, dd = d.split("/")
+        return f"{int(m)}/{int(dd)} {t}"
+    except Exception:
+        return str(last_time)
+
+
+def split_stale(series, now_ts=None, limit_min=STALE_MIN):
+    """series={ラベル: trend_stats結果} -> (新鮮な系列dict, 立会時間外の注記リスト)。
+    最終約定(last_ts)が now_ts(epoch秒・既定=現在)から limit_min分を超えて古い市場は系列から外し、
+    『<ラベル> 最終 M/D HH:MM・立会時間外』の注記にする。last_tsが無い系列は新鮮扱い(従来どおり)。純関数。"""
+    import time as _time
+    now_ts = _time.time() if now_ts is None else now_ts
+    fresh, notes = {}, []
+    for label, tr in (series or {}).items():
+        lt = tr.get("last_ts") if isinstance(tr, dict) else None
+        if lt is not None and now_ts - float(lt) > limit_min * 60:
+            notes.append(f"{label} 最終 {_md(tr.get('last_time'))}・立会時間外")
+        else:
+            fresh[label] = tr
+    return fresh, notes
+
+
 def rows_trends(rows):
     """ADR/PTSフィード行(ts,tse,pts,adr_yen)から東証・PTS・ADRそれぞれの直近変化を返す。"""
     out = {}
@@ -187,7 +216,7 @@ def in_tse_session(now=None):
     return 9 * 60 <= hm < 15 * 60 + 30
 
 
-def reading(series, levels=None, now=None):
+def reading(series, levels=None, now=None, prices=None, prev_low=None):
     """series={ラベル: trend_stats結果}・levels={ラベル: 東証最終値比%}(PTS/ADR/DEXなど)から、
     『変化の読み』の文リストを返す純関数。断定的な予測はしない(性質の記述と、比較の材料の提示に留める)。"""
     out, signs, tss = [], {}, {}
@@ -240,5 +269,16 @@ def reading(series, levels=None, now=None):
             mean = "東証最終値に対して上下が分かれており、時間外の水準感は市場により異なる"
         spread = (max(lv.values()) - min(lv.values())) if len(lv) >= 2 else 0
         extra = f"／市場間の水準差 {spread:.1f}pt(取引量・時点が異なるため単純比較はしない)" if spread >= 3 else ""
-        out.append(f"東証最終値比の水準: {parts}→{mean}{extra}")
+        if lv:
+            out.append(f"東証最終値比の水準: {parts}→{mean}{extra}")
+    if not in_tse_session(now):
+        # ★2026-11-25(ユーザー承認): 夜間のPTS/DEXの価格が前営業日のザラ場安値を下回っていたら注記(下回っていなければ何も足さない)
+        below = [k for k in ("PTS", "DEX") if (prices or {}).get(k) and prev_low and prices[k] < prev_low]
+        if below:
+            pr = "・".join(f"{k} {prices[k]:,.0f}円" for k in below)
+            note = f"{pr}は前営業日のザラ場安値 {prev_low:,.0f}円を下回る＝前日安値割れ(下値模索の目安・予告ではない)"
+            if out and out[-1].startswith("東証最終値比の水準"):
+                out[-1] += "／" + note
+            else:
+                out.append("水準の注記: " + note)
     return out

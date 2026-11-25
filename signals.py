@@ -56,12 +56,13 @@ PEER_NAMES = [
     "マイクロン", "Micron", "ハイニックス", "Hynix", "サムスン", "Samsung",
     "サンディスク", "SanDisk", "ウエスタンデジタル", "アドバンテスト", "東エレ", "東京エレクトロン",
     "ディスコ", "レーザーテック", "エヌビディア", "NVIDIA", "フィラデルフィア半導体",
+    "アドテスト", "東エレク",   # ★2026-11-25追補(ユーザー承認): 東エレクは東エレで包含済みだが明示
 ]
 _PEER_NAME_RE = re.compile("|".join(map(re.escape, PEER_NAMES)), re.I)
 # 英字ティッカーは前後が英字でない時だけ(「MUST」「SOXL以外の語」等の誤爆防止)。SOXLは SOX で包含。
-_PEER_TICKER_RE = re.compile(r"(?<![A-Za-z])(MU|SNDK|WDC|SOXL?|NVDA|SOXS)(?![A-Za-z])")
+_PEER_TICKER_RE = re.compile(r"(?<![A-Za-z])(MU|SNDK|WDC|SOXL?|NVDA|SOXS|SCREEN|KOKUSAI|NAND|DRAM|HBM)(?![A-Za-z])")
 # 4桁コード: 東エレ8035・アドバンテスト6857・ディスコ6146・レーザーテック6920・キオクシア周辺の半導体
-PEER_CODES = {8035, 6857, 6146, 6920}
+PEER_CODES = {8035, 6857, 6146, 6920, 7735, 6525, 4062, 5803, 9984, 7011}   # ★2026-11-25追補: +SCREEN7735/KOKUSAI6525/イビデン4062/フジクラ5803/SBG9984/三菱重工7011
 SELF_TERMS = ["285A", "キオクシア", "kioxia", "KIOXIA", "Kioxia"]
 
 

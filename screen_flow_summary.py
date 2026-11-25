@@ -114,6 +114,19 @@ def _dir(x):
     return "増加" if x > 0 else "減少" if x < 0 else "横ばい"
 
 
+def _is_lunch(t):
+    """平日の昼休み(11:30:00以上12:30:00未満)か。祝日は未対応(平日判定のみ)。"""
+    return t.weekday() < 5 and "11:30:00" <= t.strftime("%H:%M:%S") < "12:30:00"
+
+
+def _asof_lunch(asof):
+    """asof(ISO文字列)が昼休みか。旧レコード(lunchキー無し)の救済用。"""
+    try:
+        return _is_lunch(dt.datetime.fromisoformat(str(asof)[:19]))
+    except Exception:
+        return False
+
+
 def board_flow(pts, windows=(30, 60, 180, 300)):
     if not pts:
         return None
@@ -123,7 +136,9 @@ def board_flow(pts, windows=(30, 60, 180, 300)):
            "ratio": round(cur["B"] / cur["S"], 2) if cur["S"] else None,
            "diff_man": round((cur["B"] - cur["S"]) / 1e4, 1), "windows": [],
            # ★2026-11-25(モニタ連絡): 大引け(15:30)後は板が動かず全窓が同値になる=窓別の増減に意味が無い→表示側で窓比較を出さない
-           "closed": cur["t"].strftime("%H:%M:%S") >= "15:30:00"}
+           "closed": cur["t"].strftime("%H:%M:%S") >= "15:30:00",
+           # ★2026-11-25(ユーザー承認): 昼休み(11:30-12:30・平日)も板が静止し全窓が同値になる→窓別を出さない
+           "lunch": _is_lunch(cur["t"])}
     for w in windows:
         tgt = cur["t"] - dt.timedelta(seconds=w)
         c = [x for x in pts if x["t"] <= tgt]
@@ -279,7 +294,7 @@ def public_safe_extras(board, price, grades, selloff=None):
     """公開側に出せる範囲(moomoo由来を含まない)。キー名はvalidate_no_leakの疑いキー(id/text等)を避ける。"""
     ex = {}
     if board:
-        ex["board_flow"] = {k: board[k] for k in ("asof", "asof_label", "buy_total_man", "sell_total_man", "ratio", "diff_man", "windows", "closed") if k in board}
+        ex["board_flow"] = {k: board[k] for k in ("asof", "asof_label", "buy_total_man", "sell_total_man", "ratio", "diff_man", "windows", "closed", "lunch") if k in board}
         ex["board_flow"]["source"] = "板情報(遅延あり)"
     if price:
         ex["price_flow"] = dict(price, source="約定ティック(遅延あり)・売買代金は試算(VWAP×出来高)")
@@ -320,11 +335,15 @@ def _asof_closed(asof):
 def lines_board(bf):
     if not bf:
         return ["板の増減: データなし"]
-    bf = dict(bf, closed=bool(bf.get("closed")) or _asof_closed(bf.get("asof")))
+    bf = dict(bf, closed=bool(bf.get("closed")) or _asof_closed(bf.get("asof")),
+              lunch=bool(bf.get("lunch")) or _asof_lunch(bf.get("asof")))
     L = [f"{bf['asof_label']}｜買い総量 {bf['buy_total_man']:,.1f}万株／売り総量 {bf['sell_total_man']:,.1f}万株"
          f"／比 {bf['ratio']}／差 {bf['diff_man']:+,.1f}万株"]
     if bf.get("closed"):
         L.append("大引け(15:30)後は板が更新されないため、30秒〜5分の窓別の増減は意味がなく表示しません(上は大引け時点の板)。")
+        return L
+    if bf.get("lunch"):
+        L.append("昼休み(11:30-12:30)は板が静止するため窓別の増減は意味がなく表示しません。")
         return L
     for w in bf["windows"]:
         s = f"{w['sec']}秒" if w["sec"] < 60 else f"{w['sec'] // 60}分"
@@ -362,11 +381,48 @@ def lines_score(g):
             "○=高安が主レンジ内／△=片側のみ逸脱／×=主シナリオ外れ。売買の推奨ではありません。"]
 
 
-def _selloff(tk, bd):
+def tick_path(date):
+    return os.path.join(BOARD_BASE, "285A_キオクシア", "記録データ", f"ticks_285A_{date}.csv")
+
+
+def has_session_ticks(tk):
+    """09:00以降の有効tick(price>0)が1件以上あるか=当日の場が始まっているか。"""
+    return any(r["price"] > 0 and r["t"].strftime("%H:%M:%S") >= "09:00:00" for r in tk)
+
+
+def find_prev_session(date, max_back=10, tick_fn=None):
+    """★2026-11-25(ユーザー承認): date(YYYY-MM-DD)より前で、09:00以降の有効tickを持つ最新日のtick CSVを最大max_back日遡って探す。
+    戻り値=(YYYY-MM-DD, ticks) / 無ければ None。tick_fnはテスト用の差し替え(path->ticks)。"""
+    fn = tick_fn or read_ticks
+    d0 = dt.date.fromisoformat(date)
+    for i in range(1, max_back + 1):
+        d = (d0 - dt.timedelta(days=i)).isoformat()
+        tk = fn(tick_path(d))
+        if tk and has_session_ticks(tk):
+            return d, tk
+    return None
+
+
+def latest_session_low(date, tick_fn=None):
+    """★2026-11-25(ユーザー承認③): 直近の立会(当日に09:00以降のtickがあれば当日・無ければ前営業日)のザラ場最安値。
+    戻り値=(YYYY-MM-DD, 最安値) / 無ければ None。夜間・寄り前の『前日安値割れ』判定用(場中は呼び手が使わない)。"""
+    fn = tick_fn or read_ticks
+    tk = fn(tick_path(date))
+    d = date
+    if not has_session_ticks(tk):
+        pv = find_prev_session(date, tick_fn=tick_fn)
+        if not pv:
+            return None
+        d, tk = pv
+    z = [r["price"] for r in tk if r["price"] > 0 and "09:00:00" <= r["t"].strftime("%H:%M:%S") <= "15:30:59"]
+    return (d, min(z)) if z else None
+
+
+def _selloff(tk, bd, prev_date=None):
     """★2026-11-25: セリクラ成立チェックの板・tick由来部分(selloff_check.compute)。失敗/データ無しはNone(fail-soft)。"""
     try:
         import selloff_check as SC
-        return SC.compute(tk, bd) if tk else None
+        return SC.compute(tk, bd, prev_date=prev_date) if tk else None
     except Exception:
         return None
 
@@ -383,11 +439,17 @@ def load_today(date, now=None):
 
 def load_today_public(date):
     """公開側専用: moomoo画面CSV(data/moomoo_screen)は一切開かない。板CSV・tick CSV・見立てJSONだけ読む(kabu由来＋自前の見立て記録)。"""
-    tk = read_ticks(os.path.join(BOARD_BASE, "285A_キオクシア", "記録データ", f"ticks_285A_{date}.csv"))
-    bd = read_board(os.path.join(BOARD_BASE, "_board", f"board_285A_{date}.csv"))
-    reg = load_registry(date)
+    tk = read_ticks(tick_path(date))
+    prev = None
+    if not has_session_ticks(tk):   # 日付が変わった後〜翌寄り前・休日: 前営業日のCSVを読む(確定表示)
+        pv = find_prev_session(date)
+        if pv:
+            prev, tk = pv
+    use = prev or date
+    bd = read_board(os.path.join(BOARD_BASE, "_board", f"board_285A_{use}.csv"))
+    reg = load_registry(use)
     return {"board": board_flow(bd), "price": price_flow(tk), "grades": grade_all(reg, tk) if reg else None,
-            "selloff": _selloff(tk, bd)}
+            "selloff": _selloff(tk, bd, prev)}
 
 
 def public_extras_lines(ex):

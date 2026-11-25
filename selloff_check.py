@@ -108,10 +108,16 @@ def vwap_state(ticks, as_of=None):
 CLOSE_HHMMSS = "15:30:00"
 
 
-def compute(ticks, board_pts, as_of=None):
+def compute(ticks, board_pts, as_of=None, prev_date=None):
     """板・tick由来の2点(b,c)とVWAPをまとめる(公開レコード用・moomoo非依存)。(a)は表示側でカードから足す。
     ★2026-11-25(モニタ連絡): 最新tickが大引け(15:30)以降なら『当日の確定結果』モード(final=True)。
     判定は大引け(15:30:59)までのデータで行い、夜間に動かない板を進行形として評価しない。"""
+    if prev_date and ticks:
+        # ★2026-11-25(ユーザー承認): 日付が変わった後〜翌寄り前は前営業日のtickで確定表示(判定は15:30:59まで・既存どおり)
+        last_t = ticks[-1]["t"]
+        cap = last_t.replace(hour=15, minute=30, second=59, microsecond=0)
+        return dict(_compute(ticks, board_pts, min(last_t, cap)), final=True, prev_date=str(prev_date),
+                    asof_label="前営業日(%s) 大引け(15:30)時点・確定" % prev_date)
     if as_of is None and ticks:
         last_t = ticks[-1]["t"]
         if last_t.strftime("%H:%M:%S") >= CLOSE_HHMMSS:
@@ -152,6 +158,9 @@ def lamps(sel, cards):
         d = (sel or {}).get(key) or {}
         ok = d.get("ok")
         items.append({"label": lab, "state": "na" if ok is None else ("on" if ok else "off"), "detail": d.get("detail", "データなし")})
+    prev_date = (sel or {}).get("prev_date")
+    if prev_date:  # 前営業日表示: (a)は当日のシグナルカードなので前営業日の判定には使えない=判定対象外
+        items[0] = dict(items[0], state="na", detail="前営業日の心理指標は保持していないため判定対象外(最大2点)")
     n = sum(1 for i in items if i["state"] == "on")
     # 旧レコード(finalキー無し)も、時点(asof)が大引け(15:30)以降なら確定扱い
     final = bool((sel or {}).get("final")) or str((sel or {}).get("asof") or "")[11:19] >= "15:30:00"
@@ -162,8 +171,13 @@ def lamps(sel, cards):
         if only_psych:
             caution = "心理指標は点灯しましたが、板・出来高の裏付けはありませんでした(『底』とは言えません)。"
         caution = "本日の大引け時点の確定結果です(進行中の判定ではありません)。" + caution
-    return {"n": n, "total": 3, "final": final,
-            "title": ("本日のセリクラ成立チェック・大引け時点で確定(%d/3)" if final else "セリクラ成立チェック(%d/3)") % n, "items": items,
+    if prev_date:
+        caution = caution.replace("本日の大引け時点", "前営業日(%s)の大引け時点" % prev_date)
+        title = "前営業日(%s)のセリクラ成立チェック・大引け時点で確定(%d/3)" % (prev_date, n)
+    else:
+        title = ("本日のセリクラ成立チェック・大引け時点で確定(%d/3)" if final else "セリクラ成立チェック(%d/3)") % n
+    return {"n": n, "total": 3, "final": final, "prev_date": prev_date,
+            "title": title, "items": items,
             "vwap": (sel or {}).get("vwap"), "asof_label": (sel or {}).get("asof_label"), "caution": caution}
 
 

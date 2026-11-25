@@ -29,7 +29,7 @@ def _fmt_time(s):
         return "—"
 
 
-def build_numeric_summary(rec):
+def build_numeric_summary(rec, now_ts=None):
     rec = rec or {}
     price = rec.get("price") or {}
     board = rec.get("board") or {}
@@ -102,17 +102,30 @@ def build_numeric_summary(rec):
         # ★2026-11-23(ユーザー指示『数時間から数分の変化も分析』): 直近変化(5分/15分/1時間/3時間)
         import trend_stats as _tsm
         _tp = []
+        # ★2026-11-25(ユーザー承認): 最終約定から120分超(立会時間外)の市場は直近変化・変化の読みから除外し『最終 M/D HH:MM・立会時間外』の1行にする
+        _fresh, _stale = _tsm.split_stale({_lab: (_eh.get("trend") or {}).get(_k) for _lab, _k in (("東証", "tse"), ("PTS", "pts"), ("米国ADR", "adr"), ("DEX", "dex"))}, now_ts)
         for _lab, _k in (("東証", "tse"), ("PTS", "pts"), ("米国ADR", "adr"), ("DEX", "dex")):
-            _tr = (_eh.get("trend") or {}).get(_k)
+            _tr = _fresh.get(_lab)
             _tt = _tsm.text(_tr)
             if _tt:
                 _tp.append("%s %s（%s時点）" % (_lab, _tt.split("／")[0], _tr.get("last_time")))
         if _tp:
             lines.append("直近変化: " + "／".join(_tp))
+        if _stale:
+            lines.append("立会時間外の市場(直近変化は出さない): " + "／".join(_stale))
         # ★2026-11-23(ユーザー指示『変化が何を意味するのかの考察』): 固定ルールの『読み』(加速/減速/反転・市場間の揃い/乖離・水準の意味)
-        _ser = {l: (_eh.get("trend") or {}).get(k) for l, k in (("東証", "tse"), ("PTS", "pts"), ("米国ADR", "adr"), ("DEX", "dex"))}
+        _ser = {l: _fresh.get(l) for l in ("東証", "PTS", "米国ADR", "DEX")}
         _lv = {l: (_eh.get(k) or {}).get("change_pct") for l, k in (("PTS", "pts"), ("米国ADR", "adr"), ("DEX", "dex")) if isinstance(_eh.get(k), dict)}
-        for _rl in _tsm.reading({k: v for k, v in _ser.items() if v}, _lv):
+        _prices = {l: (_eh.get(k) or {}).get("price") for l, k in (("PTS", "pts"), ("DEX", "dex")) if isinstance(_eh.get(k), dict)}
+        _prev_low = None
+        try:  # ③ 前営業日(直近の確定した立会)のザラ場安値=tick CSVの最安値(B の前営業日CSV読込を流用)
+            import screen_flow_summary as _sfl
+            _jst = (dt.datetime.now(dt.timezone.utc) if now_ts is None else dt.datetime.fromtimestamp(now_ts, dt.timezone.utc)) + dt.timedelta(hours=9)
+            _pl = _sfl.latest_session_low(_jst.strftime("%Y-%m-%d"))
+            _prev_low = _pl[1] if _pl else None
+        except Exception:
+            _prev_low = None
+        for _rl in _tsm.reading({k: v for k, v in _ser.items() if v}, _lv, prices=_prices, prev_low=_prev_low):
             lines.append("変化の読み: " + _rl)
     except Exception:
         pass

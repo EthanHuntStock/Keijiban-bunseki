@@ -1345,6 +1345,11 @@ def main():
     # ★2026-08-19追加(ユーザー依頼「タイトルを最上部に書く」): ブラウザタブの
     # page_titleとは別に、ページ本文の最上部にも見出しとして明示する。
     st.markdown("### 📊 掲示板投稿の詳細分析による投資情報")
+    try:  # ★2026-11-25(ユーザー承認④): タイトル直下の共通スイッチバー
+        import switch_bar as _swb
+        st.markdown(_swb.switch_bar_html(with_style=True), unsafe_allow_html=True)
+    except Exception:
+        pass
     _reading_guide()
 
     # ★2026-08-19追加(ユーザー依頼: Streamlit Community Cloudへデプロイ)。
