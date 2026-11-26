@@ -741,7 +741,8 @@ def apply_live_overrides(rec, today=None):
     if live_eh:
         try:  # ★2026-10-16: DEX は記録済みスナップショット由来(live_eh は ADR/PTSフィード由来で dex を持たない)＝元の値を引き継ぐ
             if not live_eh.get("dex") and (original_extended_hours or {}).get("dex"):
-                live_eh["dex"] = original_extended_hours.get("dex")
+                live_eh["dex"] = public_export.dex_with_basis(   # 2026-11-26: 大引け後は当日の確定終値基準の終値比に付け直す
+                    original_extended_hours.get("dex"), (live_eh.get("tse_close") or {}).get("price"), public_export.confirmed_close_today())
         except Exception:
             pass
         rec["extended_hours"] = live_eh
@@ -1419,7 +1420,7 @@ def _extended_hours_html(rec):
                     f"<div class='metric-delta' style='color:{chg_color(chg)}'>{chg_text}</div></div>")
     return (f"<div class='metric-row'>{''.join(parts)}</div>"
            f"<p class='caption'>PTS=東証取引時間外の私設取引システム／ADR=米国預託証券／"
-           f"DEX=分散型取引所(Hyperliquid)の24時間取引・円換算(東証終値比)。"
+           f"DEX=分散型取引所(Hyperliquid)の24時間取引・円換算(東証終値比。大引け後(15:30以降)のDEXの終値比は当日の確定終値基準です。ADR・PTSは東証最終値比)。"
            f"翌営業日の値動きの参考情報です(それ自体が売買シグナルではありません)。</p>")
 
 

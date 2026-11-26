@@ -1003,7 +1003,7 @@ def _extended_hours_card(rec):
                       f"{dex['price']:,.0f}円" if dex.get("price") is not None else "—",
                       delta=chg_text)
     st.caption("PTS=東証取引時間外の私設取引システム／ADR=米国預託証券／"
-               "DEX=分散型取引所(Hyperliquid)の24時間取引・円換算(東証終値比)。"
+               "DEX=分散型取引所(Hyperliquid)の24時間取引・円換算(東証終値比。大引け後(15:30以降)のDEXの終値比は当日の確定終値基準です。ADR・PTSは東証最終値比)。"
                "翌営業日の値動きの参考情報です(それ自体が売買シグナルではありません)。")
 
 

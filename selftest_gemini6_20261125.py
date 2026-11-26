@@ -365,5 +365,22 @@ check("しきい値: 他銘柄混入率の警戒/発火は旧0.08/0.11の半分(
 _c = {c["name"]: c for c in S.compute_signals([], raw_rows=_raw, day=_day)["cards"]}["他銘柄混入率"]
 check("しきい値: カードの条件欄が新しきい値で表示される(>=0.055)", "0.055" in _c["threshold"], _c["threshold"])
 check("用語説明: 公開版・静的版とも変更日・旧新定義・単位除外・しきい値仮置きを注記", all(all(w in x for w in ("定義変更 2026-11-26", "旧定義", "単位", "0.04/0.055", "仮置き")) for x in (_pd2, _gs)))
+# ---- 2026-11-26 DEXの終値比: 大引け後は当日の確定終値基準
+import public_export as PE
+_dex = {"price": 7728.0, "price_usd": 48.6, "time": "11/26 15:40", "change_pct": 0.02}
+_a = PE.dex_with_basis(_dex, 7725.0, 7762.0)
+check("DEX終値比: 大引け後(確定終値7,762円)は7,728円→-0.44%・change_basis付き・price/time/price_usdは不変", _a["change_pct"] == -0.44 and _a["change_basis"] == "当日確定終値" and _a["price"] == 7728.0 and _a["time"] == "11/26 15:40" and _a["price_usd"] == 48.6, _a)
+_b = PE.dex_with_basis(_dex, 7725.0, None)
+check("DEX終値比: 確定終値が無い/0なら従来のtse_close基準(7,725円→+0.04%)にフォールバック", _b["change_pct"] == 0.04 and "change_basis" not in _b and PE.dex_with_basis(_dex, 7725.0, 0)["change_pct"] == 0.04)
+check("DEX終値比: tse_closeも確定終値も無ければ値を変えない", PE.dex_with_basis(_dex, None, None) == _dex and PE.dex_with_basis(None, 7762.0, 7762.0) is None)
+_tkl = lambda d: [(D(2026, 11, 26, 15, 20, 0), 7700.0), (D(2026, 11, 26, 15, 31, 1), 7762.0)]
+check("確定終値: 15:40は当日tickの大引け後の最終価格(7,762円)", PE.confirmed_close_today(D(2026, 11, 26, 15, 40), _tkl) == 7762.0)
+check("確定終値: 15:20(取引時間中)・休日・大引け後tickが無い時はNone=従来基準", PE.confirmed_close_today(D(2026, 11, 26, 15, 20), _tkl) is None and PE.confirmed_close_today(D(2026, 11, 28, 15, 40), _tkl) is None and PE.confirmed_close_today(D(2026, 11, 26, 15, 40), lambda d: [(D(2026, 11, 26, 15, 20, 0), 7700.0)]) is None)
+_rows = [{"ts": 1000, "tse": 7725.0, "pts": None, "adr_yen": None}, {"ts": 2000, "tse": None, "pts": 7726.0, "adr_yen": None}]
+_e1 = PE.extended_hours_summary({"rows": _rows}, dex={"jpy": 7728.0, "mark": 48.6, "price_time_ms": 1}, confirmed_close=7762.0)
+_e2 = PE.extended_hours_summary({"rows": _rows}, dex={"jpy": 7728.0, "mark": 48.6, "price_time_ms": 1}, confirmed_close=None)
+check("DEX終値比: extended_hours_summaryが大引け後は確定終値基準(-0.44%)・取引時間中は従来(+0.04%)", _e1["dex"]["change_pct"] == -0.44 and _e2["dex"]["change_pct"] == 0.04 and _e1["pts"]["change_pct"] == _e2["pts"]["change_pct"], (_e1["dex"], _e2["dex"]))
+_pe_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "public_export.py"), encoding="utf-8").read()
+check("DEX終値比: 注記(両サイト)と生成経路(latest.json生成・静的版の上書き)の両方に適用", "confirmed_close=confirmed_close_today()" in _pe_src and "dex_with_basis(" in _gs and all("大引け後(15:30以降)のDEXの終値比は当日の確定終値基準です" in x for x in (_gs, _pd2)))
 print("\n結果: OK=%d NG=%d" % (len(OK), len(NG)))
 sys.exit(1 if NG else 0)

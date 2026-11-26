@@ -1389,7 +1389,43 @@ def previous_snapshot_for_ai_commentary(previous_record):
     }
 
 
-def extended_hours_summary(adr_pts_data, dex=None):
+def confirmed_close_today(now=None, tick_loader=None):
+    """★2026-11-26(ユーザー指示): 東証の大引け(15:30)後は『当日の確定終値』(tick CSVの大引け後の最終価格)を返す。
+    平日15:30以降で、当日tickに15:30以降の行(大引けの約定)がある時だけ。取引時間中・休日・tick無しはNone(呼び手は従来の基準へフォールバック)。
+    tick_loader(date)->[(datetime, price)] はテスト用の差し替え口。"""
+    try:
+        n = now or (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=9))
+        if n.weekday() >= 5 or n.strftime("%H:%M:%S") < "15:30:00":
+            return None
+        date = n.strftime("%Y-%m-%d")
+        if tick_loader is not None:
+            pts = tick_loader(date)
+        else:
+            import screen_flow_summary as _sf
+            pts = [(r["t"], r["price"]) for r in _sf.read_ticks(_sf.tick_path(date)) if r["price"] > 0]
+        if not pts or pts[-1][0].strftime("%H:%M:%S") < "15:30:00":
+            return None
+        return float(pts[-1][1])
+    except Exception:
+        return None
+
+
+def dex_with_basis(dex, tse_close, confirmed_close=None):
+    """DEXの終値比の分母: 大引け後は当日の確定終値(confirmed_close)、取引時間中や確定終値が無い/0の時は従来のtse_close。
+    price・time・price_usd は変えず change_pct(と、確定終値を使った時だけ change_basis)を付け直す。純関数。"""
+    if not isinstance(dex, dict) or dex.get("price") is None:
+        return dex
+    denom = confirmed_close if (confirmed_close and confirmed_close > 0) else tse_close
+    if not denom or denom <= 0:
+        return dex
+    out = dict(dex)
+    out["change_pct"] = round((float(dex["price"]) - denom) / denom * 100.0, 2)
+    if confirmed_close and confirmed_close > 0:
+        out["change_basis"] = "当日確定終値"
+    return out
+
+
+def extended_hours_summary(adr_pts_data, dex=None, confirmed_close=None):
     """★2026-08-19追加(ユーザー依頼「AI分析はPTS・米国ADRの時間帯もそれらの値を分析
     するように。翌日の傾向につながる可能性がある」)。
     price_fetch.fetch_adr_pts_and_save() が保存したnikkei225jp.comフィード
@@ -1454,6 +1490,7 @@ def extended_hours_summary(adr_pts_data, dex=None):
                            "time": (_fmt_time(int(_pt) // 1000) if _pt else None)}
     except Exception:
         dex_summary = None
+    dex_summary = dex_with_basis(dex_summary, tse_close, confirmed_close)   # 2026-11-26: 大引け後は当日の確定終値基準
 
     return {
         "tse_close": {"price": tse_close, "time": _fmt_time(boundary_ts)},
@@ -2420,7 +2457,7 @@ def _build_from_live_data(with_commentary=False, carry_commentary=False, no_news
     # 同じフォールバック(_today_tse_ohlc_from_adr_pts)で埋める(intraday_today_series
     # のdocstring参照)。
     intraday_today = intraday_today_series(snaps, price_intraday, adr_pts=adr_pts_data)
-    extended_hours = extended_hours_summary(adr_pts_data, dex=_load_dex_latest())
+    extended_hours = extended_hours_summary(adr_pts_data, dex=_load_dex_latest(), confirmed_close=confirmed_close_today())
     # ★2026-09-30追加: us_indices_summary()のdocstring参照。フィード未取得なら空リスト
     # (fail-soft・build_public_record側は空リストでも渡された引数自体は保持する)。
     us_indices = us_indices_summary(us_indices_data)
