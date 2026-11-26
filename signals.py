@@ -242,6 +242,33 @@ def lexicon_counts(texts):
     }
 
 
+# ★2026-11-26(ユーザー決定): 100の倍数の4桁数字(5000・6000等)は285A自身の株価水準(「5000円台」「6000割れ」)であることが
+#   ほとんどで、銘柄コードと誤認していた(11/26の他銘柄扱い430件のうち333件=77%)。100の倍数は、銘柄コードらしい文脈
+#   (直前に「コード/銘柄/証券番号」・直後に「.T/銘柄/HD/ホールディングス」(「1000株」は株数なので文脈にしない))がある時だけコードとして数える。
+#   実在する100の倍数コードは、銘柄名辞書(OTHER_NAMES)・上の文脈語の併用で拾う(コード表がリポジトリに無いため
+#   コード一覧での照合はできていない)。config.SIG_OTHER_EXCLUDE_ROUND_PRICE=False で旧定義(全4桁をコード扱い)へ戻せる。
+_ROUND_CODE_BEFORE = re.compile(r"(?:コード|銘柄|証券番号)[:：\s]*$")
+_ROUND_CODE_AFTER = re.compile(r"^\s*(?:\.T(?![A-Za-z])|銘柄|HD|ホールディングス)")
+
+
+# ★2026-11-26(ユーザー決定): 4桁の直後に単位が続く数字(5000円台・6000円・6523円・1000株・3倍…)は100の倍数かどうかに関わらず
+#   銘柄コードに数えない。判定の優先順位: ①年号(1900-2100) → ②直後の単位 → ③100の倍数(コード文脈があれば残す) → ④ピア除外コード。
+_UNIT_AFTER = re.compile(r"^ ?(?:円|万株|億円|株|倍|年|月|日|時|分)")
+
+
+def _unit_number(t, m):
+    return bool(getattr(config, "SIG_OTHER_EXCLUDE_UNIT_NUMBERS", True)) and bool(_UNIT_AFTER.search(t[m.end():m.end() + 4]))
+
+
+def _round_is_price_like(t, m):
+    code = int(m.group(1))
+    if code % 100 != 0 or not getattr(config, "SIG_OTHER_EXCLUDE_ROUND_PRICE", True):
+        return False
+    if _ROUND_CODE_BEFORE.search(t[max(0, m.start() - 8):m.start()]) or _ROUND_CODE_AFTER.search(t[m.end():m.end() + 8]):
+        return False
+    return True
+
+
 def _has_other_symbol(t, exclude_peers):
     """1投稿に「285A以外・ピア以外」の銘柄言及があるか(純関数)。"""
     if exclude_peers:
@@ -251,6 +278,10 @@ def _has_other_symbol(t, exclude_peers):
         code = int(m.group(1))
         if 1900 <= code <= 2100:
             continue  # 年号らしき数字
+        if _unit_number(t, m):
+            continue  # 直後が単位(円・円台・株・倍・年…)=価格・数量・日付の数字
+        if _round_is_price_like(t, m):
+            continue  # 100の倍数=285A自身の株価水準(5000円台・6000割れ等)
         if exclude_peers and code in PEER_CODES:
             continue
         return True

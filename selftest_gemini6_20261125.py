@@ -323,5 +323,47 @@ _src = tempfile.mkdtemp(); _dst = tempfile.mkdtemp()
 open(os.path.join(_src, "index.html"), "w").write("a"); open(os.path.join(_src, "latest.txt"), "w", encoding="utf-8").write("x")
 _PUB.sync_docs_dir(_src, _dst)
 check("latest.txt: sync_docs_dirがdocsへコピーする", os.path.exists(os.path.join(_dst, "latest.txt")) and os.path.exists(os.path.join(_dst, "index.html")))
+# ---- 2026-11-26 除外辞書の照合・考察『直近の出来事』制約
+_all22 = ["MU", "マイクロン", "SNDK", "サンディスク", "SKハイニックス", "ハイニックス", "サムスン", "NVDA", "エヌビディア", "アドテスト", "アドバンテスト", "TEL", "東京エレクトロン", "東エレク", "レーザーテック", "ディスコ", "SCREEN", "KOKUSAI", "SOX", "NAND", "DRAM", "HBM"]
+check("除外辞書: 指定22語は全て単独投稿で他銘柄に数えない(漏れなし)", all(SG.other_symbol_ratio([w + "が強い"])["hits"] == 0 for w in _all22), [w for w in _all22 if SG.other_symbol_ratio([w + "が強い"])["hits"] != 0])
+check("除外辞書: ASCII語は語境界(MUST/TELEGRAM/HOTEL/NANDA/DRAMA は消費しない)", SG._PEER_TICKER_RE.sub(" ", "MUST TELEGRAM HOTEL NANDA DRAMA HBMX") == "MUST TELEGRAM HOTEL NANDA DRAMA HBMX")
+import claude_commentary_intake as ICK
+_t_ok = "■ 直近の出来事" + chr(10) + "11-25の終値は-14.18%でした。同日、子会社から配当2兆2,149億円を受け取りました。" + chr(10) + chr(10) + "■ 次" + chr(10) + "11-18は+1%"
+_t_ng = "■ 直近の出来事" + chr(10) + "".join("11-%02dは%+d%%、" % (25 - i, i + 1) for i in range(6)) + chr(10)
+check("考察の制約: ■直近の出来事が直近3営業日+適時開示なら適合(他の節の日付は数えない)", ICK.lint_recent_events(_t_ok)["ok"] is True and ICK.lint_recent_events(_t_ok)["n_days"] == 1)
+check("考察の制約: 10営業日級の騰落の羅列(4日超)は違反として検出・節が無ければ適合", ICK.lint_recent_events(_t_ng)["ok"] is False and ICK.lint_recent_events(_t_ng)["n_days"] == 6 and ICK.lint_recent_events("節なし")["ok"] is True)
+_isrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude_commentary_intake.py"), encoding="utf-8").read()
+check("考察の制約: 取込は本文を変えず(text/generated_atのみ書く)・警告ログのみで公開は止めない", 'j["ai_commentary"] = {"text": text, "generated_at": gen19}' in _isrc and "公開は止めない" in _isrc and "return \"rejected\"" in _isrc.split("_lint = lint_recent_events")[0])
+# ---- 2026-11-26 100の倍数の4桁(株価水準)を銘柄コード扱いしない
+_px = ["夢の5000円台突入へ", "6000割れたら強制決済", "3000くらいまでいくでしょ", "7000まで戻る", "1000円台に戻る"]
+check("他銘柄: 100の倍数の4桁(5000円台・6000割れ等=285A自身の株価水準)は他銘柄に数えない", SG.other_symbol_ratio(_px)["hits"] == 0, SG.other_symbol_ratio(_px))
+_real = ["7203買い", "6758が強い", "8306を売る", "9433の決算", "コード6000の銘柄", "6000銘柄", "6000.T", "6000HDが上げ"]
+check("他銘柄: 実銘柄コード(100の倍数以外)と、100の倍数でも『コード/銘柄/.T/HD』の文脈があるものは残る", SG.other_symbol_ratio(_real)["hits"] == len(_real), SG.other_symbol_ratio(_real))
+check("他銘柄: 『1000株買った』(株数)や『株価5000』は他銘柄に数えない", SG.other_symbol_ratio(["1000株買った"])["hits"] == 0 and SG.other_symbol_ratio(["株価5000円"])["hits"] == 0)
+check("他銘柄: 285A・年号・ピア除外は従来どおり(2025年・MU・8035は数えない)", SG.other_symbol_ratio(["2025年", "MUが強い", "8035と6857"])["hits"] == 0)
+config.SIG_OTHER_EXCLUDE_ROUND_PRICE = False
+config.SIG_OTHER_EXCLUDE_UNIT_NUMBERS = False
+_old = SG.other_symbol_ratio(_px)["hits"]
+config.SIG_OTHER_EXCLUDE_ROUND_PRICE = True
+config.SIG_OTHER_EXCLUDE_UNIT_NUMBERS = True
+check("他銘柄: 切替False=旧定義(全ての4桁をコード扱い)に戻せる", _old == len(_px))
+_pd2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "public_dashboard.py"), encoding="utf-8").read()
+check("他銘柄: 公開版(Streamlit)と静的版の用語説明に定義変更日(2026-11-26)と旧新定義を注記", all("定義変更 2026-11-26" in x and "旧定義" in x and "5000・6000" in x for x in (_pd2, _gs)))
+check("他銘柄: 公開版と静的版は同じ判定関数(signals.other_symbol_ratio)由来のカードを表示(判定の二重実装なし)", "_has_other_symbol" not in _pd2 and "_has_other_symbol" not in _gs)
+# ---- 2026-11-26 単位つき4桁の除外・しきい値の仮置き
+_unit = ["5000円台突入", "6000円", "6523円まで", "7034円で", "4000円割れ", "1005円300株", "1000株", "3倍になる", "2月", "15日", "10時", "30分", "12億円", "3万株", "6880 円"]
+check("単位: 4桁の直後が単位(円・円台・円割れ・株・万株・億円・倍・月・日・時・分)なら100の倍数でなくても他銘柄に数えない", all(SG.other_symbol_ratio([w])["hits"] == 0 for w in _unit), [w for w in _unit if SG.other_symbol_ratio([w])["hits"]])
+check("単位: 単位が付かない実銘柄コードは従来どおり数える(7203・6758・8306)", SG.other_symbol_ratio(["7203", "6758が強い", "8306を売る", "6523の決算"])["hits"] == 4)
+check("優先順位: 単位が先(『コード6000円』は価格として除外)・単位が無ければ100の倍数+コード文脈で残す(『コード6000の銘柄』)", SG.other_symbol_ratio(["コード6000円"])["hits"] == 0 and SG.other_symbol_ratio(["コード6000の銘柄"])["hits"] == 1)
+check("優先順位: 年号→単位→100の倍数→ピアの順(2025年・5000円台・6000(文脈なし)・8035(ピア)は全て数えない)", SG.other_symbol_ratio(["2025年", "5000円台", "6000割れ", "8035が上げ"])["hits"] == 0)
+check("単位: 銘柄名辞書は併用(『トヨタ6500円』は単位で数字は除外されるが銘柄名で他銘柄)", SG.other_symbol_ratio(["トヨタ6500円"])["hits"] == 1)
+config.SIG_OTHER_EXCLUDE_UNIT_NUMBERS = False
+_o = SG.other_symbol_ratio(["6523円"])["hits"]
+config.SIG_OTHER_EXCLUDE_UNIT_NUMBERS = True
+check("単位: 切替False=単位ルールなし(旧挙動)に戻せる", _o == 1)
+check("しきい値: 他銘柄混入率の警戒/発火は旧0.08/0.11の半分(0.04/0.055・仮置き)", config.SIG_OTHER_WARN == 0.04 and config.SIG_OTHER_FIRE == 0.055)
+_c = {c["name"]: c for c in S.compute_signals([], raw_rows=_raw, day=_day)["cards"]}["他銘柄混入率"]
+check("しきい値: カードの条件欄が新しきい値で表示される(>=0.055)", "0.055" in _c["threshold"], _c["threshold"])
+check("用語説明: 公開版・静的版とも変更日・旧新定義・単位除外・しきい値仮置きを注記", all(all(w in x for w in ("定義変更 2026-11-26", "旧定義", "単位", "0.04/0.055", "仮置き")) for x in (_pd2, _gs)))
 print("\n結果: OK=%d NG=%d" % (len(OK), len(NG)))
 sys.exit(1 if NG else 0)
